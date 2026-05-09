@@ -10,6 +10,8 @@ import (
 
 	"github.com/yunus/safina/internal/k8s"
 	"github.com/yunus/safina/internal/tui/components"
+	"github.com/yunus/safina/internal/tui/keys"
+	"github.com/yunus/safina/internal/tui/theme"
 )
 
 // View returns the rendered frame plus the declarative terminal-state fields
@@ -65,6 +67,13 @@ func (m *Model) render() string {
 		return m.renderConfirmModal("revert deployment", m.deployName())
 	case stateRestartConfirm:
 		return m.renderConfirmModal("restart app", m.deployName())
+	case stateEditConfirm:
+		return m.renderEditConfirmModal()
+	case statePalette:
+		// Palette renders over the main view — caller can see the tree
+		// behind the modal backdrop, which helps orient them when they
+		// drill through the palette to a faraway resource.
+		return m.palette.View(m.ctx, m.ctx.Width, m.ctx.Height)
 	default:
 		return m.renderMain()
 	}
@@ -180,7 +189,7 @@ func (m *Model) renderFooter() string {
 	if m.chat.Focused {
 		view = m.renderChatFooter()
 	} else {
-		view = m.help.ShortHelpView(m.contextualShortHelp())
+		view = m.renderTreeFooter()
 	}
 	return lipgloss.NewStyle().
 		Background(t.P.BG2).
@@ -188,6 +197,39 @@ func (m *Model) renderFooter() string {
 		MaxHeight(1).
 		Padding(0, 1).
 		Render(view)
+}
+
+// renderTreeFooter renders the contextual short help with two visual
+// layers: action verbs (the per-row "what can I do" set) get the bright
+// HelpKey style; chrome keys (refresh, filter, help, quit) render dim so
+// the eye reads them as global app affordances rather than row actions.
+// Convention says shortcuts live at the bottom — we keep them there but
+// give the operator a hierarchy to scan instead of a flat run of letters.
+func (m *Model) renderTreeFooter() string {
+	t := m.ctx.Theme
+	bindings := m.contextualShortHelp()
+	chromeKeys := map[string]bool{
+		m.ctx.Keys.Refresh.Help().Key: true,
+		m.ctx.Keys.Filter.Help().Key:  true,
+		m.ctx.Keys.Help.Help().Key:    true,
+		m.ctx.Keys.Quit.Help().Key:    true,
+		m.ctx.Keys.Enter.Help().Key:   true, // shows up alone on the cluster picker
+	}
+	// Both halves of a chrome entry render in the same dim grey — the
+	// contrast with HelpKey blue-bold is what the eye reads, not internal
+	// key/desc styling within the chrome chunk.
+	dim := lipgloss.NewStyle().Foreground(t.P.Dim)
+	parts := make([]string, 0, len(bindings))
+	for _, b := range bindings {
+		h := b.Help()
+		if chromeKeys[h.Key] {
+			parts = append(parts, dim.Render(h.Key)+" "+dim.Render(h.Desc))
+		} else {
+			parts = append(parts, t.HelpKey.Render(h.Key)+" "+t.HelpDesc.Render(h.Desc))
+		}
+	}
+	sep := lipgloss.NewStyle().Foreground(t.P.Dim).Render(" · ")
+	return strings.Join(parts, sep)
 }
 
 // renderChatFooter mirrors contextualShortHelp's role for chat: a one-glance
@@ -216,18 +258,23 @@ func (m *Model) renderChatFooter() string {
 }
 
 // contextualShortHelp builds the footer keymap from the current tree row.
-// Progressive disclosure: ↑/↓/↵/esc are universal across every TUI ever
-// shipped — Jakob says don't reteach them on every redraw — and action keys
-// (l/e/d/s/r/x/S) only carry meaning for some kinds. We hide what doesn't
-// apply to the highlighted row so the footer becomes a one-glance "what can
-// I do *to this row*" hint instead of a full key index. The full keymap
-// stays available behind `?`.
+//
+// Three principles keep the footer scannable instead of overwhelming:
+//
+//  1. Universal nav (↑/↓/↵/esc) is never restated — Jakob's rule.
+//  2. Action verbs follow a single ordering — inspect verbs first
+//     (d/l/e/v/S in that order), then change verbs (x/s/r/E). Operators
+//     learn one column once and find what they need by position, not by
+//     hunting the alphabet.
+//  3. Tail chrome is trimmed to row-relevant keys plus help/quit. F
+//     (next-fail) and i (ask — Tab is the discoverable alias) live in
+//     the `?` modal; they don't need to repeat on every redraw.
 func (m *Model) contextualShortHelp() []key.Binding {
 	k := m.ctx.Keys
 
-	// Always-on chrome keys. Refresh is only meaningful inside a cluster,
-	// so we drop it at the context-list level.
-	tail := []key.Binding{k.Ask, k.Filter, k.Help, k.Quit}
+	// Always-on chrome keys. Refresh only matters inside a cluster, so we
+	// drop it at the context-list level.
+	tail := []key.Binding{k.Filter, k.Help, k.Quit}
 	if m.tree.Focus().Kind != k8s.KindContextList {
 		tail = append([]key.Binding{k.Refresh}, tail...)
 	}
@@ -236,11 +283,10 @@ func (m *Model) contextualShortHelp() []key.Binding {
 	head := []key.Binding{}
 	switch ref.Kind {
 	case k8s.KindContext:
-		// At the cluster picker, ↵ to drill in is the only thing to teach;
-		// the action keys aren't applicable here.
+		// At the cluster picker, ↵ to drill in is the only thing to teach.
 		return append([]key.Binding{k.Enter}, tail...)
 	case k8s.KindApp:
-		head = append(head, k.Logs, k.Events, k.Describe, k.Restart)
+		head = append(head, k.Describe, k.Logs, k.Events, k.Restart)
 		if ref.SubKind == k8s.AppKindDeployment || ref.SubKind == k8s.AppKindStatefulSet {
 			head = append(head, k.Scale)
 		}
@@ -248,15 +294,23 @@ func (m *Model) contextualShortHelp() []key.Binding {
 			head = append(head, k.Rollback)
 		}
 	case k8s.KindPod:
-		head = append(head, k.Logs, k.Shell, k.Events, k.Describe, k.Restart)
+		head = append(head, k.Describe, k.Logs, k.Events, k.Shell, k.Restart)
 	case k8s.KindContainer:
-		head = append(head, k.Logs, k.Shell, k.Describe)
-	case k8s.KindNode:
-		head = append(head, k.Events, k.Describe)
-	case k8s.KindNamespace:
-		head = append(head, k.Events, k.Describe)
+		head = append(head, k.Describe, k.Logs, k.Shell)
+	case k8s.KindNode, k8s.KindNamespace:
+		head = append(head, k.Describe, k.Events)
+	case k8s.KindConfigMap:
+		head = append(head, k.Describe)
+	case k8s.KindSecret:
+		head = append(head, k.Describe, k.Reveal)
+	case k8s.KindService, k8s.KindPVC:
+		head = append(head, k.Describe, k.Events)
+	case k8s.KindIngress, k8s.KindPV:
+		head = append(head, k.Describe)
 	}
-	head = append(head, k.FirstFail)
+	if editKindFor(ref) != "" {
+		head = append(head, k.Edit)
+	}
 	return append(head, tail...)
 }
 
@@ -284,6 +338,47 @@ func (m *Model) renderScaleModal() string {
 		t.Modal.Render(content), m.modalBackdrop()...)
 }
 
+func (m *Model) renderEditConfirmModal() string {
+	t := m.ctx.Theme
+	subject := "edit"
+	resource := ""
+	stat := ""
+	body := ""
+	if m.edit != nil {
+		added, removed := m.edit.LineDiffStat()
+		subject = "apply edits to " + m.edit.Kind
+		resource = m.edit.Namespace + "/" + m.edit.Name
+		// Plus is green, minus is red — matches the diff convention every
+		// engineer already has muscle memory for. Stat sits above the
+		// full unified diff as a one-line headline; the diff itself
+		// answers "what specifically am I changing" with proper color.
+		stat = lipgloss.NewStyle().Foreground(t.P.Green).Render(fmt.Sprintf("+%d", added)) +
+			"  " +
+			lipgloss.NewStyle().Foreground(t.P.Red).Render(fmt.Sprintf("−%d", removed)) +
+			t.DimTxt.Render(" lines")
+		body = renderUnifiedDiff(t, m.edit.Orig, m.edit.Edited)
+	}
+
+	parts := []string{
+		lipgloss.NewStyle().Foreground(t.P.Yellow).Bold(true).Render(subject),
+		"",
+		lipgloss.NewStyle().Foreground(t.P.Red).Bold(true).Render(resource),
+		"",
+		stat,
+	}
+	if body != "" {
+		parts = append(parts, "", body)
+	}
+	parts = append(parts,
+		"",
+		lipgloss.NewStyle().Foreground(t.P.Green).Render("y")+t.DimTxt.Render(" apply  ")+t.DimTxt.Render("n/Esc cancel"),
+	)
+
+	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
+	return lipgloss.Place(m.ctx.Width, m.ctx.Height, lipgloss.Center, lipgloss.Center,
+		t.Modal.Render(content), m.modalBackdrop()...)
+}
+
 func (m *Model) renderConfirmModal(action, resource string) string {
 	t := m.ctx.Theme
 	content := lipgloss.JoinVertical(lipgloss.Left,
@@ -299,14 +394,47 @@ func (m *Model) renderConfirmModal(action, resource string) string {
 
 func (m *Model) renderHelpModal() string {
 	t := m.ctx.Theme
-	full := m.help.FullHelpView(m.ctx.Keys.FullHelp())
+	groups := m.ctx.Keys.Groups()
+	gutter := lipgloss.NewStyle().PaddingRight(4)
+	cols := make([]string, 0, len(groups))
+	for i, g := range groups {
+		c := renderHelpGroup(t, g)
+		if i < len(groups)-1 {
+			c = gutter.Render(c)
+		}
+		cols = append(cols, c)
+	}
+	body := lipgloss.JoinHorizontal(lipgloss.Top, cols...)
 	content := lipgloss.JoinVertical(lipgloss.Left,
 		t.CyanBold.Render("◆ keybindings"),
 		"",
-		full,
+		body,
 		"",
 		t.DimTxt.Italic(true).Render("Esc or ? to close"),
 	)
 	return lipgloss.Place(m.ctx.Width, m.ctx.Height, lipgloss.Center, lipgloss.Center,
 		t.Modal.Padding(1, 2).Render(content), m.modalBackdrop()...)
+}
+
+// renderHelpGroup formats a single column of the help modal: a dim title,
+// a thin separator, then `key  desc` rows. Key glyph is fixed-width so the
+// descriptions line up; widest single-glyph in the keymap is "esc" (3 cells).
+func renderHelpGroup(t *theme.Theme, g keys.Group) string {
+	const keyW = 4
+	lines := []string{
+		t.CyanBold.Render(g.Title),
+		t.DimTxt.Render(strings.Repeat("─", 8)),
+	}
+	for _, p := range g.Pairs {
+		lines = append(lines, helpRow(t, keyW, p.Key, p.Desc))
+	}
+	for _, b := range g.Bindings {
+		h := b.Help()
+		lines = append(lines, helpRow(t, keyW, h.Key, h.Desc))
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, lines...)
+}
+
+func helpRow(t *theme.Theme, keyW int, k, desc string) string {
+	return t.HelpKey.Width(keyW).Render(k) + t.HelpDesc.Render(desc)
 }

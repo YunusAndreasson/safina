@@ -29,12 +29,13 @@ func Topbar(t *theme.Theme, w int, crumbs []Crumb, refreshAge, clock string) str
 		Width(w).
 		Padding(0, 1)
 
-	// Logo: ship + name read together. Cyan-bold matches the existing title
-	// accent so the topbar feels like part of the same design system.
-	// Safina means "ship" in Arabic — the emoji nods at the project's name.
+	// Logo: a single-cell half-block bar followed by the name. The 🚢
+	// emoji we used to lead with sometimes rendered double-wide and threw
+	// off the topbar's column math; ▌ is single-cell BMP, monospace-safe
+	// across every terminal. Cyan-bold matches the existing title accent.
 	logo := lipgloss.NewStyle().Foreground(t.P.Cyan).Bold(true).
 		Background(t.P.BG2).
-		Render("🚢 safina")
+		Render("▌ safina")
 
 	// A vertical bar between the logo and the breadcrumb signals "this side
 	// is the app, that side is your location" — different visual register

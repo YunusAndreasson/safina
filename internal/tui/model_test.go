@@ -312,6 +312,76 @@ func TestHandleScaleInput_NonDigitBlocked(t *testing.T) {
 	assert.Nil(t, cmd)
 }
 
+// ── Edit session lifecycle ────────────────────────────────────────────
+
+func TestEditSession_LineDiffStat(t *testing.T) {
+	tests := []struct {
+		name              string
+		orig, edited      string
+		wantAdd, wantRemv int
+	}{
+		{"identical", "a\nb\nc\n", "a\nb\nc\n", 0, 0},
+		{"pure add", "a\nb\n", "a\nb\nc\n", 1, 0},
+		{"pure remove", "a\nb\nc\n", "a\nc\n", 0, 1},
+		{"replace", "a\nb\nc\n", "a\nB\nc\n", 1, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			es := &editSession{Orig: []byte(tt.orig), Edited: []byte(tt.edited)}
+			add, rem := es.LineDiffStat()
+			assert.Equal(t, tt.wantAdd, add)
+			assert.Equal(t, tt.wantRemv, rem)
+		})
+	}
+}
+
+func TestEditSession_LineDiffStat_NilSafe(t *testing.T) {
+	var es *editSession
+	add, rem := es.LineDiffStat()
+	assert.Equal(t, 0, add)
+	assert.Equal(t, 0, rem)
+}
+
+func TestHandleConfirm_EditCancelClearsSession(t *testing.T) {
+	m := setupModel()
+	m.state = stateEditConfirm
+	m.edit = &editSession{Kind: "ConfigMap", Name: "x", Namespace: "ns"}
+	cmd := m.handleConfirm(tea.KeyPressMsg{Text: "n", Code: 'n'})
+	assert.Nil(t, cmd)
+	assert.Equal(t, stateMain, m.state)
+	assert.Nil(t, m.edit, "edit session should be cleared on cancel")
+}
+
+func TestEditKindFor(t *testing.T) {
+	assert.Equal(t, k8s.EditKindConfigMap, editKindFor(sections.NodeRef{Kind: k8s.KindConfigMap}))
+	assert.Equal(t, k8s.EditKindSecret, editKindFor(sections.NodeRef{Kind: k8s.KindSecret}))
+	assert.Equal(t, k8s.EditKindDeployment, editKindFor(sections.NodeRef{Kind: k8s.KindApp, SubKind: k8s.AppKindDeployment}))
+	assert.Equal(t, k8s.EditKindStatefulSet, editKindFor(sections.NodeRef{Kind: k8s.KindApp, SubKind: k8s.AppKindStatefulSet}))
+	assert.Equal(t, k8s.EditKindDaemonSet, editKindFor(sections.NodeRef{Kind: k8s.KindApp, SubKind: k8s.AppKindDaemonSet}))
+	// CronJob/Job stay excluded — Jobs are immutable post-create.
+	assert.Empty(t, editKindFor(sections.NodeRef{Kind: k8s.KindApp, SubKind: k8s.AppKindCronJob}))
+	assert.Empty(t, editKindFor(sections.NodeRef{Kind: k8s.KindApp, SubKind: k8s.AppKindJob}))
+	assert.Empty(t, editKindFor(sections.NodeRef{Kind: k8s.KindPod}))
+	assert.Empty(t, editKindFor(sections.NodeRef{Kind: k8s.KindNode}))
+}
+
+func TestResolveEditor_DefaultsToVi(t *testing.T) {
+	t.Setenv("KUBE_EDITOR", "")
+	t.Setenv("VISUAL", "")
+	t.Setenv("EDITOR", "")
+	bin, args := resolveEditor()
+	assert.Equal(t, "vi", bin)
+	assert.Empty(t, args)
+}
+
+func TestResolveEditor_RespectsKubeEditor(t *testing.T) {
+	t.Setenv("KUBE_EDITOR", "code --wait")
+	t.Setenv("EDITOR", "vim")
+	bin, args := resolveEditor()
+	assert.Equal(t, "code", bin)
+	assert.Equal(t, []string{"--wait"}, args)
+}
+
 func TestHandleScaleInput_EscCancels(t *testing.T) {
 	m := setupModel()
 	m.state = stateScaleInput

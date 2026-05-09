@@ -1,9 +1,12 @@
 package tui
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"strconv"
 	"time"
 
@@ -189,6 +192,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.describe.SetYAML(msg.YAML, msg.Err)
 		return m, nil
 
+	case sections.EditYAMLLoadedMsg:
+		if msg.Err != nil {
+			if isCtxDone(msg.Err) {
+				return m, nil
+			}
+			return m, m.raiseError(fmt.Sprintf("edit: %v", msg.Err))
+		}
+		return m, m.startEditor(msg)
+
+	case sections.EditorExitedMsg:
+		return m, m.handleEditorExit(msg.Err)
+
 	case k8s.PodLogEvent:
 		if msg.Done {
 			if msg.Err != nil && !isCtxDone(msg.Err) {
@@ -358,7 +373,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case stateScaleInput:
 		return m.handleScaleInput(msg)
 
-	case stateDeleteConfirm, stateRollbackConfirm, stateRestartConfirm:
+	case stateDeleteConfirm, stateRollbackConfirm, stateRestartConfirm, stateEditConfirm:
 		return m, m.handleConfirm(msg)
 
 	case stateHelp:
@@ -366,6 +381,9 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.state = stateMain
 		}
 		return m, nil
+
+	case statePalette:
+		return m.handlePalette(msg)
 	}
 
 	// Main state — global keys first, then chat (when focused), then tree.
@@ -407,6 +425,14 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.ctx.Cancel()
 		return m, tea.Quit
 
+	case msg.String() == ":" && !m.tree.FilterActive():
+		// `:` Vim-style command palette. Indexed lazily off the tree's
+		// level cache so it gets richer as the operator drills around.
+		// FilterActive check keeps `:` literal inside the / filter input.
+		m.palette.Open(sections.BuildPaletteIndex(m.tree.Cache()))
+		m.state = statePalette
+		return m, nil
+
 	case key.Matches(msg, m.ctx.Keys.Help):
 		m.state = stateHelp
 		return m, nil
@@ -442,6 +468,172 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Tree state may have moved — refresh chat's context strip + chips.
 	m.syncChatContext()
 	return m, cmd
+}
+
+// handlePalette dispatches keys while the `:` command palette is open.
+// The palette has three keypress categories:
+//
+//  1. Navigation — ↑/↓ moves the result cursor; ↵ submits the highlighted
+//     entry (drill); esc cancels.
+//  2. Verb dispatch — the user types a verb letter (no Tab needed in this
+//     simplified flow) and we route directly to the corresponding action
+//     for the highlighted entry. This is the smart shortcut — operator
+//     fuzzy-matches a Pod, types `l`, sees logs.
+//  3. Query editing — anything else mutates the search query.
+//
+// Verbs are chosen for unambiguous 1-letter mapping per kind. We resolve
+// against the entry's PaletteVerbsFor list so a wrong-kind keypress is a
+// no-op rather than a surprise (e.g. `s` on a Secret does nothing — Secret
+// has no scale verb).
+func (m *Model) handlePalette(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.ctx.Keys.Back):
+		m.state = stateMain
+		return m, nil
+	case key.Matches(msg, m.ctx.Keys.Up):
+		m.palette.CursorUp()
+		return m, nil
+	case key.Matches(msg, m.ctx.Keys.Down):
+		m.palette.CursorDown()
+		return m, nil
+	case key.Matches(msg, m.ctx.Keys.Enter):
+		if entry, ok := m.palette.Selected(); ok {
+			m.state = stateMain
+			return m.drillToPaletteEntry(entry)
+		}
+		return m, nil
+	}
+
+	s := msg.String()
+	// Verb shortcut: a single letter that maps to a verb on the current
+	// entry's kind dispatches the action immediately. We deliberately
+	// handle this BEFORE generic letter input — the trade-off is that
+	// kind-specific verb letters (l/d/e/x/s/r/v/E/S) won't appear in the
+	// query string when the highlighted match supports them. Operators
+	// can always backspace and retype if their intent was textual.
+	if entry, ok := m.palette.Selected(); ok && len(s) == 1 {
+		for _, v := range sections.PaletteVerbsFor(entry) {
+			if s == v.Letter {
+				m.state = stateMain
+				return m.dispatchPaletteVerb(s, entry)
+			}
+		}
+	}
+
+	// Query editing: backspace pops, single chars append.
+	if s == "backspace" {
+		q := m.palette.Query()
+		if len(q) > 0 {
+			m.palette.SetQuery(q[:len(q)-1])
+		}
+		return m, nil
+	}
+	if len(s) == 1 && s >= " " && s <= "~" {
+		m.palette.SetQuery(m.palette.Query() + s)
+	}
+	return m, nil
+}
+
+// drillToPaletteEntry navigates the tree to the entry's path and places
+// the cursor on the matching row. Returns a tea.Cmd that triggers the
+// child-load if the destination level isn't already cached.
+func (m *Model) drillToPaletteEntry(e sections.PaletteEntry) (tea.Model, tea.Cmd) {
+	// The entry's Path includes the entry itself as the leaf — for a drill
+	// we want the parent so the row is "highlighted" rather than entered.
+	if len(e.Path) <= 1 {
+		return m, m.tree.NavigateTo(e.Path)
+	}
+	parent := e.Path[:len(e.Path)-1]
+	cmd := m.tree.NavigateTo(parent)
+	m.tree.SetCursorByRef(e.Kind, e.Namespace, e.Name)
+	m.syncChatContext()
+	return m, cmd
+}
+
+// dispatchPaletteVerb fires an action against the palette entry without
+// going through the tree's navigation. This is the speed win: from the
+// palette, the operator can jump straight into logs/describe/edit/etc.
+// for any indexed resource — no drilling required. The verb letter is
+// authoritative; we trust the caller has already validated it against
+// PaletteVerbsFor.
+func (m *Model) dispatchPaletteVerb(verb string, e sections.PaletteEntry) (tea.Model, tea.Cmd) {
+	ns := e.Namespace
+	name := e.Name
+	switch verb {
+	case "d":
+		// Describe is universally available; route through the existing
+		// modal so the operator gets the same YAML viewer they'd see
+		// from the tree.
+		m.state = stateDescribeView
+		kind := e.Kind
+		if e.SubKind != "" {
+			kind = e.SubKind
+		}
+		m.describe.Reset(kind, name, ns)
+		m.describe.SetSize(m.ctx.Width, m.ctx.Height)
+		return m, sections.LoadDescribe(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext, ns, kind, name)
+	case "v":
+		if e.Kind != k8s.KindSecret {
+			return m, nil
+		}
+		m.state = stateDescribeView
+		m.describe.Reset("Secret", name, ns)
+		m.describe.MarkRevealed()
+		m.describe.SetSize(m.ctx.Width, m.ctx.Height)
+		return m, sections.LoadSecretReveal(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext, ns, name)
+	case "E":
+		kind := editKindForPalette(e)
+		if kind == "" {
+			return m, nil
+		}
+		return m, sections.LoadEditYAML(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext, ns, kind, name)
+	case "l":
+		if e.Kind != k8s.KindPod && e.Kind != k8s.KindApp {
+			return m, nil
+		}
+		// For the App case we'd usually drill into the deployment first
+		// to pick which pod; from the palette the simpler intent is
+		// "logs from any pod of this app" — but to keep behavior
+		// predictable with the tree path, route through drill-then-logs:
+		// drill, then the operator can press `l` again. Skip for now.
+		return m.drillToPaletteEntry(e)
+	case "e":
+		// Events: same fast-path as describe — we know the resource id.
+		return m.drillToPaletteEntry(e)
+	default:
+		// Any other verb (x/s/r/S) needs the action-key dispatch which
+		// reads from m.tree.SelectedRef(). Drill there first; the user
+		// can press the key again from the destination.
+		return m.drillToPaletteEntry(e)
+	}
+}
+
+// editKindForPalette mirrors editKindFor but accepts a palette entry —
+// the palette's SubKind/Kind shape is already what we need; the tree
+// version expects sections.NodeRef.
+func editKindForPalette(e sections.PaletteEntry) string {
+	switch e.Kind {
+	case k8s.KindApp:
+		switch e.SubKind {
+		case k8s.AppKindDeployment:
+			return k8s.EditKindDeployment
+		case k8s.AppKindStatefulSet:
+			return k8s.EditKindStatefulSet
+		case k8s.AppKindDaemonSet:
+			return k8s.EditKindDaemonSet
+		}
+	case k8s.KindConfigMap:
+		return k8s.EditKindConfigMap
+	case k8s.KindSecret:
+		return k8s.EditKindSecret
+	case k8s.KindService:
+		return k8s.EditKindService
+	case k8s.KindIngress:
+		return k8s.EditKindIngress
+	case k8s.KindPVC:
+		return k8s.EditKindPVC
+	}
+	return ""
 }
 
 // handleTreeAction routes resource-action keys (s/r/x/l/e/d/Ctrl-D/S) based
@@ -530,8 +722,172 @@ func (m *Model) handleTreeAction(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		m.describe.Reset(kind, name, ns)
 		m.describe.SetSize(m.ctx.Width, m.ctx.Height)
 		return sections.LoadDescribe(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext, ns, kind, name), true
+	case key.Matches(msg, m.ctx.Keys.Reveal):
+		if ref.Kind != k8s.KindSecret {
+			return nil, false
+		}
+		m.state = stateDescribeView
+		// MarkRevealed flips the title verb to "decoded" and renders a
+		// yellow banner above the body — both cues together make it hard
+		// to mistake a reveal for a default describe.
+		m.describe.Reset("Secret", ref.Name, ref.Namespace)
+		m.describe.MarkRevealed()
+		m.describe.SetSize(m.ctx.Width, m.ctx.Height)
+		return sections.LoadSecretReveal(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext, ref.Namespace, ref.Name), true
+	case key.Matches(msg, m.ctx.Keys.Edit):
+		kind := editKindFor(ref)
+		if kind == "" {
+			return nil, false
+		}
+		return sections.LoadEditYAML(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext, ref.Namespace, kind, ref.Name), true
 	}
 	return nil, false
+}
+
+// editKindFor maps a tree NodeRef onto the kind string the k8s.Edit primitives
+// accept, or "" if the row isn't editable. This is the single gate that
+// keeps `E` a no-op on rows where edits would either be rejected by the API
+// (Pod, Node, PV) or are conceptually wrong (folds, contexts).
+func editKindFor(ref sections.NodeRef) string {
+	switch ref.Kind {
+	case k8s.KindApp:
+		// CronJob/Job stay out — Jobs are effectively immutable once created
+		// and CronJob edits aren't covered by tests yet.
+		switch ref.SubKind {
+		case k8s.AppKindDeployment:
+			return k8s.EditKindDeployment
+		case k8s.AppKindStatefulSet:
+			return k8s.EditKindStatefulSet
+		case k8s.AppKindDaemonSet:
+			return k8s.EditKindDaemonSet
+		}
+	case k8s.KindConfigMap:
+		return k8s.EditKindConfigMap
+	case k8s.KindSecret:
+		return k8s.EditKindSecret
+	case k8s.KindService:
+		return k8s.EditKindService
+	case k8s.KindIngress:
+		return k8s.EditKindIngress
+	case k8s.KindPVC:
+		return k8s.EditKindPVC
+	}
+	return ""
+}
+
+// startEditor writes the loaded YAML to a 0600 tempfile, stashes the session
+// on the model, and returns a tea.Cmd that suspends the program and runs
+// $EDITOR. tea.ExecProcess takes care of releasing/restoring the terminal,
+// so this is the cleanest visual handoff we can give the user.
+func (m *Model) startEditor(msg sections.EditYAMLLoadedMsg) tea.Cmd {
+	f, err := os.CreateTemp("", fmt.Sprintf("safina-edit-%s-*.yaml", msg.Name))
+	if err != nil {
+		return m.raiseError(fmt.Sprintf("edit: %v", err))
+	}
+	if _, err := f.WriteString(msg.YAML); err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return m.raiseError(fmt.Sprintf("edit: %v", err))
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(f.Name())
+		return m.raiseError(fmt.Sprintf("edit: %v", err))
+	}
+	// 0600: tempfile may carry decoded Secret values until apply/cancel.
+	_ = os.Chmod(f.Name(), 0o600)
+
+	m.edit = &editSession{
+		Kind:      msg.Kind,
+		Namespace: msg.Namespace,
+		Name:      msg.Name,
+		TempPath:  f.Name(),
+		Orig:      []byte(msg.YAML),
+	}
+	editor, args := resolveEditor()
+	args = append(args, f.Name())
+	c := exec.CommandContext(m.ctx.Background, editor, args...)
+	return tea.ExecProcess(c, func(err error) tea.Msg {
+		return sections.EditorExitedMsg{Err: err}
+	})
+}
+
+// resolveEditor mirrors kubectl's editor discovery: KUBE_EDITOR > VISUAL >
+// EDITOR > vi. Splitting on whitespace lets users encode flag arguments in
+// the env var (e.g. `EDITOR="code --wait"`).
+func resolveEditor() (string, []string) {
+	for _, env := range []string{"KUBE_EDITOR", "VISUAL", "EDITOR"} {
+		if v := os.Getenv(env); v != "" {
+			fields := splitFields(v)
+			if len(fields) > 0 {
+				return fields[0], fields[1:]
+			}
+		}
+	}
+	return "vi", nil
+}
+
+// splitFields is a tiny whitespace splitter, kept inline so we don't pull in
+// strings.Fields just for one call site.
+func splitFields(s string) []string {
+	var out []string
+	start := -1
+	for i, r := range s {
+		switch r {
+		case ' ', '\t':
+			if start >= 0 {
+				out = append(out, s[start:i])
+				start = -1
+			}
+		default:
+			if start < 0 {
+				start = i
+			}
+		}
+	}
+	if start >= 0 {
+		out = append(out, s[start:])
+	}
+	return out
+}
+
+// handleEditorExit is the post-editor branch point: read the tempfile back,
+// decide if the user actually changed anything, and either banner (no-op,
+// parse error) or transition to the edit-confirm modal. Tempfile cleanup
+// belongs to the *next* step (apply or cancel) — we keep it around until
+// the user makes a decision so an accidental "n" doesn't lose their work.
+func (m *Model) handleEditorExit(editorErr error) tea.Cmd {
+	ed := m.edit
+	if ed == nil {
+		return nil
+	}
+	if editorErr != nil {
+		m.cleanupEdit()
+		return m.raiseError(fmt.Sprintf("editor: %v", editorErr))
+	}
+	edited, err := os.ReadFile(ed.TempPath)
+	if err != nil {
+		m.cleanupEdit()
+		return m.raiseError(fmt.Sprintf("edit: %v", err))
+	}
+	if bytes.Equal(edited, ed.Orig) {
+		m.cleanupEdit()
+		return m.raiseStatus("edit: no changes")
+	}
+	ed.Edited = edited
+	m.state = stateEditConfirm
+	return nil
+}
+
+// cleanupEdit tears down the in-flight edit session — unlinks the tempfile
+// and clears the model pointer. Safe to call multiple times.
+func (m *Model) cleanupEdit() {
+	if m.edit == nil {
+		return
+	}
+	if m.edit.TempPath != "" {
+		_ = os.Remove(m.edit.TempPath)
+	}
+	m.edit = nil
 }
 
 // actionTarget maps a NodeRef onto the (kind, namespace, name) triple that
@@ -603,10 +959,27 @@ func (m *Model) handleConfirm(msg tea.KeyPressMsg) tea.Cmd {
 				m.state = stateMain
 				return sections.RestartApp(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext, ref.Namespace, ref.SubKind, ref.Name)
 			}
+		case stateEditConfirm:
+			if m.edit == nil {
+				m.state = stateMain
+				return nil
+			}
+			ed := m.edit
+			m.edit = nil
+			m.state = stateMain
+			cmd := sections.ApplyEdit(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext, ed.Namespace, ed.Kind, ed.Name, ed.Edited)
+			// Tempfile is no longer needed; the bytes are in flight.
+			if ed.TempPath != "" {
+				_ = os.Remove(ed.TempPath)
+			}
+			return cmd
 		}
 		m.state = stateMain
 		return nil
 	case "n", "N", "esc":
+		if m.state == stateEditConfirm {
+			m.cleanupEdit()
+		}
 		m.state = stateMain
 		return nil
 	}

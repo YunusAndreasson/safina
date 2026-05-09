@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
@@ -41,6 +42,12 @@ type Children struct {
 	Pools       []k8s.NodePoolInfo
 	Nodes       []k8s.NodeInfo
 	Namespaces  []k8s.NamespaceInfo
+	ConfigMaps  []k8s.ConfigMapInfo
+	Secrets     []k8s.SecretInfo
+	Services    []k8s.ServiceInfo
+	Ingresses   []k8s.IngressInfo
+	PVCs        []k8s.PVCInfo
+	PVs         []k8s.PVInfo
 	SystemCount int      // when > 0 in an Apps root, append a synthetic SystemFold row
 	SystemNS    []string // populated alongside SystemCount
 }
@@ -75,17 +82,181 @@ type Tree struct {
 	alphaSort bool
 
 	cursor int
+
+	// metricsHist keeps a rolling buffer of recent CPU/Memory samples for
+	// each resource the tree has rendered, keyed as "kind/namespace/name".
+	// The renderer reads these to draw the inline sparkline next to the
+	// numeric value. Buffers grow over time as the root model re-pumps
+	// children at the auto-refresh interval; on the very first render the
+	// buffer has only one sample and the sparkline draws as a dim "─"
+	// until the trend has enough body to show.
+	metricsHist map[string]*metricSeries
+
+	// nsHealthCache caches a namespace's app-health rollup keyed by name.
+	// Populated whenever SetChildren delivers apps for a namespace; the
+	// renderer reads it to draw the pip on namespace rows. A namespace
+	// the user hasn't drilled into yet renders with a dim "?" pip until
+	// the cache populates.
+	nsHealthCache map[string]nsHealthSummary
+
+	// healthPulse tracks resources whose health state recently flipped.
+	// Renderers consult this to brighten / underline the row's health
+	// glyph for ~pulseDuration after the change so the operator can spot
+	// "this just went red" without scanning timestamps. Keyed by
+	// "kind/namespace/name"; the value is the pulse start timestamp.
+	healthPulse map[string]time.Time
+
+	// lastHealth records the health value last seen for each resource
+	// so SetChildren can detect a flip. Initial sightings don't pulse —
+	// the operator only cares about transitions.
+	lastHealth map[string]k8s.Health
 }
+
+// nsHealthSummary aggregates the worst app-health state and a count for
+// one namespace. Worst-of semantics match what an SRE expects from a
+// roll-up — if any app is failing the indicator is red, even if 47
+// others are healthy. Total is the app count for the optional badge.
+type nsHealthSummary struct {
+	worst k8s.Health
+	total int
+}
+
+// pulseDuration is how long a row stays in the "just-changed-health"
+// highlight after its health flipped. Chosen so a typical 5s auto-refresh
+// covers two redraws of the highlight — long enough for the operator to
+// notice the pulse without being a permanent visual nag.
+const pulseDuration = 8 * time.Second
+
+// metricSeries pairs CPU and Memory rolling buffers for a single resource.
+// We keep them together so a single map lookup yields both.
+type metricSeries struct {
+	cpu *components.MetricBuffer
+	mem *components.MetricBuffer
+}
+
+// sparkWidth is the cell count for inline metric sparklines. Four gives
+// enough body to read a trend without bloating the column on narrow
+// terminals; the numeric value sits to the right so the operator still
+// gets the absolute reading at a glance.
+const sparkWidth = 4
+
+// metricsHistCap is the per-resource sample retention. Capped so an
+// always-running tree section doesn't grow unbounded across long sessions.
+const metricsHistCap = 32
 
 // NewTree builds an empty Tree rooted at the unified root.
 func NewTree(c *tuictx.Ctx) Tree {
 	t := Tree{
-		cursorByKey: make(map[string]int),
-		cache:       make(map[string]*Children),
-		filter:      components.NewFilter(c.Theme),
+		cursorByKey:   make(map[string]int),
+		cache:         make(map[string]*Children),
+		metricsHist:   make(map[string]*metricSeries),
+		nsHealthCache: make(map[string]nsHealthSummary),
+		healthPulse:   make(map[string]time.Time),
+		lastHealth:    make(map[string]k8s.Health),
+		filter:        components.NewFilter(c.Theme),
 	}
 	t.path = []NodeRef{rootRef()}
 	return t
+}
+
+// recordHealthPulse compares a resource's new health against its last
+// known value. If they differ AND we've seen the resource before, a
+// pulse is recorded; first sightings are silent so the screen doesn't
+// light up the moment the user opens a namespace.
+func (t *Tree) recordHealthPulse(kind, namespace, name string, h k8s.Health) {
+	k := kind + "/" + namespace + "/" + name
+	prev, seen := t.lastHealth[k]
+	t.lastHealth[k] = h
+	if !seen || prev == h {
+		return
+	}
+	t.healthPulse[k] = time.Now()
+}
+
+// isPulsing reports whether a resource's health glyph should currently
+// render with the pulse-highlight style. Returns false once the pulse
+// has decayed past pulseDuration; callers don't need to clean up the
+// map themselves — entries simply go stale.
+func (t *Tree) isPulsing(kind, namespace, name string) bool {
+	ts, ok := t.healthPulse[kind+"/"+namespace+"/"+name]
+	if !ok {
+		return false
+	}
+	return time.Since(ts) < pulseDuration
+}
+
+// metricKey is the rolling-buffer map key for a resource's metric series.
+func metricKey(kind, namespace, name string) string {
+	return kind + "/" + namespace + "/" + name
+}
+
+// pushMetricSamples records the latest CPU/Memory point for a resource
+// into the rolling buffers. Called from SetChildren whenever a fresh load
+// lands so the sparkline catches up to "now". Zero-valued samples still
+// push — a zero is a real reading and reads as a dip in the trend.
+func (t *Tree) pushMetricSamples(kind, namespace, name string, cpu, mem int64) {
+	k := metricKey(kind, namespace, name)
+	s, ok := t.metricsHist[k]
+	if !ok {
+		s = &metricSeries{
+			cpu: components.NewMetricBuffer(metricsHistCap),
+			mem: components.NewMetricBuffer(metricsHistCap),
+		}
+		t.metricsHist[k] = s
+	}
+	s.cpu.Push(cpu)
+	s.mem.Push(mem)
+}
+
+// metricSeriesFor returns the rolling buffers for a resource if any have
+// been recorded. Returns nil pair when the renderer has nothing to draw.
+func (t *Tree) metricSeriesFor(kind, namespace, name string) (*components.MetricBuffer, *components.MetricBuffer) {
+	s, ok := t.metricsHist[metricKey(kind, namespace, name)]
+	if !ok {
+		return nil, nil
+	}
+	return s.cpu, s.mem
+}
+
+// Cache exposes the level cache to the command palette indexer. The
+// palette walks every cached level and builds a flat search corpus.
+// Returned map is the live store — callers must not mutate it.
+func (t *Tree) Cache() map[string]*Children { return t.cache }
+
+// NavigateTo replaces the current path with the given one and clears
+// transient view state (filter, cursor) so the user lands on the
+// selected entry. Emits a TreeFocusChangedMsg so the root model issues
+// a load if the destination level isn't already cached.
+//
+// Used by the command palette: the user picks a far-away resource via
+// fuzzy match and we drill straight there instead of forcing them to
+// pop back up and down through the tree.
+func (t *Tree) NavigateTo(path []NodeRef) tea.Cmd {
+	if len(path) == 0 {
+		return nil
+	}
+	// Save current cursor before swapping paths.
+	t.cursorByKey[t.pathKey()] = t.cursor
+	t.path = clonePath(path)
+	t.children = t.cache[t.pathKey()]
+	t.cursor = t.cursorByKey[t.pathKey()]
+	t.LoadErr = nil
+	t.filter.Clear()
+	return emit(TreeFocusChangedMsg{Path: clonePath(t.path)})
+}
+
+// SetCursorByRef positions the cursor on a row matching the supplied
+// kind/namespace/name within the current visible rows. No-op when no
+// match is found. Used after NavigateTo when the destination's parent
+// level is already loaded so the cursor lands on the picked entry
+// rather than the top of the list.
+func (t *Tree) SetCursorByRef(kind, namespace, name string) {
+	for i, r := range t.visibleRows() {
+		if r.Kind == kind && r.Namespace == namespace && r.Name == name {
+			t.cursor = i
+			return
+		}
+	}
 }
 
 func rootRef() NodeRef {
@@ -147,7 +318,8 @@ func (t *Tree) YankPayload() string {
 	switch ref.Kind {
 	case k8s.KindContext, k8s.KindNode, k8s.KindNodePool, k8s.KindNamespace:
 		return ref.Name
-	case k8s.KindApp, k8s.KindPod:
+	case k8s.KindApp, k8s.KindPod, k8s.KindService, k8s.KindConfigMap, k8s.KindIngress,
+		k8s.KindSecret, k8s.KindPVC:
 		if ref.Namespace == "" {
 			return ref.Name
 		}
@@ -233,6 +405,43 @@ func (t *Tree) SelectedPodInfo() (k8s.PodInfo, bool) {
 func (t *Tree) SetChildren(path []NodeRef, ch *Children) {
 	key := pathKeyFor(path)
 	t.cache[key] = ch
+	// Ingest any metric-bearing rows into the rolling history before the
+	// rest of SetChildren runs — even if this load was for a non-current
+	// path, the samples are still accurate and worth keeping. The history
+	// is a flat map; cardinality is bounded by the number of distinct
+	// resources the user has visited in the session.
+	if ch != nil {
+		for _, a := range ch.Apps {
+			t.pushMetricSamples(k8s.KindApp, a.Namespace, a.Name, a.CPU, a.Memory)
+			t.recordHealthPulse(k8s.KindApp, a.Namespace, a.Name, a.Health)
+		}
+		for _, p := range ch.Pods {
+			t.pushMetricSamples(k8s.KindPod, p.Namespace, p.Name, p.CPU, p.Memory)
+			t.recordHealthPulse(k8s.KindPod, p.Namespace, p.Name, k8s.PodHealth(p))
+		}
+		for _, c := range ch.Containers {
+			t.pushMetricSamples(k8s.KindContainer, c.Namespace, c.PodName+"/"+c.Name, c.CPU, c.Memory)
+		}
+		// Namespace health rollup: when a level delivers Apps, group
+		// them by namespace and record a worst-of summary per namespace.
+		// Skipping this when no apps are present keeps a stale pip from
+		// being clobbered by an unrelated load (e.g. listing PVCs).
+		if len(ch.Apps) > 0 {
+			perNS := make(map[string]nsHealthSummary, 4)
+			for _, a := range ch.Apps {
+				s, ok := perNS[a.Namespace]
+				if !ok {
+					s = nsHealthSummary{worst: k8s.HealthHealthy}
+				}
+				s.worst = s.worst.Worse(a.Health)
+				s.total++
+				perNS[a.Namespace] = s
+			}
+			for ns, s := range perNS {
+				t.nsHealthCache[ns] = s
+			}
+		}
+	}
 	if key != t.pathKey() {
 		return
 	}
@@ -559,6 +768,18 @@ func (t *Tree) renderBody(c *tuictx.Ctx, innerW, rowsAvail int) string {
 		return t.renderNodeRows(c, innerW, rowsAvail)
 	case k8s.KindNamespace:
 		return t.renderNamespaceRows(c, innerW, rowsAvail)
+	case k8s.KindConfigMap:
+		return t.renderConfigMapRows(c, innerW, rowsAvail)
+	case k8s.KindService:
+		return t.renderServiceRows(c, innerW, rowsAvail)
+	case k8s.KindIngress:
+		return t.renderIngressRows(c, innerW, rowsAvail)
+	case k8s.KindSecret:
+		return t.renderSecretRows(c, innerW, rowsAvail)
+	case k8s.KindPVC:
+		return t.renderPVCRows(c, innerW, rowsAvail)
+	case k8s.KindPV:
+		return t.renderPVRows(c, innerW, rowsAvail)
 	}
 	return th.Idle.Render("(empty)")
 }
@@ -584,10 +805,11 @@ func (t *Tree) visibleRows() []NodeRef {
 	case k8s.KindApp:
 		apps := t.filteredApps()
 		atRoot := t.Focus().Kind == k8s.KindContext
-		out := make([]NodeRef, 0, len(apps)+2)
+		out := make([]NodeRef, 0, len(apps)+6)
 		// Cluster lives at the very top of the root so the on-caller's eye
 		// lands on infra capacity first; System tucks at the bottom so it
-		// stays out of the scan path. Both are hidden once a filter is on.
+		// stays out of the scan path. Config, Secrets, Network, and Storage
+		// folds sit between Apps and System. All are hidden once a filter is on.
 		if atRoot && t.filter.Value() == "" {
 			out = append(out, NodeRef{
 				Kind:    k8s.KindClusterFold,
@@ -601,6 +823,32 @@ func (t *Tree) visibleRows() []NodeRef {
 				Kind: k8s.KindApp, SubKind: a.Kind,
 				Namespace: a.Namespace, Name: a.Name, UID: a.UID,
 				Display: a.Name, Health: a.Health,
+			})
+		}
+		if atRoot && t.filter.Value() == "" {
+			out = append(out, NodeRef{
+				Kind:    k8s.KindConfigFold,
+				Name:    "Config",
+				Display: "Config",
+				Health:  k8s.HealthUnknown,
+			})
+			out = append(out, NodeRef{
+				Kind:    k8s.KindSecretsFold,
+				Name:    "Secrets",
+				Display: "Secrets",
+				Health:  k8s.HealthUnknown,
+			})
+			out = append(out, NodeRef{
+				Kind:    k8s.KindNetworkFold,
+				Name:    "Network",
+				Display: "Network",
+				Health:  k8s.HealthUnknown,
+			})
+			out = append(out, NodeRef{
+				Kind:    k8s.KindStorageFold,
+				Name:    "Storage",
+				Display: "Storage",
+				Health:  k8s.HealthUnknown,
 			})
 		}
 		if atRoot && t.children.SystemCount > 0 && t.filter.Value() == "" {
@@ -653,6 +901,48 @@ func (t *Tree) visibleRows() []NodeRef {
 			out[i] = NodeRef{Kind: k8s.KindNamespace, Name: n.Name, Display: n.Name}
 		}
 		return out
+	case k8s.KindConfigMap:
+		cms := t.filteredConfigMaps()
+		out := make([]NodeRef, len(cms))
+		for i, cm := range cms {
+			out[i] = NodeRef{Kind: k8s.KindConfigMap, Namespace: cm.Namespace, Name: cm.Name, Display: cm.Name}
+		}
+		return out
+	case k8s.KindService:
+		svcs := t.filteredServices()
+		out := make([]NodeRef, len(svcs))
+		for i, s := range svcs {
+			out[i] = NodeRef{Kind: k8s.KindService, Namespace: s.Namespace, Name: s.Name, Display: s.Name}
+		}
+		return out
+	case k8s.KindIngress:
+		ings := t.filteredIngresses()
+		out := make([]NodeRef, len(ings))
+		for i, ing := range ings {
+			out[i] = NodeRef{Kind: k8s.KindIngress, Namespace: ing.Namespace, Name: ing.Name, Display: ing.Name}
+		}
+		return out
+	case k8s.KindSecret:
+		secrets := t.filteredSecrets()
+		out := make([]NodeRef, len(secrets))
+		for i, s := range secrets {
+			out[i] = NodeRef{Kind: k8s.KindSecret, Namespace: s.Namespace, Name: s.Name, Display: s.Name}
+		}
+		return out
+	case k8s.KindPVC:
+		pvcs := t.filteredPVCs()
+		out := make([]NodeRef, len(pvcs))
+		for i, p := range pvcs {
+			out[i] = NodeRef{Kind: k8s.KindPVC, Namespace: p.Namespace, Name: p.Name, Display: p.Name}
+		}
+		return out
+	case k8s.KindPV:
+		pvs := t.filteredPVs()
+		out := make([]NodeRef, len(pvs))
+		for i, p := range pvs {
+			out[i] = NodeRef{Kind: k8s.KindPV, Name: p.Name, Display: p.Name}
+		}
+		return out
 	}
 	return nil
 }
@@ -680,10 +970,14 @@ func (t *Tree) renderAppRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 
 	tableW := innerW - components.EdgeTotal()
 	const (
-		kW      = 1
-		hW      = 1
-		cpuW    = 6
-		memW    = 6
+		kW = 1
+		hW = 1
+		// cpuW / memW hold the sparkline (4 cells) + a single space + the
+		// numeric value (formatted to 5 cells). Slightly wider than the
+		// pre-sparkline columns; reclaimed from NAME if the terminal is
+		// tight via the loop below.
+		cpuW    = sparkWidth + 1 + 5 // 10
+		memW    = sparkWidth + 1 + 6 // 11 (mem can be "1024Mi")
 		agW     = 5
 		nameMin = 10
 	)
@@ -753,14 +1047,16 @@ func (t *Tree) renderAppRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	// Compute how many rows precede the apps slice (a Cluster sentinel
 	// occupies index 0 when present), so we can map row index → app index.
 	appOffset := 0
-	if len(rows) > 0 && rows[0].Kind == k8s.KindClusterFold {
-		appOffset = 1
+	for appOffset < len(rows) && rows[appOffset].Kind != k8s.KindApp {
+		appOffset++
 	}
 	for i := start; i < end; i++ {
 		ref := rows[i]
 		selected := i == t.cursor && t.Focused
 		bg := th.RowBgFor(i, selected)
-		if ref.Kind == k8s.KindClusterFold || ref.Kind == k8s.KindSystemFold {
+		if ref.Kind == k8s.KindClusterFold || ref.Kind == k8s.KindSystemFold ||
+			ref.Kind == k8s.KindConfigFold || ref.Kind == k8s.KindNetworkFold ||
+			ref.Kind == k8s.KindSecretsFold || ref.Kind == k8s.KindStorageFold {
 			vals := []string{
 				kindGlyph(ref.Kind, ""),
 				th.NameStrongOn(components.TruncPad(ref.Display, nW), bg),
@@ -776,7 +1072,7 @@ func (t *Tree) renderAppRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 		if ai >= 0 && ai < len(apps) {
 			a = apps[ai]
 		}
-		health := healthGlyphColored(th, a.Health, bg)
+		health := healthGlyphStyled(th, a.Health, bg, t.isPulsing(k8s.KindApp, a.Namespace, a.Name))
 		var hpaCell string
 		if a.HPA != nil {
 			hpaText := components.TruncPad(fmt.Sprintf("↕%d (%d–%d)", a.HPA.Current, a.HPA.Min, a.HPA.Max), hpaW)
@@ -795,9 +1091,10 @@ func (t *Tree) renderAppRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 		}
 		vals = append(vals, health, hpaCell)
 		if showMetrics {
+			cpuBuf, memBuf := t.metricSeriesFor(k8s.KindApp, a.Namespace, a.Name)
 			vals = append(vals,
-				th.MetaOn(k8s.FormatCPU(a.CPU), bg),
-				th.MetaOn(k8s.FormatMem(a.Memory), bg),
+				renderMetricCell(th, cpuBuf, k8s.FormatCPU(a.CPU), 5, bg),
+				renderMetricCell(th, memBuf, k8s.FormatMem(a.Memory), 6, bg),
 			)
 		}
 		vals = append(vals, ageCell)
@@ -805,6 +1102,17 @@ func (t *Tree) renderAppRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 		out = append(out, components.Row(th, vals, cols, aligns, selected, i))
 	}
 	return strings.Join(out, "\n")
+}
+
+// renderMetricCell composes one column of the metric pair: sparkline on
+// the left (gradient by relative magnitude), one-cell gap, then the
+// human-formatted value right-padded to numW. Sparkline + value share the
+// same row background so column alignment stays exact.
+func renderMetricCell(th *theme.Theme, buf *components.MetricBuffer, value string, numW int, bg lipgloss.Style) string {
+	spark := components.Sparkline(th, buf, sparkWidth)
+	val := th.MetaOn(components.TruncPad(value, numW), bg)
+	gap := bg.Render(" ")
+	return spark + gap + val
 }
 
 // distinctAppNamespaces counts the unique namespaces in the visible app list.
@@ -844,8 +1152,8 @@ func (t *Tree) renderPodRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	const (
 		kW   = 1
 		stW  = 18
-		cpuW = 6
-		memW = 7
+		cpuW = sparkWidth + 1 + 5 // sparkline + space + 5-char number
+		memW = sparkWidth + 1 + 6 // sparkline + space + 6-char number
 		rsW  = 4
 		agW  = 5
 	)
@@ -887,9 +1195,10 @@ func (t *Tree) renderPodRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 
 		vals := []string{kindGlyph(k8s.KindPod, ""), nameCell}
 		if showMetrics {
+			cpuBuf, memBuf := t.metricSeriesFor(k8s.KindPod, p.Namespace, p.Name)
 			vals = append(vals,
-				th.MetaOn(k8s.FormatCPU(p.CPU), bg),
-				th.MetaOn(k8s.FormatMem(p.Memory), bg),
+				renderMetricCell(th, cpuBuf, k8s.FormatCPU(p.CPU), 5, bg),
+				renderMetricCell(th, memBuf, k8s.FormatMem(p.Memory), 6, bg),
 			)
 		}
 		vals = append(vals, statusCell, rstCell, ageCell)
@@ -1077,6 +1386,238 @@ func (t *Tree) renderNodeRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	return strings.Join(out, "\n")
 }
 
+func (t *Tree) renderConfigMapRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
+	th := c.Theme
+	cms := t.filteredConfigMaps()
+	if len(cms) == 0 {
+		return th.Idle.Render("no configmaps")
+	}
+	tableW := innerW - components.EdgeTotal()
+	const (
+		kW   = 1
+		agW  = 5
+		keyW = 4
+	)
+	gaps := components.GapTotal(4)
+	nW := tableW - kW - keyW - agW - gaps
+	if nW < 10 {
+		nW = 10
+	}
+	cols := []int{kW, nW, keyW, agW}
+	aligns := []components.Align{components.AlignLeft, components.AlignLeft, components.AlignRight, components.AlignRight}
+	header := components.Header(th, []string{"", "NAME", "KEYS", "AGE"}, cols, aligns)
+
+	start, end := components.VisibleRange(t.cursor, len(cms), rowsAvail-1)
+	out := []string{header}
+	for i := start; i < end; i++ {
+		cm := cms[i]
+		selected := i == t.cursor && t.Focused
+		bg := th.RowBgFor(i, selected)
+		nameCell := th.NameStrongOn(components.TruncPad(cm.Name, nW), bg)
+		keysCell := th.MetaOn(fmt.Sprintf("%d", cm.Keys), bg)
+		ageCell := th.Age(cm.Age, bg)
+		out = append(out, components.Row(th,
+			[]string{kindGlyph(k8s.KindConfigMap, ""), nameCell, keysCell, ageCell},
+			cols, aligns, selected, i))
+	}
+	return strings.Join(out, "\n")
+}
+
+func (t *Tree) renderServiceRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
+	th := c.Theme
+	svcs := t.filteredServices()
+	if len(svcs) == 0 {
+		return th.Idle.Render("no services")
+	}
+	tableW := innerW - components.EdgeTotal()
+	const (
+		kW   = 1
+		agW  = 5
+		typW = 12
+		ipW  = 15
+	)
+	gaps := components.GapTotal(5)
+	nW := tableW - kW - typW - ipW - agW - gaps
+	if nW < 10 {
+		nW = 10
+	}
+	cols := []int{kW, nW, typW, ipW, agW}
+	aligns := []components.Align{components.AlignLeft, components.AlignLeft, components.AlignLeft, components.AlignLeft, components.AlignRight}
+	header := components.Header(th, []string{"", "NAME", "TYPE", "CLUSTER-IP", "AGE"}, cols, aligns)
+
+	start, end := components.VisibleRange(t.cursor, len(svcs), rowsAvail-1)
+	out := []string{header}
+	for i := start; i < end; i++ {
+		s := svcs[i]
+		selected := i == t.cursor && t.Focused
+		bg := th.RowBgFor(i, selected)
+		nameCell := th.NameStrongOn(components.TruncPad(s.Name, nW), bg)
+		typeCell := th.MetaOn(components.TruncPad(s.Type, typW), bg)
+		ipCell := th.MetaOn(components.TruncPad(s.ClusterIP, ipW), bg)
+		ageCell := th.Age(s.Age, bg)
+		out = append(out, components.Row(th,
+			[]string{kindGlyph(k8s.KindService, ""), nameCell, typeCell, ipCell, ageCell},
+			cols, aligns, selected, i))
+	}
+	return strings.Join(out, "\n")
+}
+
+func (t *Tree) renderIngressRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
+	th := c.Theme
+	ings := t.filteredIngresses()
+	if len(ings) == 0 {
+		return th.Idle.Render("no ingresses")
+	}
+	tableW := innerW - components.EdgeTotal()
+	const (
+		kW     = 1
+		agW    = 5
+		classW = 8
+	)
+	gaps := components.GapTotal(4)
+	nW := tableW - kW - classW - agW - gaps
+	if nW < 10 {
+		nW = 10
+	}
+	cols := []int{kW, nW, classW, agW}
+	aligns := []components.Align{components.AlignLeft, components.AlignLeft, components.AlignLeft, components.AlignRight}
+	header := components.Header(th, []string{"", "NAME", "CLASS", "AGE"}, cols, aligns)
+
+	start, end := components.VisibleRange(t.cursor, len(ings), rowsAvail-1)
+	out := []string{header}
+	for i := start; i < end; i++ {
+		ing := ings[i]
+		selected := i == t.cursor && t.Focused
+		bg := th.RowBgFor(i, selected)
+		nameCell := th.NameStrongOn(components.TruncPad(ing.Name, nW), bg)
+		classCell := th.MetaOn(components.TruncPad(ing.Class, classW), bg)
+		ageCell := th.Age(ing.Age, bg)
+		out = append(out, components.Row(th,
+			[]string{kindGlyph(k8s.KindIngress, ""), nameCell, classCell, ageCell},
+			cols, aligns, selected, i))
+	}
+	return strings.Join(out, "\n")
+}
+
+func (t *Tree) renderSecretRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
+	th := c.Theme
+	secrets := t.filteredSecrets()
+	if len(secrets) == 0 {
+		return th.Idle.Render("no secrets")
+	}
+	tableW := innerW - components.EdgeTotal()
+	const (
+		kW   = 1
+		agW  = 5
+		typW = 16
+		keyW = 4
+	)
+	gaps := components.GapTotal(5)
+	nW := tableW - kW - typW - keyW - agW - gaps
+	if nW < 10 {
+		nW = 10
+	}
+	cols := []int{kW, nW, typW, keyW, agW}
+	aligns := []components.Align{components.AlignLeft, components.AlignLeft, components.AlignLeft, components.AlignRight, components.AlignRight}
+	header := components.Header(th, []string{"", "NAME", "TYPE", "KEYS", "AGE"}, cols, aligns)
+
+	start, end := components.VisibleRange(t.cursor, len(secrets), rowsAvail-1)
+	out := []string{header}
+	for i := start; i < end; i++ {
+		s := secrets[i]
+		selected := i == t.cursor && t.Focused
+		bg := th.RowBgFor(i, selected)
+		nameCell := th.NameStrongOn(components.TruncPad(s.Name, nW), bg)
+		typeCell := th.MetaOn(components.TruncPad(shortSecretType(s.Type), typW), bg)
+		keysCell := th.MetaOn(fmt.Sprintf("%d", s.Keys), bg)
+		ageCell := th.Age(s.Age, bg)
+		out = append(out, components.Row(th,
+			[]string{kindGlyph(k8s.KindSecret, ""), nameCell, typeCell, keysCell, ageCell},
+			cols, aligns, selected, i))
+	}
+	return strings.Join(out, "\n")
+}
+
+func (t *Tree) renderPVCRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
+	th := c.Theme
+	pvcs := t.filteredPVCs()
+	if len(pvcs) == 0 {
+		return th.Idle.Render("no PVCs")
+	}
+	tableW := innerW - components.EdgeTotal()
+	const (
+		kW   = 1
+		agW  = 5
+		stW  = 8
+		capW = 7
+		scW  = 10
+	)
+	gaps := components.GapTotal(6)
+	nW := tableW - kW - stW - capW - scW - agW - gaps
+	if nW < 10 {
+		nW = 10
+	}
+	cols := []int{kW, nW, stW, capW, scW, agW}
+	aligns := []components.Align{components.AlignLeft, components.AlignLeft, components.AlignLeft, components.AlignRight, components.AlignLeft, components.AlignRight}
+	header := components.Header(th, []string{"", "NAME", "STATUS", "CAPACITY", "CLASS", "AGE"}, cols, aligns)
+
+	start, end := components.VisibleRange(t.cursor, len(pvcs), rowsAvail-1)
+	out := []string{header}
+	for i := start; i < end; i++ {
+		p := pvcs[i]
+		selected := i == t.cursor && t.Focused
+		bg := th.RowBgFor(i, selected)
+		nameCell := th.NameStrongOn(components.TruncPad(p.Name, nW), bg)
+		statusCell := th.StatusGlyph(p.Status, stW, bg)
+		capCell := th.MetaOn(components.TruncPad(p.Capacity, capW), bg)
+		scCell := th.MetaOn(components.TruncPad(p.StorageClass, scW), bg)
+		ageCell := th.Age(p.Age, bg)
+		out = append(out, components.Row(th,
+			[]string{kindGlyph(k8s.KindPVC, ""), nameCell, statusCell, capCell, scCell, ageCell},
+			cols, aligns, selected, i))
+	}
+	return strings.Join(out, "\n")
+}
+
+func (t *Tree) renderPVRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
+	th := c.Theme
+	pvs := t.filteredPVs()
+	if len(pvs) == 0 {
+		return th.Idle.Render("no PVs")
+	}
+	tableW := innerW - components.EdgeTotal()
+	const (
+		kW   = 1
+		agW  = 5
+		stW  = 8
+		capW = 7
+	)
+	gaps := components.GapTotal(5)
+	nW := tableW - kW - stW - capW - agW - gaps
+	if nW < 10 {
+		nW = 10
+	}
+	cols := []int{kW, nW, stW, capW, agW}
+	aligns := []components.Align{components.AlignLeft, components.AlignLeft, components.AlignLeft, components.AlignRight, components.AlignRight}
+	header := components.Header(th, []string{"", "NAME", "STATUS", "CAPACITY", "AGE"}, cols, aligns)
+
+	start, end := components.VisibleRange(t.cursor, len(pvs), rowsAvail-1)
+	out := []string{header}
+	for i := start; i < end; i++ {
+		p := pvs[i]
+		selected := i == t.cursor && t.Focused
+		bg := th.RowBgFor(i, selected)
+		nameCell := th.NameStrongOn(components.TruncPad(p.Name, nW), bg)
+		statusCell := th.StatusGlyph(p.Status, stW, bg)
+		capCell := th.MetaOn(components.TruncPad(p.Capacity, capW), bg)
+		ageCell := th.Age(p.Age, bg)
+		out = append(out, components.Row(th,
+			[]string{kindGlyph(k8s.KindPV, ""), nameCell, statusCell, capCell, ageCell},
+			cols, aligns, selected, i))
+	}
+	return strings.Join(out, "\n")
+}
+
 func (t *Tree) renderNamespaceRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	th := c.Theme
 	nss := t.filteredNamespaces()
@@ -1085,17 +1626,19 @@ func (t *Tree) renderNamespaceRows(c *tuictx.Ctx, innerW, rowsAvail int) string 
 	}
 	tableW := innerW - components.EdgeTotal()
 	const (
-		kW  = 1
-		agW = 5
+		kW   = 1
+		pipW = 1
+		cntW = 5 // "(123)" worst-case width
+		agW  = 5
 	)
-	gaps := components.GapTotal(3)
-	nW := tableW - kW - agW - gaps
+	gaps := components.GapTotal(5)
+	nW := tableW - kW - pipW - cntW - agW - gaps
 	if nW < 10 {
 		nW = 10
 	}
-	cols := []int{kW, nW, agW}
-	aligns := []components.Align{components.AlignLeft, components.AlignLeft, components.AlignRight}
-	header := components.Header(th, []string{"", "NAMESPACE", "AGE"}, cols, aligns)
+	cols := []int{kW, nW, pipW, cntW, agW}
+	aligns := []components.Align{components.AlignLeft, components.AlignLeft, components.AlignLeft, components.AlignRight, components.AlignRight}
+	header := components.Header(th, []string{"", "NAMESPACE", "", "APPS", "AGE"}, cols, aligns)
 
 	start, end := components.VisibleRange(t.cursor, len(nss), rowsAvail-1)
 	out := []string{header}
@@ -1105,11 +1648,40 @@ func (t *Tree) renderNamespaceRows(c *tuictx.Ctx, innerW, rowsAvail int) string 
 		bg := th.RowBgFor(i, selected)
 		nameCell := th.NameStrongOn(components.TruncPad(ns.Name, nW), bg)
 		ageCell := th.Age(ns.Age, bg)
+		pip, cnt := nsHealthCells(th, t.nsHealthCache[ns.Name], bg)
 		out = append(out, components.Row(th,
-			[]string{kindGlyph(k8s.KindNamespace, ""), nameCell, ageCell},
+			[]string{kindGlyph(k8s.KindNamespace, ""), nameCell, pip, cnt, ageCell},
 			cols, aligns, selected, i))
 	}
 	return strings.Join(out, "\n")
+}
+
+// nsHealthCells renders the namespace health pip + app-count cells. The
+// pip is a single-cell colored circle (● Healthy=green, Degraded/InProgress=yellow,
+// Failing=red, Unknown/uncached=dim ○) so the operator can scan a long
+// list of namespaces and spot the unhealthy one without drilling. The
+// count is dim because it's secondary to the health signal.
+func nsHealthCells(th *theme.Theme, summary nsHealthSummary, bg lipgloss.Style) (pip, count string) {
+	if summary.total == 0 {
+		// Not yet visited / no apps known — render a hollow circle so
+		// the column always has a glyph, but in the dimmest tone so it
+		// doesn't compete with the cached pips.
+		pip = bg.Foreground(th.P.Dim).Render("○")
+		count = bg.Foreground(th.P.Dim).Render("?")
+		return pip, count
+	}
+	col := th.P.Green
+	switch summary.worst {
+	case k8s.HealthFailing:
+		col = th.P.Red
+	case k8s.HealthDegraded, k8s.HealthInProgress:
+		col = th.P.Yellow
+	case k8s.HealthUnknown:
+		col = th.P.Dim
+	}
+	pip = bg.Foreground(col).Bold(true).Render("●")
+	count = bg.Foreground(th.P.Dim).Render(fmt.Sprintf("%d", summary.total))
+	return pip, count
 }
 
 // ── Filtering / sorting ──────────────────────────────────────────────
@@ -1371,6 +1943,150 @@ func (t *Tree) filteredNamespaces() []k8s.NamespaceInfo {
 	return nss
 }
 
+func (t *Tree) filteredConfigMaps() []k8s.ConfigMapInfo {
+	if t.children == nil {
+		return nil
+	}
+	cms := t.children.ConfigMaps
+	if q := t.filter.Value(); q != "" {
+		names := make([]string, len(cms))
+		for i, cm := range cms {
+			names[i] = cm.Name
+		}
+		idx := components.FuzzyMatch(q, names)
+		filtered := make([]k8s.ConfigMapInfo, 0, len(idx))
+		for _, i := range idx {
+			filtered = append(filtered, cms[i])
+		}
+		cms = filtered
+	}
+	return cms
+}
+
+func (t *Tree) filteredServices() []k8s.ServiceInfo {
+	if t.children == nil {
+		return nil
+	}
+	svcs := t.children.Services
+	if q := t.filter.Value(); q != "" {
+		names := make([]string, len(svcs))
+		for i, s := range svcs {
+			names[i] = s.Name
+		}
+		idx := components.FuzzyMatch(q, names)
+		filtered := make([]k8s.ServiceInfo, 0, len(idx))
+		for _, i := range idx {
+			filtered = append(filtered, svcs[i])
+		}
+		svcs = filtered
+	}
+	return svcs
+}
+
+func (t *Tree) filteredIngresses() []k8s.IngressInfo {
+	if t.children == nil {
+		return nil
+	}
+	ings := t.children.Ingresses
+	if q := t.filter.Value(); q != "" {
+		names := make([]string, len(ings))
+		for i, ing := range ings {
+			names[i] = ing.Name
+		}
+		idx := components.FuzzyMatch(q, names)
+		filtered := make([]k8s.IngressInfo, 0, len(idx))
+		for _, i := range idx {
+			filtered = append(filtered, ings[i])
+		}
+		ings = filtered
+	}
+	return ings
+}
+
+func (t *Tree) filteredSecrets() []k8s.SecretInfo {
+	if t.children == nil {
+		return nil
+	}
+	secrets := t.children.Secrets
+	if q := t.filter.Value(); q != "" {
+		names := make([]string, len(secrets))
+		for i, s := range secrets {
+			names[i] = s.Name
+		}
+		idx := components.FuzzyMatch(q, names)
+		filtered := make([]k8s.SecretInfo, 0, len(idx))
+		for _, i := range idx {
+			filtered = append(filtered, secrets[i])
+		}
+		secrets = filtered
+	}
+	return secrets
+}
+
+func (t *Tree) filteredPVCs() []k8s.PVCInfo {
+	if t.children == nil {
+		return nil
+	}
+	pvcs := t.children.PVCs
+	if q := t.filter.Value(); q != "" {
+		names := make([]string, len(pvcs))
+		for i, p := range pvcs {
+			names[i] = p.Name
+		}
+		idx := components.FuzzyMatch(q, names)
+		filtered := make([]k8s.PVCInfo, 0, len(idx))
+		for _, i := range idx {
+			filtered = append(filtered, pvcs[i])
+		}
+		pvcs = filtered
+	}
+	return pvcs
+}
+
+func (t *Tree) filteredPVs() []k8s.PVInfo {
+	if t.children == nil {
+		return nil
+	}
+	pvs := t.children.PVs
+	if q := t.filter.Value(); q != "" {
+		names := make([]string, len(pvs))
+		for i, p := range pvs {
+			names[i] = p.Name
+		}
+		idx := components.FuzzyMatch(q, names)
+		filtered := make([]k8s.PVInfo, 0, len(idx))
+		for _, i := range idx {
+			filtered = append(filtered, pvs[i])
+		}
+		pvs = filtered
+	}
+	return pvs
+}
+
+func shortSecretType(t string) string {
+	switch t {
+	case "Opaque":
+		return "Opaque"
+	case "kubernetes.io/tls":
+		return "TLS"
+	case "kubernetes.io/dockerconfigjson":
+		return "docker"
+	case "kubernetes.io/basic-auth":
+		return "basic"
+	case "kubernetes.io/ssh-auth":
+		return "SSH"
+	case "kubernetes.io/service-account-token":
+		return "sa-token"
+	case "bootstrap.kubernetes.io/token":
+		return "bootstrap"
+	default:
+		if len(t) > 16 {
+			return t[:13] + "..."
+		}
+		return t
+	}
+}
+
 func (t *Tree) firstUnhealthyIndex() int {
 	rows := t.visibleRows()
 	for i, r := range rows {
@@ -1417,6 +2133,21 @@ func (t *Tree) firstUnhealthyIndex() int {
 //                                       status dot in the STATUS column)
 //   ▾ Container    small triangle    → "drill-disclosure: a piece inside"
 //
+// Family D — Resource folds (squared operators, U+229E–U+22A1)
+//   ⊟ SystemFold   squared minus  → "collapsed: hidden namespaces"
+//   ⊞ ConfigFold   squared plus   → "settings to add"
+//   ⊠ SecretsFold  squared times  → "sealed / X-ed out"
+//   ⊜ NetworkFold  squared equal  → "balanced flow / connections"
+//   ⊡ StorageFold  squared dot    → "block of data"
+//
+// Family E — Resource leaves (single-cell, no emoji)
+//   ▤ ConfigMap    horizontal-fill   → "rows of key=value"
+//   ⌧ Secret       X in rectangle    → "redacted"
+//   ◫ Service      vertical-bar box  → "endpoint port"
+//   ⇥ Ingress      arrow to bar      → "into the cluster"
+//   ◰ PVC          quadrant top-left → "claim issued"
+//   ◲ PV           quadrant bot-right→ "volume bound"  (◰→◲ encodes binding)
+//
 // Indicator (not a kind):
 //   ↕ HPA badge — vertical scale arrows on App rows
 
@@ -1460,23 +2191,63 @@ func kindGlyph(kind, sub string) string {
 		return "⊟"
 	case k8s.KindHPA:
 		return "↕"
+	case k8s.KindConfigFold:
+		return "⊞"
+	case k8s.KindSecretsFold:
+		return "⊠"
+	case k8s.KindNetworkFold:
+		return "⊜"
+	case k8s.KindStorageFold:
+		return "⊡"
+	case k8s.KindConfigMap:
+		return "▤"
+	case k8s.KindSecret:
+		return "⌧"
+	case k8s.KindService:
+		return "◫"
+	case k8s.KindIngress:
+		return "⇥"
+	case k8s.KindPVC:
+		return "◰"
+	case k8s.KindPV:
+		return "◲"
 	}
 	return ""
 }
 
 func healthGlyphColored(t *theme.Theme, h k8s.Health, bg lipgloss.Style) string {
+	return healthGlyphStyled(t, h, bg, false)
+}
+
+// healthGlyphStyled renders the health glyph with optional "pulse"
+// emphasis. When pulsing is true, the glyph reverses its colors so the
+// row visually pops on the next redraw — this is how we surface a
+// just-changed-state without animation infrastructure. The pulse decays
+// after pulseDuration; the renderer simply asks the tree if a row is
+// pulsing on each frame.
+func healthGlyphStyled(t *theme.Theme, h k8s.Health, bg lipgloss.Style, pulsing bool) string {
 	g := h.Glyph()
+	var style lipgloss.Style
 	switch h {
 	case k8s.HealthHealthy:
-		return bg.Foreground(t.P.Green).Bold(true).Render(g)
+		style = bg.Foreground(t.P.Green).Bold(true)
 	case k8s.HealthDegraded:
-		return bg.Foreground(t.P.Yellow).Bold(true).Render(g)
+		style = bg.Foreground(t.P.Yellow).Bold(true)
 	case k8s.HealthFailing:
-		return bg.Foreground(t.P.Red).Bold(true).Render(g)
+		style = bg.Foreground(t.P.Red).Bold(true)
 	case k8s.HealthInProgress:
-		return bg.Foreground(t.P.Blue).Bold(true).Render(g)
+		style = bg.Foreground(t.P.Blue).Bold(true)
+	default:
+		style = bg.Foreground(t.P.Dim)
 	}
-	return bg.Foreground(t.P.Dim).Render(g)
+	if pulsing {
+		// Reverse-video keeps the same hue family but inverts fg/bg so
+		// the glyph reads as "this just changed". Adds Blink for
+		// terminals that honor it (most modern ones don't, which is
+		// fine — the reverse alone is enough signal).
+		style = style.Reverse(true).Blink(true)
+	}
+	return style.Render(g)
 }
 
 func shortKind(kind string) string {

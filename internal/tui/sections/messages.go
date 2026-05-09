@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	tea "charm.land/bubbletea/v2"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/yunus/safina/internal/debug"
@@ -64,6 +65,24 @@ type DescribeLoadedMsg struct {
 	Err  error
 }
 
+// EditYAMLLoadedMsg is the result of fetching a resource's YAML for editing.
+// The root model handles it by writing YAML to a tempfile and launching
+// $EDITOR via tea.ExecProcess. Kind/Namespace/Name echo back so the next
+// step (apply) doesn't have to re-resolve them from the tree.
+type EditYAMLLoadedMsg struct {
+	Kind, Namespace, Name string
+	YAML                  string
+	Err                   error
+}
+
+// EditorExitedMsg is emitted by the tea.ExecProcess callback once the user
+// closes their editor. The model reads the tempfile, diffs it against the
+// original, and either banners (no changes / parse error) or transitions to
+// the edit-confirm modal.
+type EditorExitedMsg struct {
+	Err error
+}
+
 // ShellSessionStartedMsg is emitted once the remotecommand stream has been
 // dialed. The Shell section attaches to Session and the root pump-loop
 // starts pulling ShellEvent messages from it.
@@ -102,6 +121,57 @@ func LoadDescribe(ctx context.Context, mgr *k8s.Manager, contextName, namespace,
 		}
 		yaml, err := k8s.DescribeYAML(ctx, client.Clientset, namespace, kind, name)
 		return DescribeLoadedMsg{YAML: yaml, Err: err}
+	}
+}
+
+// LoadSecretReveal fetches a Secret with its Data base64-decoded into
+// stringData and emits a DescribeLoadedMsg so the describe modal can render
+// it like any other YAML dump. Bound to the Reveal key on Secret rows.
+func LoadSecretReveal(ctx context.Context, mgr *k8s.Manager, contextName, namespace, name string) tea.Cmd {
+	return func() tea.Msg {
+		done := debug.Track("k8s.reveal_secret", "context", contextName, "namespace", namespace, "name", name)
+		defer done()
+		client, ok := mgr.GetClient(contextName)
+		if !ok {
+			return DescribeLoadedMsg{Err: fmt.Errorf("context not found")}
+		}
+		yaml, err := k8s.RevealSecretYAML(ctx, client.Clientset, namespace, name)
+		return DescribeLoadedMsg{YAML: yaml, Err: err}
+	}
+}
+
+// LoadEditYAML fetches the YAML for a resource the user wants to edit. The
+// payload (with namespace/kind/name echoed back) is delivered as
+// EditYAMLLoadedMsg; the root model then writes it to a tempfile and hands
+// off to $EDITOR.
+func LoadEditYAML(ctx context.Context, mgr *k8s.Manager, contextName, namespace, kind, name string) tea.Cmd {
+	return func() tea.Msg {
+		done := debug.Track("k8s.edit_load", "context", contextName, "kind", kind, "name", name)
+		defer done()
+		client, ok := mgr.GetClient(contextName)
+		if !ok {
+			return EditYAMLLoadedMsg{Kind: kind, Namespace: namespace, Name: name, Err: fmt.Errorf("context not found")}
+		}
+		yaml, err := k8s.BuildEditableYAML(ctx, client.Clientset, kind, namespace, name)
+		return EditYAMLLoadedMsg{Kind: kind, Namespace: namespace, Name: name, YAML: yaml, Err: err}
+	}
+}
+
+// ApplyEdit submits an edited YAML buffer back to the API server. Wraps the
+// k8s.ApplyEditedYAML call in the standard ActionDoneMsg envelope so the
+// success/error banner pipeline lights up exactly like every other mutating
+// action (delete, scale, restart, …).
+func ApplyEdit(ctx context.Context, mgr *k8s.Manager, contextName, namespace, kind, name string, data []byte) tea.Cmd {
+	return func() tea.Msg {
+		subject := fmt.Sprintf("%s/%s", kind, name)
+		done := debug.Track("k8s.edit_apply", "context", contextName, "kind", kind, "name", name)
+		defer done()
+		client, ok := mgr.GetClient(contextName)
+		if !ok {
+			return ActionDoneMsg{Action: "edit", Subject: subject, Err: fmt.Errorf("context not found")}
+		}
+		err := k8s.ApplyEditedYAML(ctx, client.Clientset, kind, namespace, name, data)
+		return ActionDoneMsg{Action: "edit", Subject: subject, Err: err}
 	}
 }
 
@@ -234,9 +304,109 @@ func loadChildren(ctx context.Context, cs kubernetes.Interface, path []NodeRef, 
 			return nil, err
 		}
 		return &Children{Kind: k8s.KindPod, Pods: pods}, nil
+
+	case k8s.KindConfigFold:
+		_, sysNs, err := k8s.ListAndClassifyNamespaces(ctx, cs, cfgUser, cfgSystem)
+		if err != nil {
+			return nil, err
+		}
+		sysSet := make(map[string]bool, len(sysNs))
+		for _, n := range sysNs {
+			sysSet[n.Name] = true
+		}
+		cms, err := k8s.ListConfigMapsAcrossNamespaces(ctx, cs, allNamespaces(ctx, cs, sysSet))
+		if err != nil {
+			return nil, err
+		}
+		return &Children{Kind: k8s.KindConfigMap, ConfigMaps: cms}, nil
+
+	case k8s.KindSecretsFold:
+		_, sysNs, err := k8s.ListAndClassifyNamespaces(ctx, cs, cfgUser, cfgSystem)
+		if err != nil {
+			return nil, err
+		}
+		sysSet := make(map[string]bool, len(sysNs))
+		for _, n := range sysNs {
+			sysSet[n.Name] = true
+		}
+		secrets, err := k8s.ListSecretsAcrossNamespaces(ctx, cs, allNamespaces(ctx, cs, sysSet))
+		if err != nil {
+			return nil, err
+		}
+		return &Children{Kind: k8s.KindSecret, Secrets: secrets}, nil
+
+	case k8s.KindNetworkFold:
+		_, sysNs, err := k8s.ListAndClassifyNamespaces(ctx, cs, cfgUser, cfgSystem)
+		if err != nil {
+			return nil, err
+		}
+		sysSet := make(map[string]bool, len(sysNs))
+		for _, n := range sysNs {
+			sysSet[n.Name] = true
+		}
+		svcs, err := k8s.ListServicesAcrossNamespaces(ctx, cs, allNamespaces(ctx, cs, sysSet))
+		if err != nil {
+			return nil, err
+		}
+		return &Children{Kind: k8s.KindService, Services: svcs}, nil
+
+	case k8s.KindService:
+		ings, err := k8s.ListIngressesForService(ctx, cs, focus.Namespace, focus.Name)
+		if err != nil {
+			return nil, err
+		}
+		return &Children{Kind: k8s.KindIngress, Ingresses: ings}, nil
+
+	case k8s.KindStorageFold:
+		_, sysNs, err := k8s.ListAndClassifyNamespaces(ctx, cs, cfgUser, cfgSystem)
+		if err != nil {
+			return nil, err
+		}
+		sysSet := make(map[string]bool, len(sysNs))
+		for _, n := range sysNs {
+			sysSet[n.Name] = true
+		}
+		pvcs, err := k8s.ListPVCsAcrossNamespaces(ctx, cs, allNamespaces(ctx, cs, sysSet))
+		if err != nil {
+			return nil, err
+		}
+		return &Children{Kind: k8s.KindPVC, PVCs: pvcs}, nil
+
+	case k8s.KindPVC:
+		// Get the PVC to find its bound volume name, then fetch the PV.
+		pvc, err := cs.CoreV1().PersistentVolumeClaims(focus.Namespace).Get(ctx, focus.Name, metav1.GetOptions{})
+		if err != nil {
+			return nil, err
+		}
+		pv, err := k8s.GetPVByName(ctx, cs, pvc.Spec.VolumeName)
+		if err != nil {
+			return nil, err
+		}
+		pvs := []k8s.PVInfo{}
+		if pv != nil {
+			pvs = append(pvs, *pv)
+		}
+		return &Children{Kind: k8s.KindPV, PVs: pvs}, nil
 	}
 
 	return &Children{Kind: focus.Kind}, nil
+}
+
+// allNamespaces returns user namespace names — every namespace whose name
+// is NOT in sysSet. Used to scope resource listing (ConfigMaps, Secrets,
+// Services, PVCs) to the user-visible bucket.
+func allNamespaces(ctx context.Context, cs kubernetes.Interface, sysSet map[string]bool) []string {
+	list, err := cs.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(list.Items))
+	for _, ns := range list.Items {
+		if !sysSet[ns.Name] {
+			names = append(names, ns.Name)
+		}
+	}
+	return names
 }
 
 func DeletePod(ctx context.Context, mgr *k8s.Manager, contextName, namespace, podName string) tea.Cmd {

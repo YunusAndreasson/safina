@@ -30,6 +30,14 @@ type Map struct {
 	// last assistant turn) to the system clipboard via OSC52 — works over
 	// SSH and through tmux/zellij with passthrough.
 	Yank key.Binding
+	// Reveal decodes a Secret's data and shows it in the describe modal.
+	// Scoped to Secret rows; harmless elsewhere. Separate from Describe
+	// because `d` should keep kubectl's (base64) semantics.
+	Reveal key.Binding
+	// Edit opens the resource's YAML in $EDITOR. After the editor exits,
+	// the diff is gated behind a y/n confirm before any write hits the
+	// cluster. Uppercase E because lowercase e is taken by Events.
+	Edit key.Binding
 }
 
 // Default builds the standard keybindings.
@@ -56,9 +64,11 @@ func Default() Map {
 		Refresh:  key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "refresh")),
 		Filter:   key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),
 
-		FirstFail: key.NewBinding(key.WithKeys("F"), key.WithHelp("F", "first fail")),
-		Ask:       key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "ask")),
+		FirstFail: key.NewBinding(key.WithKeys("F"), key.WithHelp("F", "next fail")),
+		Ask:       key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "ask (tab also)")),
 		Yank:      key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "copy")),
+		Reveal:    key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "reveal secret")),
+		Edit:      key.NewBinding(key.WithKeys("E"), key.WithHelp("E", "edit yaml")),
 	}
 }
 
@@ -69,8 +79,53 @@ func (k Map) ShortHelp() []key.Binding {
 func (k Map) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.Enter, k.Back},
-		{k.Filter, k.FirstFail, k.Logs, k.Events, k.Describe, k.Shell},
+		{k.Filter, k.FirstFail, k.Logs, k.Events, k.Describe, k.Reveal, k.Edit, k.Shell},
 		{k.Scale, k.Rollback, k.Restart, k.Delete, k.Refresh},
 		{k.Ask, k.Yank, k.Help, k.Quit},
+	}
+}
+
+// Group is one labeled column in the `?` help modal — keys clustered by
+// what the operator is *trying to do* rather than by code structure.
+type Group struct {
+	Title string
+	// Bindings render as `key  desc` rows. Use these for keys that already
+	// have meaningful Help() text on the binding itself.
+	Bindings []key.Binding
+	// Pairs render the same way as Bindings but skip the binding lookup —
+	// useful for universal nav (↑↓/↵/esc) whose binding helps are blank by
+	// design (the short footer omits them; the help modal teaches them).
+	Pairs []KeyPair
+}
+
+// KeyPair is a (key-glyph, description) tuple for keys that don't carry a
+// description on the binding itself — universal nav, mostly.
+type KeyPair struct {
+	Key  string
+	Desc string
+}
+
+// Groups returns the help-modal layout. The intent: an operator scanning
+// the modal sees three columns (inspect / change / meta) and lands on the
+// verb they want by category, not by letter-hunting through 20 entries.
+func (k Map) Groups() []Group {
+	return []Group{
+		{
+			Title:    "inspect",
+			Bindings: []key.Binding{k.Describe, k.Logs, k.Events, k.Reveal, k.Shell, k.FirstFail},
+		},
+		{
+			Title:    "change",
+			Bindings: []key.Binding{k.Restart, k.Scale, k.Rollback, k.Edit, k.Delete},
+		},
+		{
+			Title: "meta",
+			Pairs: []KeyPair{
+				{Key: "↑↓", Desc: "navigate"},
+				{Key: "↵", Desc: "drill / confirm"},
+				{Key: "esc", Desc: "back / close"},
+			},
+			Bindings: []key.Binding{k.Filter, k.Refresh, k.Ask, k.Yank, k.Help, k.Quit},
+		},
 	}
 }

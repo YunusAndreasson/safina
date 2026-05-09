@@ -33,6 +33,16 @@ const (
 	KindNodePool    = "NodePool"
 	KindNode        = "Node"
 	KindHPA         = "HPA"
+	KindConfigFold  = "ConfigFold"  // synthetic row → ConfigMaps
+	KindSecretsFold = "SecretsFold" // synthetic row → Secrets
+	KindNetworkFold = "NetworkFold" // synthetic row → Services
+	KindStorageFold = "StorageFold" // synthetic row → PVCs
+	KindConfigMap   = "ConfigMap"
+	KindSecret      = "Secret"
+	KindService     = "Service"
+	KindIngress     = "Ingress"
+	KindPVC         = "PVC"
+	KindPV          = "PV"
 )
 
 // Underlying k8s kinds embedded inside an App row.
@@ -174,6 +184,65 @@ type NodePoolInfo struct {
 	PodsCurrent int32
 	PodsMax     int32
 	Health      Health
+}
+
+// ConfigMapInfo is a row for a single ConfigMap.
+type ConfigMapInfo struct {
+	Name      string
+	Namespace string
+	Keys      int
+	Age       string
+}
+
+// ServiceInfo is a row for a single Service.
+type ServiceInfo struct {
+	Name      string
+	Namespace string
+	Type      string // ClusterIP, NodePort, LoadBalancer
+	ClusterIP string
+	Ports     string // "80/TCP,443/TCP"
+	Age       string
+}
+
+// IngressInfo is a row for a single Ingress.
+type IngressInfo struct {
+	Name      string
+	Namespace string
+	Hosts     string // "foo.example.com,bar.example.com"
+	Class     string // e.g. "nginx"
+	Age       string
+}
+
+// SecretInfo is a row for a single Secret.
+type SecretInfo struct {
+	Name      string
+	Namespace string
+	Type      string // Opaque, kubernetes.io/tls, etc.
+	Keys      int
+	Age       string
+}
+
+// PVCInfo is a row for a single PersistentVolumeClaim.
+type PVCInfo struct {
+	Name         string
+	Namespace    string
+	Status       string // Bound, Pending, Lost
+	Capacity     string // "10Gi"
+	VolumeName   string // bound PV name
+	StorageClass string
+	Age          string
+}
+
+// PVInfo is a row for a single PersistentVolume (cluster-scoped).
+type PVInfo struct {
+	Name         string
+	Capacity     string // "10Gi"
+	Status       string // Bound, Available, Released, Failed
+	Claim        string // "namespace/name" if bound
+	StorageClass string
+	AccessModes  string // "RWO,ROX,RWX"
+	Reclaim      string // Retain, Delete, Recycle
+	Age          string
 }
 
 // ── Namespace classification ─────────────────────────────────────────

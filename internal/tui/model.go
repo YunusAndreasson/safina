@@ -38,7 +38,48 @@ const (
 	stateRollbackConfirm
 	stateRestartConfirm
 	stateShellView
+	stateEditConfirm
+	statePalette
 )
+
+// editSession holds the in-flight YAML-edit lifecycle: the original bytes,
+// the user's edited bytes, and the resource identity so the apply step can
+// be issued without re-resolving from the (possibly re-scrolled) tree.
+type editSession struct {
+	Kind, Namespace, Name string
+	TempPath              string
+	Orig, Edited          []byte
+}
+
+// LineDiffStat returns a "+A −B" summary for the confirm modal. Counts are
+// the symmetric difference of the two line multisets — line moves count as
+// both an add and a remove, which matches what an operator expects from a
+// text-level "what changed" prompt.
+func (s *editSession) LineDiffStat() (added, removed int) {
+	if s == nil {
+		return 0, 0
+	}
+	count := func(b []byte) map[string]int {
+		m := make(map[string]int)
+		for _, l := range strings.Split(strings.TrimRight(string(b), "\n"), "\n") {
+			m[l]++
+		}
+		return m
+	}
+	a := count(s.Orig)
+	bn := count(s.Edited)
+	for line, c := range bn {
+		if d := c - a[line]; d > 0 {
+			added += d
+		}
+	}
+	for line, c := range a {
+		if d := c - bn[line]; d > 0 {
+			removed += d
+		}
+	}
+	return added, removed
+}
 
 // Model is the root Bubble Tea model. It composes the feature sections and
 // owns the modal/state machine on top of them. The contexts panel is gone:
@@ -54,6 +95,7 @@ type Model struct {
 	events   sections.Events
 	describe sections.Describe
 	shell    sections.Shell
+	palette  sections.Palette
 
 	// claudeSvc is the long-lived bridge to the user's `claude` CLI. One
 	// per safina process; subsequent turns resume the same conversation.
@@ -106,6 +148,11 @@ type Model struct {
 	// main to surface CLI-flag mistakes (e.g. --context=does-not-exist)
 	// without spilling a stderr line into the user's scrollback.
 	startupBanner string
+
+	// edit holds the active YAML-edit session between $EDITOR exit and the
+	// y/n confirm. nil at all other times. Cleanup (tempfile unlink) is the
+	// model's responsibility on every exit path.
+	edit *editSession
 }
 
 // NewModel constructs the root model. Caller must follow up with SetContexts
@@ -156,6 +203,7 @@ func NewModel(mgr *k8s.Manager, cfg *config.AppConfig) Model {
 		events:     sections.NewEvents(c),
 		describe:   sections.NewDescribe(c),
 		shell:      sections.NewShell(c),
+		palette:    sections.NewPalette(),
 		claudeSvc:  svc,
 		state:      stateMain,
 		help:       hp,

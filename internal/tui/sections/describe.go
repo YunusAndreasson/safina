@@ -29,8 +29,9 @@ type Describe struct {
 	vp     viewport.Model
 	filter components.Filter
 
-	loading bool
-	err     error
+	loading  bool
+	err      error
+	revealed bool // true when this is a Secret reveal — adds a "decoded" cue
 
 	theme *theme.Theme
 
@@ -61,8 +62,17 @@ func (s *Describe) Reset(kind, name, namespace string) {
 	s.filter.Close()
 	s.loading = true
 	s.err = nil
+	s.revealed = false
 	s.vp.SetContent("")
 	s.vp.GotoTop()
+}
+
+// MarkRevealed flips the modal into "decoded" mode — the title leads with
+// "decoded" and a yellow banner above the YAML body warns that values are
+// shown in plaintext. Call this after Reset when opening a Secret reveal.
+func (s *Describe) MarkRevealed() {
+	s.revealed = true
+	s.recomputeViewportSize()
 }
 
 // FilterActive lets the root tell whether `y` should yank the YAML or fall
@@ -97,7 +107,11 @@ func (s *Describe) SetYAML(yaml string, err error) {
 }
 
 func (s *Describe) Title() string {
-	return fmt.Sprintf("describe · %s · %s", strings.ToLower(s.kind), s.name)
+	verb := "describe"
+	if s.revealed {
+		verb = "decoded"
+	}
+	return fmt.Sprintf("%s · %s · %s", verb, strings.ToLower(s.kind), s.name)
 }
 
 func (s *Describe) SetSize(termW, termH int) {
@@ -108,7 +122,12 @@ func (s *Describe) SetSize(termW, termH int) {
 func (s *Describe) recomputeViewportSize() {
 	inner := components.PanelContentWidth(s.modalW)
 	s.vp.SetWidth(inner)
-	h := s.modalH - components.ModalChrome
+	chrome := components.ModalChrome
+	if s.revealed {
+		// One extra row for the "decoded" banner above the body.
+		chrome++
+	}
+	h := s.modalH - chrome
 	if h < 3 {
 		h = 3
 	}
@@ -400,10 +419,21 @@ func (s *Describe) handleFilterKey(km tea.KeyPressMsg) (tea.Cmd, bool) {
 
 // View renders the describe modal centered over the standard backdrop.
 func (s *Describe) View(c *tuictx.Ctx, termW, termH int) string {
+	body := s.viewportBlock(c)
+	if s.revealed {
+		// Yellow banner reinforces what the title already says — the modal
+		// is showing decoded plaintext, not the kubectl base64 default.
+		// Non-styled left padding keeps it flush with the YAML keys below.
+		banner := lipgloss.NewStyle().
+			Foreground(c.Theme.P.Yellow).
+			Bold(true).
+			Render("⚠ decoded — values are plaintext")
+		body = lipgloss.JoinVertical(lipgloss.Left, banner, body)
+	}
 	return components.RenderModal(c.Theme, termW, termH, s.modalW, s.modalH,
 		s.Title(),
 		s.renderStatusRow(c),
-		s.viewportBlock(c),
+		body,
 		s.renderKeysRow(),
 	)
 }
