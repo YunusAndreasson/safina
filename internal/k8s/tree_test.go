@@ -202,9 +202,9 @@ func TestContainerHealth(t *testing.T) {
 
 func TestPodHealth(t *testing.T) {
 	tests := []struct {
-		name   string
-		pod    PodInfo
-		want   Health
+		name string
+		pod  PodInfo
+		want Health
 	}{
 		{"running_healthy", PodInfo{Status: "Running", Restarts: 0}, HealthHealthy},
 		{"running_high_restarts_degraded", PodInfo{Status: "Running", Restarts: 10}, HealthDegraded},
@@ -303,11 +303,11 @@ func TestClassifyNamespaces(t *testing.T) {
 		user, sys := ClassifyNamespaces([]string{"z-ns", "a-ns"}, nil, nil)
 		if len(user) > 0 {
 			for i := 1; i < len(user); i++ {
-				assert.True(t, user[i-1].Name < user[i].Name, "user not sorted: %v", namesTo(user))
+				assert.Less(t, user[i-1].Name, user[i].Name, "user not sorted: %v", namesTo(user))
 			}
 		}
 		for i := 1; i < len(sys); i++ {
-			assert.True(t, sys[i-1].Name < sys[i].Name, "system not sorted: %v", namesTo(sys))
+			assert.Less(t, sys[i-1].Name, sys[i].Name, "system not sorted: %v", namesTo(sys))
 		}
 	})
 }
@@ -326,9 +326,11 @@ func TestJobToApp(t *testing.T) {
 	t.Run("completed_job", func(t *testing.T) {
 		completions := int32(1)
 		j := batchv1.Job{
-			ObjectMeta: metav1.ObjectMeta{Name: "done", Namespace: "ns",
-				CreationTimestamp: metav1.NewTime(time.Now())},
-			Spec: batchv1.JobSpec{Completions: &completions},
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "done", Namespace: "ns",
+				CreationTimestamp: metav1.NewTime(time.Now()),
+			},
+			Spec:   batchv1.JobSpec{Completions: &completions},
 			Status: batchv1.JobStatus{Succeeded: 1},
 		}
 		a := jobToApp(j, nil, nil)
@@ -340,8 +342,10 @@ func TestJobToApp(t *testing.T) {
 	t.Run("failed_job", func(t *testing.T) {
 		completions := int32(3)
 		j := batchv1.Job{
-			ObjectMeta: metav1.ObjectMeta{Name: "fail", Namespace: "ns",
-				CreationTimestamp: metav1.NewTime(time.Now())},
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "fail", Namespace: "ns",
+				CreationTimestamp: metav1.NewTime(time.Now()),
+			},
 			Spec:   batchv1.JobSpec{Completions: &completions},
 			Status: batchv1.JobStatus{Succeeded: 1, Failed: 2},
 		}
@@ -352,8 +356,10 @@ func TestJobToApp(t *testing.T) {
 	t.Run("active_job_with_no_succeeded", func(t *testing.T) {
 		completions := int32(5)
 		j := batchv1.Job{
-			ObjectMeta: metav1.ObjectMeta{Name: "active", Namespace: "ns",
-				CreationTimestamp: metav1.NewTime(time.Now())},
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "active", Namespace: "ns",
+				CreationTimestamp: metav1.NewTime(time.Now()),
+			},
 			Spec:   batchv1.JobSpec{Completions: &completions},
 			Status: batchv1.JobStatus{Active: 3, Succeeded: 0},
 		}
@@ -365,8 +371,10 @@ func TestJobToApp(t *testing.T) {
 
 	t.Run("no_completions_no_parallelism_defaults_desired_to_1", func(t *testing.T) {
 		j := batchv1.Job{
-			ObjectMeta: metav1.ObjectMeta{Name: "simple", Namespace: "ns",
-				CreationTimestamp: metav1.NewTime(time.Now())},
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "simple", Namespace: "ns",
+				CreationTimestamp: metav1.NewTime(time.Now()),
+			},
 			Spec:   batchv1.JobSpec{}, // neither Completions nor Parallelism set
 			Status: batchv1.JobStatus{Active: 1},
 		}
@@ -377,8 +385,10 @@ func TestJobToApp(t *testing.T) {
 	t.Run("suspended_cronjob_is_degraded", func(t *testing.T) {
 		suspend := true
 		c := batchv1.CronJob{
-			ObjectMeta: metav1.ObjectMeta{Name: "suspended", Namespace: "ns",
-				CreationTimestamp: metav1.NewTime(time.Now())},
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "suspended", Namespace: "ns",
+				CreationTimestamp: metav1.NewTime(time.Now()),
+			},
 			Spec:   batchv1.CronJobSpec{Suspend: &suspend},
 			Status: batchv1.CronJobStatus{},
 		}
@@ -389,8 +399,10 @@ func TestJobToApp(t *testing.T) {
 	t.Run("cronjob_with_last_schedule", func(t *testing.T) {
 		lastTime := metav1.NewTime(time.Now().Add(-1 * time.Hour))
 		c := batchv1.CronJob{
-			ObjectMeta: metav1.ObjectMeta{Name: "cj", Namespace: "ns",
-				CreationTimestamp: metav1.NewTime(time.Now())},
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "cj", Namespace: "ns",
+				CreationTimestamp: metav1.NewTime(time.Now()),
+			},
 			Spec:   batchv1.CronJobSpec{},
 			Status: batchv1.CronJobStatus{LastScheduleTime: &lastTime},
 		}
@@ -403,7 +415,7 @@ func TestJobToApp(t *testing.T) {
 // ── jobOwnedByCronJob ─────────────────────────────────────────────────
 
 func TestJobOwnedByCronJob(t *testing.T) {
-	uid := metav1.NewTime(time.Now()).Time.Format("20060102")
+	uid := metav1.NewTime(time.Now()).Format("20060102")
 	j := batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			OwnerReferences: []metav1.OwnerReference{
@@ -789,7 +801,7 @@ func TestDetectNodePool(t *testing.T) {
 
 func TestNodeRoles(t *testing.T) {
 	empty := corev1.Node{}
-	assert.Equal(t, "", nodeRoles(empty))
+	assert.Empty(t, nodeRoles(empty))
 
 	master := corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
@@ -867,8 +879,8 @@ func TestAggregateForSelector(t *testing.T) {
 		},
 	}
 	metrics := map[string]ResourceUsage{
-		"ns/p1": {CPU: 100, Memory: 1000},
-		"ns/p2": {CPU: 200, Memory: 2000},
+		"ns/p1":       {CPU: 100, Memory: 1000},
+		"ns/p2":       {CPU: 200, Memory: 2000},
 		"other-ns/p3": {CPU: 999, Memory: 9999},
 	}
 	sel := &metav1.LabelSelector{MatchLabels: map[string]string{"app": "nginx"}}
@@ -979,8 +991,10 @@ func TestMakeContainerInfo_WithMetrics(t *testing.T) {
 func TestDaemonSetToApp_UnavailableIsDegraded(t *testing.T) {
 	now := time.Now()
 	d := appsv1.DaemonSet{
-		ObjectMeta: metav1.ObjectMeta{Name: "ds", Namespace: "ns",
-			CreationTimestamp: metav1.NewTime(now)},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "ds", Namespace: "ns",
+			CreationTimestamp: metav1.NewTime(now),
+		},
 		Spec: appsv1.DaemonSetSpec{
 			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "ds"}},
 		},

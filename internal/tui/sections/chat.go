@@ -196,8 +196,8 @@ func (c *Chat) Cursor() *tea.Cursor {
 	if cur == nil {
 		return nil
 	}
-	cur.Position.X += c.panelX + 1 // +1 for the panel's left border
-	cur.Position.Y += c.panelY + c.inputYInPanel
+	cur.X += c.panelX + 1 // +1 for the panel's left border
+	cur.Y += c.panelY + c.inputYInPanel
 	return cur
 }
 

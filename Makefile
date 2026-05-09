@@ -1,4 +1,4 @@
-.PHONY: build install dev clean test
+.PHONY: build install dev clean test lint lint-fix fmt
 
 BINARY_NAME = safina
 BUILD_DIR = bin
@@ -24,3 +24,9 @@ tidy:
 
 lint:
 	golangci-lint run ./...
+
+lint-fix:
+	golangci-lint run --fix ./...
+
+fmt:
+	golangci-lint fmt ./...

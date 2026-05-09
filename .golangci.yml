@@ -1,0 +1,34 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - copyloopvar
+    - durationcheck
+    - errorlint
+    - fatcontext
+    - gosec
+    - nilerr
+    - nilnesserr
+    - noctx
+    - testifylint
+    - usetesting
+
+  settings:
+    gosec:
+      excludes:
+        - G104   # errcheck already covers unchecked errors
+        - G109   # strconv.Atoi to int32 — guarded by input validation
+        - G115   # integer overflow conversions — practically safe ranges
+        - G204   # subprocess — expected for Claude CLI invocation
+        - G301   # os.MkdirAll 0755 is standard
+        - G302   # os.OpenFile 0644 for debug log is standard
+        - G304   # file inclusion — expected for config file reading
+        - G306   # os.WriteFile 0644 is standard for config files
+        - G307   # defer Close — handled by errcheck
+        - G703   # path traversal — expected for config/test files
+
+formatters:
+  enable:
+    - gofumpt

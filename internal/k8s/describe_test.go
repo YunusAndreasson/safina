@@ -15,7 +15,7 @@ import (
 func TestDescribeYAML_Deployment(t *testing.T) {
 	replicas := int32(3)
 	dep := &appsv1.Deployment{
-		TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
+		TypeMeta:   metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
 		ObjectMeta: metav1.ObjectMeta{Name: "myapp", Namespace: "ns"},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
@@ -49,7 +49,7 @@ func TestDescribeYAML_Pod(t *testing.T) {
 func TestDescribeYAML_UnsupportedKind(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	yaml, err := DescribeYAML(context.Background(), cs, "ns", "CronJob", "cj")
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Empty(t, yaml)
 	assert.Contains(t, err.Error(), "unsupported kind")
 }

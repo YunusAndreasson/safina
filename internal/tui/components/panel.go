@@ -9,14 +9,8 @@ import (
 	"github.com/yunus/safina/internal/tui/theme"
 )
 
-// rowPad is the breathing room each row paints inside the panel border, on
-// each side. It's part of the row so a selected row's background fills
-// edge-to-edge with no visible gap against the border.
-const rowPad = 1
-
 // PanelContentWidth returns the usable width inside the panel (excluding the
-// border) — i.e. the width Rows must occupy. The row's own left/right pad
-// (rowPad) is included; sections must subtract 2*rowPad when sizing columns.
+// border) — i.e. the width Rows must occupy.
 func PanelContentWidth(w int) int {
 	cw := w - 2
 	if cw < 1 {

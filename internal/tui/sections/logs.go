@@ -118,9 +118,7 @@ func (l *Logs) recomputeViewportSize() {
 // follow.
 func (l *Logs) Append(s string) {
 	wasAtBottom := l.vp.AtBottom()
-	for _, line := range strings.Split(s, "\n") {
-		l.lines = append(l.lines, line)
-	}
+	l.lines = append(l.lines, strings.Split(s, "\n")...)
 	l.recomputeFilter()
 	l.refreshContent()
 	if l.follow && wasAtBottom {

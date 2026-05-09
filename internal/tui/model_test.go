@@ -179,8 +179,8 @@ func TestClearBannerMsg_MatchingEpochClears(t *testing.T) {
 
 func TestBannerEpoch_OldTimerDoesNotWipeNewBanner(t *testing.T) {
 	m := setupModel()
-	m.raiseBanner("first", false)   // epoch=1
-	m.raiseBanner("second", false)  // epoch=2
+	m.raiseBanner("first", false)  // epoch=1
+	m.raiseBanner("second", false) // epoch=2
 
 	// Simulate old timer firing (epoch=1)
 	m.Update(clearBannerMsg{epoch: 1})
@@ -319,4 +319,3 @@ func TestHandleScaleInput_EscCancels(t *testing.T) {
 	assert.Nil(t, cmd)
 	assert.Equal(t, stateMain, m.state)
 }
-

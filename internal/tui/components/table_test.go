@@ -17,10 +17,10 @@ import (
 func TestHeader_WidthMatchesSpec(t *testing.T) {
 	th := theme.Default()
 	cases := []struct {
-		name    string
-		labels  []string
-		widths  []int
-		aligns  []Align
+		name   string
+		labels []string
+		widths []int
+		aligns []Align
 	}{
 		{
 			name:   "containers_header_with_middle_dot",

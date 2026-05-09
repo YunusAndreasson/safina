@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestSaveLoadRoundtrip tests Save + Load with the default config path.
@@ -20,24 +21,24 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 	origData, _ := os.ReadFile(cfgPath)
 	defer func() {
 		if origData != nil {
-			os.WriteFile(cfgPath, origData, 0644)
+			_ = os.WriteFile(cfgPath, origData, 0o644)
 		} else {
-			os.Remove(cfgPath)
+			_ = os.Remove(cfgPath)
 		}
 	}()
 
 	cfg := &AppConfig{
-		LastCluster:   "prod-cluster",
-		LastNamespace: "default",
-		UserNamespaces: []string{"my-app", "staging"},
+		LastCluster:      "prod-cluster",
+		LastNamespace:    "default",
+		UserNamespaces:   []string{"my-app", "staging"},
 		SystemNamespaces: []string{"kube-system"},
 	}
 
 	err = Save(cfg)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	loaded, err := Load()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, loaded)
 	assert.Equal(t, "prod-cluster", loaded.LastCluster)
 	assert.Equal(t, "default", loaded.LastNamespace)
@@ -48,7 +49,7 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 func TestLoad_ReturnsEmptyConfigOnMissing(t *testing.T) {
 	// Load() on missing config returns empty config, no error
 	cfg, err := Load()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, cfg)
 	// LastCluster may be empty or have previous value; either is fine as long
 	// as Load() doesn't crash
@@ -63,18 +64,18 @@ func TestSave_ZeroValueConfig(t *testing.T) {
 	origData, _ := os.ReadFile(cfgPath)
 	defer func() {
 		if origData != nil {
-			os.WriteFile(cfgPath, origData, 0644)
+			_ = os.WriteFile(cfgPath, origData, 0o644)
 		} else {
-			os.Remove(cfgPath)
+			_ = os.Remove(cfgPath)
 		}
 	}()
 
 	// Save empty/zero config
 	err = Save(&AppConfig{})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	loaded, err := Load()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, loaded)
 }
 
@@ -85,14 +86,14 @@ func TestSave_NilConfig(t *testing.T) {
 
 func TestConfigPath_ReturnsPath(t *testing.T) {
 	path, err := ConfigPath()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Contains(t, path, ".safina")
 	assert.Contains(t, path, "config.yaml")
 }
 
 func TestConfigDir_ReturnsDir(t *testing.T) {
 	dir, err := ConfigDir()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Contains(t, dir, ".safina")
 }
 
@@ -106,21 +107,21 @@ func TestSave_UsesJSONTags(t *testing.T) {
 	origData, _ := os.ReadFile(cfgPath)
 	defer func() {
 		if origData != nil {
-			os.WriteFile(cfgPath, origData, 0644)
+			_ = os.WriteFile(cfgPath, origData, 0o644)
 		} else {
-			os.Remove(cfgPath)
+			_ = os.Remove(cfgPath)
 		}
 	}()
 
 	cfg := &AppConfig{
-		LastCluster:   "staging",
+		LastCluster:    "staging",
 		UserNamespaces: []string{"app1"},
 	}
 	err = Save(cfg)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	data, err := os.ReadFile(cfgPath)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	content := string(data)
 	assert.Contains(t, content, "lastCluster", "should use camelCase JSON tag")
 	assert.NotContains(t, content, "LastCluster", "should NOT use Go struct field name")
@@ -137,18 +138,18 @@ func TestLoad_EmptyUserConfigIsNotSystem(t *testing.T) {
 	origData, _ := os.ReadFile(cfgPath)
 	defer func() {
 		if origData != nil {
-			os.WriteFile(cfgPath, origData, 0644)
+			_ = os.WriteFile(cfgPath, origData, 0o644)
 		} else {
-			os.Remove(cfgPath)
+			_ = os.Remove(cfgPath)
 		}
 	}()
 
 	cfg := &AppConfig{UserNamespaces: nil, SystemNamespaces: nil}
 	err = Save(cfg)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	data, err := os.ReadFile(cfgPath)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	// Neither field should appear in output when nil
 	content := string(data)
 	assert.NotContains(t, content, "userNamespaces")
@@ -158,6 +159,6 @@ func TestLoad_EmptyUserConfigIsNotSystem(t *testing.T) {
 func TestConfigDir_SymlinkSafe(t *testing.T) {
 	// Just verify ConfigDir returns an absolute-ish path
 	dir, err := ConfigDir()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.True(t, filepath.IsAbs(dir), "config dir should be absolute")
 }

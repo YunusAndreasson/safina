@@ -119,6 +119,7 @@ func (t *Tree) PushContext(name string) tea.Cmd {
 
 // pathKey serializes the path stack to a stable string for cache + cursor.
 func (t *Tree) pathKey() string { return pathKeyFor(t.path) }
+
 func pathKeyFor(p []NodeRef) string {
 	parts := make([]string, len(p))
 	for i, r := range p {
@@ -975,15 +976,6 @@ func (t *Tree) renderContainerRows(c *tuictx.Ctx, innerW, rowsAvail int) string 
 	return strings.Join(out, "\n")
 }
 
-func anyNonRegular(cs []k8s.ContainerInfo) bool {
-	for _, c := range cs {
-		if c.Kind != "regular" {
-			return true
-		}
-	}
-	return false
-}
-
 func anyContainerMetrics(cs []k8s.ContainerInfo) bool {
 	for _, c := range cs {
 		if c.CPU > 0 || c.Memory > 0 {
@@ -1387,77 +1379,6 @@ func (t *Tree) firstUnhealthyIndex() int {
 		}
 	}
 	return t.cursor
-}
-
-// ── Lookup helpers (for breadcrumb summary line) ─────────────────────
-
-func (t *Tree) findApp(ref NodeRef) (k8s.AppInfo, bool) {
-	// The focus is the parent — the App is in the parent's level cache.
-	if len(t.path) < 2 {
-		return k8s.AppInfo{}, false
-	}
-	parentKey := pathKeyFor(t.path[:len(t.path)-1])
-	parent := t.cache[parentKey]
-	if parent == nil {
-		return k8s.AppInfo{}, false
-	}
-	for _, a := range parent.Apps {
-		if a.UID == ref.UID && a.Name == ref.Name {
-			return a, true
-		}
-	}
-	return k8s.AppInfo{}, false
-}
-
-func (t *Tree) findPod(ref NodeRef) (k8s.PodInfo, bool) {
-	if len(t.path) < 2 {
-		return k8s.PodInfo{}, false
-	}
-	parentKey := pathKeyFor(t.path[:len(t.path)-1])
-	parent := t.cache[parentKey]
-	if parent == nil {
-		return k8s.PodInfo{}, false
-	}
-	for _, p := range parent.Pods {
-		if p.Name == ref.Name && p.Namespace == ref.Namespace {
-			return p, true
-		}
-	}
-	return k8s.PodInfo{}, false
-}
-
-func (t *Tree) findPool(ref NodeRef) (k8s.NodePoolInfo, bool) {
-	if len(t.path) < 2 {
-		return k8s.NodePoolInfo{}, false
-	}
-	parentKey := pathKeyFor(t.path[:len(t.path)-1])
-	parent := t.cache[parentKey]
-	if parent == nil {
-		return k8s.NodePoolInfo{}, false
-	}
-	for _, p := range parent.Pools {
-		if p.Name == ref.Name {
-			return p, true
-		}
-	}
-	return k8s.NodePoolInfo{}, false
-}
-
-func (t *Tree) findNode(ref NodeRef) (k8s.NodeInfo, bool) {
-	if len(t.path) < 2 {
-		return k8s.NodeInfo{}, false
-	}
-	parentKey := pathKeyFor(t.path[:len(t.path)-1])
-	parent := t.cache[parentKey]
-	if parent == nil {
-		return k8s.NodeInfo{}, false
-	}
-	for _, n := range parent.Nodes {
-		if n.Name == ref.Name {
-			return n, true
-		}
-	}
-	return k8s.NodeInfo{}, false
 }
 
 // ── Glyphs ───────────────────────────────────────────────────────────

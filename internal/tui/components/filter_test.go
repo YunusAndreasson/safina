@@ -47,7 +47,7 @@ func TestFilter_Clear(t *testing.T) {
 	assert.Equal(t, "some-query", f.Value())
 
 	f.Clear()
-	assert.Equal(t, "", f.Value())
+	assert.Empty(t, f.Value())
 }
 
 func TestFilter_HandleKeyEsc(t *testing.T) {

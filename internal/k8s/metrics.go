@@ -130,11 +130,11 @@ type nodeMetric struct {
 func ListNodeMetrics(ctx context.Context, cs kubernetes.Interface) (map[string]ResourceUsage, error) {
 	raw, err := cs.CoreV1().RESTClient().Get().AbsPath("/apis/metrics.k8s.io/v1beta1/nodes").DoRaw(ctx)
 	if err != nil {
-		return nil, nil
+		return nil, nil //nolint:nilerr // silent-degrade: metrics-server unavailable
 	}
 	var list nodeMetricsList
 	if err := json.Unmarshal(raw, &list); err != nil {
-		return nil, nil
+		return nil, nil //nolint:nilerr // silent-degrade: unparseable response
 	}
 	out := make(map[string]ResourceUsage, len(list.Items))
 	for _, n := range list.Items {

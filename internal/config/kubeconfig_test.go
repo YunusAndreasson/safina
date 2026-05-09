@@ -49,7 +49,7 @@ func TestLoadKubeConfig_EmptyPath(t *testing.T) {
 
 func TestLoadKubeConfig_InvalidPath(t *testing.T) {
 	cfg, err := LoadKubeConfig("/nonexistent/path/that/does/not/exist")
-	assert.Error(t, err, "non-existent path should error")
+	require.Error(t, err, "non-existent path should error")
 	assert.Nil(t, cfg)
 }
 
@@ -102,7 +102,7 @@ users:
 func TestLoadKubeConfig_EmptyFile(t *testing.T) {
 	path := writeTempKubeconfig(t, "")
 	cfg, err := LoadKubeConfig(path)
-	assert.Error(t, err, "empty kubeconfig should error")
+	require.Error(t, err, "empty kubeconfig should error")
 	assert.Nil(t, cfg)
 }
 
@@ -173,7 +173,7 @@ func TestResolveKubeconfigPath_Default(t *testing.T) {
 func writeTempKubeconfig(t *testing.T, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "kubeconfig")
-	err := os.WriteFile(path, []byte(content), 0644)
+	err := os.WriteFile(path, []byte(content), 0o644)
 	require.NoError(t, err)
 	return path
 }

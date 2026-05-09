@@ -292,7 +292,7 @@ func isYAMLNumber(s string) bool {
 // Quoting nuance: inside double quotes a backslash escapes the next byte, so
 // `"a\":b": value` is one quoted key terminated at index 6, not at index 2.
 // Single-quoted YAML strings don't use backslash escapes (they use doubled
-// `''` to embed a quote, which our toggle naturally handles by flipping off
+// `”` to embed a quote, which our toggle naturally handles by flipping off
 // then back on).
 func findKeyColon(s string) int {
 	dq := false

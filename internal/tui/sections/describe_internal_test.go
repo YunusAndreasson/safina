@@ -14,16 +14,16 @@ func TestFindKeyColon(t *testing.T) {
 	}{
 		{"", -1},
 		{"key: value", 3},
-		{"key:", 3},                 // colon at EOL
-		{"key:value", -1},           // no space after colon → not a separator
+		{"key:", 3},       // colon at EOL
+		{"key:value", -1}, // no space after colon → not a separator
 		{"image: registry:5000/x", 5},
 		{"url: http://example.com", 3},
-		{`"key": value`, 5},          // quoted key
-		{`'key': value`, 5},          // single-quoted key
-		{`'a:b': value`, 5},          // colon inside single quotes
-		{`"a:b": value`, 5},          // colon inside double quotes
-		{`"#hash": value`, 7},        // hash inside double quotes
-		{"# pure comment", -1},       // no colon at all
+		{`"key": value`, 5},    // quoted key
+		{`'key': value`, 5},    // single-quoted key
+		{`'a:b': value`, 5},    // colon inside single quotes
+		{`"a:b": value`, 5},    // colon inside double quotes
+		{`"#hash": value`, 7},  // hash inside double quotes
+		{"# pure comment", -1}, // no colon at all
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {

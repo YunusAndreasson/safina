@@ -109,7 +109,7 @@ func startSession(parent context.Context, executor remotecommand.Executor) *Shel
 
 	go func() {
 		defer close(events)
-		defer stdinR.Close()
+		defer func() { _ = stdinR.Close() }()
 
 		err := executor.StreamWithContext(streamCtx, remotecommand.StreamOptions{
 			Stdin:             stdinR,

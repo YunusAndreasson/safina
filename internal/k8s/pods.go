@@ -108,7 +108,7 @@ func StreamPodContainerLogs(ctx context.Context, cs kubernetes.Interface, namesp
 		ch <- PodLogEvent{Err: err, Done: true}
 		return
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	buf := make([]byte, 4096)
 	for {

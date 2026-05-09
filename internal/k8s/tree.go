@@ -326,7 +326,6 @@ func ListAppsInNamespaces(ctx context.Context, cs kubernetes.Interface, namespac
 	// Fan out one goroutine per namespace × kind.
 	var wg sync.WaitGroup
 	for _, ns := range namespaces {
-		ns := ns
 		wg.Add(6)
 
 		go func() {

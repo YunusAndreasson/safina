@@ -41,14 +41,14 @@ func Load() (*AppConfig, error) {
 	cfg := &AppConfig{}
 	path, err := ConfigPath()
 	if err != nil {
-		return cfg, nil
+		return cfg, nil //nolint:nilerr // return empty config when home dir unavailable
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return cfg, nil
+		return cfg, nil //nolint:nilerr // return empty config when file missing
 	}
 	if err := yaml.Unmarshal(data, cfg); err != nil {
-		return cfg, nil
+		return cfg, nil //nolint:nilerr // return empty config when YAML corrupt
 	}
 	return cfg, nil
 }
@@ -61,7 +61,7 @@ func Save(cfg *AppConfig) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	path, err := ConfigPath()
@@ -72,5 +72,5 @@ func Save(cfg *AppConfig) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	return os.WriteFile(path, data, 0o644)
 }

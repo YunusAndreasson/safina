@@ -17,8 +17,8 @@ func TestRefreshColor_Bands(t *testing.T) {
 		{"", "dim"},
 		{"5", "dim"}, // too short for unit
 		{"abc", "dim"},
-		{"-5s", "dim"},     // sign is invalid digit, falls to dim
-		{"5s", "fgfade"},   // fresh
+		{"-5s", "dim"},   // sign is invalid digit, falls to dim
+		{"5s", "fgfade"}, // fresh
 		{"0s", "fgfade"},
 		{"6s", "yellow"}, // boundary
 		{"14s", "yellow"},
