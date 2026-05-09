@@ -1,0 +1,179 @@
+package config
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+const minimalKubeconfig = `apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    server: https://example.com
+  name: test-cluster
+contexts:
+- context:
+    cluster: test-cluster
+    user: test-user
+  name: test-context
+current-context: test-context
+users:
+- name: test-user
+  user:
+    token: fake-token
+`
+
+func TestLoadKubeConfig_Valid(t *testing.T) {
+	path := writeTempKubeconfig(t, minimalKubeconfig)
+	cfg, err := LoadKubeConfig(path)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	assert.Len(t, cfg.Contexts, 1)
+	assert.Contains(t, cfg.Contexts, "test-context")
+	assert.Equal(t, "test-context", cfg.CurrentContext)
+}
+
+func TestLoadKubeConfig_EmptyPath(t *testing.T) {
+	// Setting explicitPath="" with no KUBECONFIG env and no home dir
+	// could fail. This tests the error path gracefully.
+	// We can't easily control os.UserHomeDir(), so we just verify
+	// it doesn't panic.
+	_, err := LoadKubeConfig("")
+	// May error (no kubeconfig path resolved) — that's fine
+	_ = err
+}
+
+func TestLoadKubeConfig_InvalidPath(t *testing.T) {
+	cfg, err := LoadKubeConfig("/nonexistent/path/that/does/not/exist")
+	assert.Error(t, err, "non-existent path should error")
+	assert.Nil(t, cfg)
+}
+
+func TestLoadKubeConfig_MultiFileMerge(t *testing.T) {
+	config1 := `apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    server: https://cluster1.example.com
+  name: cluster-1
+contexts:
+- context:
+    cluster: cluster-1
+    user: user-1
+  name: context-1
+current-context: context-1
+users:
+- name: user-1
+  user:
+    token: token-1
+`
+	config2 := `apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    server: https://cluster2.example.com
+  name: cluster-2
+contexts:
+- context:
+    cluster: cluster-2
+    user: user-2
+  name: context-2
+users:
+- name: user-2
+  user:
+    token: token-2
+`
+
+	path1 := writeTempKubeconfig(t, config1)
+	path2 := writeTempKubeconfig(t, config2)
+	mergedPath := path1 + string(os.PathListSeparator) + path2
+
+	cfg, err := LoadKubeConfig(mergedPath)
+	require.NoError(t, err)
+	assert.Len(t, cfg.Contexts, 2, "both configs should be merged")
+	assert.Contains(t, cfg.Contexts, "context-1")
+	assert.Contains(t, cfg.Contexts, "context-2")
+}
+
+func TestLoadKubeConfig_EmptyFile(t *testing.T) {
+	path := writeTempKubeconfig(t, "")
+	cfg, err := LoadKubeConfig(path)
+	assert.Error(t, err, "empty kubeconfig should error")
+	assert.Nil(t, cfg)
+}
+
+func TestListContexts(t *testing.T) {
+	cfg, err := LoadKubeConfig(writeTempKubeconfig(t, minimalKubeconfig))
+	require.NoError(t, err)
+
+	contexts := ListContexts(cfg)
+	require.Len(t, contexts, 1)
+	assert.Equal(t, "test-context", contexts[0].Name)
+	assert.Equal(t, "test-cluster", contexts[0].Cluster)
+	assert.Equal(t, "test-user", contexts[0].User)
+}
+
+func TestListContexts_Sorted(t *testing.T) {
+	multiCfg := `apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    server: https://example.com
+  name: cluster
+contexts:
+- context:
+    cluster: cluster
+    user: user
+  name: zebra
+- context:
+    cluster: cluster
+    user: user
+  name: alpha
+- context:
+    cluster: cluster
+    user: user
+  name: delta
+current-context: alpha
+users:
+- name: user
+  user:
+    token: token
+`
+	cfg, err := LoadKubeConfig(writeTempKubeconfig(t, multiCfg))
+	require.NoError(t, err)
+
+	contexts := ListContexts(cfg)
+	require.Len(t, contexts, 3)
+	assert.Equal(t, "alpha", contexts[0].Name)
+	assert.Equal(t, "delta", contexts[1].Name)
+	assert.Equal(t, "zebra", contexts[2].Name)
+}
+
+func TestListContexts_EmptyConfig(t *testing.T) {
+	contexts := ListContexts(nil)
+	assert.Empty(t, contexts)
+}
+
+func TestResolveKubeconfigPath_Explicit(t *testing.T) {
+	got := resolveKubeconfigPath("/custom/path")
+	assert.Equal(t, "/custom/path", got)
+}
+
+func TestResolveKubeconfigPath_Default(t *testing.T) {
+	// When no explicit path or env var, should use ~/.kube/config
+	got := resolveKubeconfigPath("")
+	assert.Contains(t, got, ".kube")
+	assert.Contains(t, got, "config")
+}
+
+func writeTempKubeconfig(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "kubeconfig")
+	err := os.WriteFile(path, []byte(content), 0644)
+	require.NoError(t, err)
+	return path
+}

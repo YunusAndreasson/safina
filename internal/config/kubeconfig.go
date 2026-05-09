@@ -74,6 +74,9 @@ func LoadKubeConfig(explicitPath string) (*clientcmdapi.Config, error) {
 }
 
 func ListContexts(raw *clientcmdapi.Config) []ContextInfo {
+	if raw == nil {
+		return nil
+	}
 	contexts := make([]ContextInfo, 0, len(raw.Contexts))
 	for name, ctx := range raw.Contexts {
 		contexts = append(contexts, ContextInfo{

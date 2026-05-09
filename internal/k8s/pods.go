@@ -43,6 +43,18 @@ func podToInfo(p corev1.Pod) PodInfo {
 				break
 			}
 		}
+		if cs.State.Terminated != nil {
+			reason := cs.State.Terminated.Reason
+			if reason == "OOMKilled" || reason == "Error" {
+				status = reason
+				break
+			}
+		}
+	}
+	// Surface Evicted pods explicitly — p.Status.Phase is "Failed" but the
+	// Reason field carries the more actionable "Evicted" label.
+	if p.Status.Reason == "Evicted" {
+		status = "Evicted"
 	}
 	// Terminating wins over everything else: a pod the kubelet is tearing
 	// down isn't going to recover from a crash loop, and the operator's

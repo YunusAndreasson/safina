@@ -295,7 +295,8 @@ func windowTitleFor(crumbs []components.Crumb) string {
 	}
 	t := "safina · " + strings.Join(parts, " · ")
 	if len(t) > max {
-		t = t[:max-1] + "…"
+		// Account for the 3-byte UTF-8 ellipsis character.
+		t = t[:max-3] + "…"
 	}
 	return t
 }

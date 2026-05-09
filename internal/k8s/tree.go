@@ -530,7 +530,7 @@ func daemonSetToApp(d appsv1.DaemonSet, pods []corev1.Pod, metrics map[string]Re
 	if d.Spec.Selector != nil {
 		a.CPU, a.Memory = aggregateForSelector(d.Namespace, d.Spec.Selector, pods, metrics)
 	}
-	a.Health = classifyWorkloadHealth(ready, desired, false)
+	a.Health = classifyWorkloadHealth(ready, desired, d.Status.NumberUnavailable > 0)
 	return a
 }
 
@@ -558,6 +558,12 @@ func jobToApp(j batchv1.Job, pods []corev1.Pod, metrics map[string]ResourceUsage
 	desired := int32PtrVal(j.Spec.Completions)
 	if desired == 0 {
 		desired = int32PtrVal(j.Spec.Parallelism)
+	}
+	// Kubernetes defaults Completions to 1 for simple one-off jobs.
+	// When both Completions and Parallelism are nil, desired is 0, producing
+	// a nonsensical "1/0" display. Default to 1 in that case.
+	if desired == 0 {
+		desired = 1
 	}
 	ready := j.Status.Succeeded
 	if ready == 0 {
@@ -802,7 +808,12 @@ func podsByOwnerUID(ctx context.Context, cs kubernetes.Interface, namespace stri
 		}
 		out = append(out, info)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	sort.Slice(out, func(i, j int) bool {
+		if PodHealth(out[i]) != PodHealth(out[j]) {
+			return PodHealth(out[i]) < PodHealth(out[j])
+		}
+		return out[i].Name < out[j].Name
+	})
 	return out, nil
 }
 

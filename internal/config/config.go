@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -53,6 +54,9 @@ func Load() (*AppConfig, error) {
 }
 
 func Save(cfg *AppConfig) error {
+	if cfg == nil {
+		return fmt.Errorf("config is nil")
+	}
 	dir, err := ConfigDir()
 	if err != nil {
 		return err
