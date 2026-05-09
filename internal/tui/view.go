@@ -286,7 +286,15 @@ func (m *Model) contextualShortHelp() []key.Binding {
 		// At the cluster picker, ↵ to drill in is the only thing to teach.
 		return append([]key.Binding{k.Enter}, tail...)
 	case k8s.KindApp:
-		head = append(head, k.Describe, k.Logs, k.Events, k.Restart)
+		head = append(head, k.Describe, k.Logs, k.Events)
+		// Restart is only wired for Deployment/StatefulSet/DaemonSet;
+		// CronJob/Job don't accept a rolling-restart, so we drop the
+		// hint there rather than tease a verb that's a no-op.
+		if ref.SubKind == k8s.AppKindDeployment ||
+			ref.SubKind == k8s.AppKindStatefulSet ||
+			ref.SubKind == k8s.AppKindDaemonSet {
+			head = append(head, k.Restart)
+		}
 		if ref.SubKind == k8s.AppKindDeployment || ref.SubKind == k8s.AppKindStatefulSet {
 			head = append(head, k.Scale)
 		}

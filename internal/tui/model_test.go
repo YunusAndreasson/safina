@@ -365,6 +365,54 @@ func TestEditKindFor(t *testing.T) {
 	assert.Empty(t, editKindFor(sections.NodeRef{Kind: k8s.KindNode}))
 }
 
+func TestActionTarget(t *testing.T) {
+	cases := []struct {
+		name     string
+		ref      sections.NodeRef
+		wantKind string
+		wantNS   string
+		wantName string
+	}{
+		// Apps return their k8s subkind so DescribeYAML/Events get the
+		// real API kind name (Deployment / StatefulSet / …).
+		{"deployment", sections.NodeRef{Kind: k8s.KindApp, SubKind: k8s.AppKindDeployment, Namespace: "ns", Name: "api"}, "Deployment", "ns", "api"},
+		{"statefulset", sections.NodeRef{Kind: k8s.KindApp, SubKind: k8s.AppKindStatefulSet, Namespace: "ns", Name: "db"}, "StatefulSet", "ns", "db"},
+		{"daemonset", sections.NodeRef{Kind: k8s.KindApp, SubKind: k8s.AppKindDaemonSet, Namespace: "ns", Name: "agent"}, "DaemonSet", "ns", "agent"},
+		{"cronjob", sections.NodeRef{Kind: k8s.KindApp, SubKind: k8s.AppKindCronJob, Namespace: "ns", Name: "nightly"}, "CronJob", "ns", "nightly"},
+		{"job", sections.NodeRef{Kind: k8s.KindApp, SubKind: k8s.AppKindJob, Namespace: "ns", Name: "migrate"}, "Job", "ns", "migrate"},
+
+		{"pod", sections.NodeRef{Kind: k8s.KindPod, Namespace: "ns", Name: "p"}, "Pod", "ns", "p"},
+		{"node", sections.NodeRef{Kind: k8s.KindNode, Name: "n1"}, "Node", "", "n1"},
+		{"namespace", sections.NodeRef{Kind: k8s.KindNamespace, Name: "shop"}, "Namespace", "", "shop"},
+
+		// Leaf resources — these were silently broken before. Verify
+		// they now translate to the expected k8s API kinds.
+		{"configmap", sections.NodeRef{Kind: k8s.KindConfigMap, Namespace: "ns", Name: "cfg"}, "ConfigMap", "ns", "cfg"},
+		{"secret", sections.NodeRef{Kind: k8s.KindSecret, Namespace: "ns", Name: "tls"}, "Secret", "ns", "tls"},
+		{"service", sections.NodeRef{Kind: k8s.KindService, Namespace: "ns", Name: "api"}, "Service", "ns", "api"},
+		{"ingress", sections.NodeRef{Kind: k8s.KindIngress, Namespace: "ns", Name: "web"}, "Ingress", "ns", "web"},
+		{"pvc", sections.NodeRef{Kind: k8s.KindPVC, Namespace: "ns", Name: "data"}, "PersistentVolumeClaim", "ns", "data"},
+		{"pv", sections.NodeRef{Kind: k8s.KindPV, Name: "vol"}, "PersistentVolume", "", "vol"},
+
+		// Container has no API object of its own; the handler does the
+		// parent-pod indirection. actionTarget returns empty here on
+		// purpose so the handler's special-case is the only path.
+		{"container", sections.NodeRef{Kind: k8s.KindContainer, Namespace: "ns", Name: "c"}, "", "", ""},
+
+		// Unsupported kinds return empty so the handler bails.
+		{"clusterfold", sections.NodeRef{Kind: k8s.KindClusterFold}, "", "", ""},
+		{"contextlist", sections.NodeRef{Kind: k8s.KindContextList}, "", "", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			gk, gns, gn := actionTarget(c.ref)
+			assert.Equal(t, c.wantKind, gk)
+			assert.Equal(t, c.wantNS, gns)
+			assert.Equal(t, c.wantName, gn)
+		})
+	}
+}
+
 func TestResolveEditor_DefaultsToVi(t *testing.T) {
 	t.Setenv("KUBE_EDITOR", "")
 	t.Setenv("VISUAL", "")

@@ -706,6 +706,13 @@ func (m *Model) handleTreeAction(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		}
 	case key.Matches(msg, m.ctx.Keys.Events):
 		kind, ns, name := actionTarget(ref)
+		if ref.Kind == k8s.KindContainer {
+			// Containers aren't independent API objects; events live on
+			// the parent Pod. The tree's focus at a container row is
+			// the pod itself, so route events through it.
+			pod := m.tree.Focus()
+			kind, ns, name = "Pod", pod.Namespace, pod.Name
+		}
 		if kind == "" {
 			return nil, false
 		}
@@ -715,6 +722,12 @@ func (m *Model) handleTreeAction(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		return sections.LoadEvents(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext, ns, kind, name), true
 	case key.Matches(msg, m.ctx.Keys.Describe):
 		kind, ns, name := actionTarget(ref)
+		if ref.Kind == k8s.KindContainer {
+			// Same parent-pod indirection as Events — describe the pod
+			// and let the operator scroll to the container's spec.
+			pod := m.tree.Focus()
+			kind, ns, name = "Pod", pod.Namespace, pod.Name
+		}
 		if kind == "" {
 			return nil, false
 		}
@@ -893,6 +906,15 @@ func (m *Model) cleanupEdit() {
 // actionTarget maps a NodeRef onto the (kind, namespace, name) triple that
 // the events / describe / scale handlers expect. Returns ("", "", "") when
 // the ref doesn't represent a real k8s object.
+// actionTarget translates a tree NodeRef into the (kind, namespace, name)
+// triple that DescribeYAML and LoadEvents expect. Container is handled
+// out-of-band by the Describe/Events branches below — it has no API
+// object of its own, so we describe its parent Pod instead.
+//
+// The kind strings returned are k8s API Kind names (e.g.
+// "PersistentVolumeClaim", not the friendlier "PVC" we use in the tree).
+// That matches what kubectl prints and what events.involvedObject.kind
+// expects on the field selector.
 func actionTarget(ref sections.NodeRef) (kind, namespace, name string) {
 	switch ref.Kind {
 	case k8s.KindApp:
@@ -903,6 +925,18 @@ func actionTarget(ref sections.NodeRef) (kind, namespace, name string) {
 		return "Node", "", ref.Name
 	case k8s.KindNamespace:
 		return "Namespace", "", ref.Name
+	case k8s.KindConfigMap:
+		return "ConfigMap", ref.Namespace, ref.Name
+	case k8s.KindSecret:
+		return "Secret", ref.Namespace, ref.Name
+	case k8s.KindService:
+		return "Service", ref.Namespace, ref.Name
+	case k8s.KindIngress:
+		return "Ingress", ref.Namespace, ref.Name
+	case k8s.KindPVC:
+		return "PersistentVolumeClaim", ref.Namespace, ref.Name
+	case k8s.KindPV:
+		return "PersistentVolume", "", ref.Name
 	}
 	return "", "", ""
 }
