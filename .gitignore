@@ -1,0 +1,15 @@
+# Build output
+/bin/
+
+# Local debug logs from SAFINA_DEBUG=1 (don't commit user activity)
+*.log
+debug.log
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
