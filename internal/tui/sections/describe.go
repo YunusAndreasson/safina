@@ -119,6 +119,44 @@ func (s *Describe) SetSize(termW, termH int) {
 	s.recomputeViewportSize()
 }
 
+// SetPaneSize sizes the section for inline rendering inside the workspace
+// body area (innerW × innerH). modalW/H are back-computed so ModalChrome
+// math resolves the viewport to (innerW, innerH-2). See logs.SetPaneSize.
+func (s *Describe) SetPaneSize(innerW, innerH int) {
+	if innerW < 14 {
+		innerW = 14
+	}
+	if innerH < 4 {
+		innerH = 4
+	}
+	s.modalW = innerW + 2
+	s.modalH = innerH + 2
+	s.recomputeViewportSize()
+}
+
+// Body returns unframed content for workspace tab embedding. When the
+// describe is a Secret reveal, a yellow banner prefixes the body to make
+// "this is decoded plaintext, not base64" loud — same cue the legacy
+// modal carried.
+func (s *Describe) Body(c *tuictx.Ctx) string {
+	body := s.viewportBlock(c)
+	if s.revealed {
+		banner := lipgloss.NewStyle().
+			Foreground(c.Theme.P.Yellow).
+			Bold(true).
+			Render("⚠ decoded — values are plaintext")
+		body = lipgloss.JoinVertical(lipgloss.Left, banner, body)
+	}
+	return lipgloss.JoinVertical(lipgloss.Left,
+		s.renderStatusRow(c),
+		body,
+		s.renderKeysRow(),
+	)
+}
+
+// PaneTitle returns the workspace tab title.
+func (s *Describe) PaneTitle() string { return s.Title() }
+
 func (s *Describe) recomputeViewportSize() {
 	inner := components.PanelContentWidth(s.modalW)
 	s.vp.SetWidth(inner)
@@ -417,27 +455,6 @@ func (s *Describe) handleFilterKey(km tea.KeyPressMsg) (tea.Cmd, bool) {
 	return cmd, false
 }
 
-// View renders the describe modal centered over the standard backdrop.
-func (s *Describe) View(c *tuictx.Ctx, termW, termH int) string {
-	body := s.viewportBlock(c)
-	if s.revealed {
-		// Yellow banner reinforces what the title already says — the modal
-		// is showing decoded plaintext, not the kubectl base64 default.
-		// Non-styled left padding keeps it flush with the YAML keys below.
-		banner := lipgloss.NewStyle().
-			Foreground(c.Theme.P.Yellow).
-			Bold(true).
-			Render("⚠ decoded — values are plaintext")
-		body = lipgloss.JoinVertical(lipgloss.Left, banner, body)
-	}
-	return components.RenderModal(c.Theme, termW, termH, s.modalW, s.modalH,
-		s.Title(),
-		s.renderStatusRow(c),
-		body,
-		s.renderKeysRow(),
-	)
-}
-
 func (s *Describe) viewportBlock(c *tuictx.Ctx) string {
 	st := components.BlockState{}
 	switch {
@@ -477,7 +494,7 @@ func (s *Describe) renderStatusRow(c *tuictx.Ctx) string {
 func (s *Describe) renderKeysRow() string {
 	return components.RenderModalKeysRow(s.theme, []components.KeyDesc{
 		{Key: "/", Desc: "filter"},
-		{Key: "R", Desc: "refresh"},
+		{Key: "r", Desc: "refresh"},
 		{Key: "j/k", Desc: "scroll"},
 		{Key: "g/G", Desc: "top/bot"},
 		{Key: "ctrl+l", Desc: "clear"},

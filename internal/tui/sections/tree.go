@@ -29,27 +29,37 @@ type NodeRef struct {
 	// this ref (so we can render even when the live data has rotated out).
 	Display string
 	Health  k8s.Health
+	// GVR encodes the resource's GroupVersionResource as "group/version/
+	// resource" (group is empty for core) for KindCustomFold and
+	// KindGenericResource refs. Empty for every other kind. Included in
+	// pathKeyFor so two CRDs that happen to share a Kind name in
+	// different groups get distinct cache entries.
+	GVR string
 }
 
 // Children is the polymorphic payload for a single tree level. Exactly one
 // typed slice is populated, matching `Kind`.
 type Children struct {
-	Kind        string
-	Contexts    []config.ContextInfo // populated for KindContextList
-	Apps        []k8s.AppInfo
-	Pods        []k8s.PodInfo
-	Containers  []k8s.ContainerInfo
-	Pools       []k8s.NodePoolInfo
-	Nodes       []k8s.NodeInfo
-	Namespaces  []k8s.NamespaceInfo
-	ConfigMaps  []k8s.ConfigMapInfo
-	Secrets     []k8s.SecretInfo
-	Services    []k8s.ServiceInfo
-	Ingresses   []k8s.IngressInfo
-	PVCs        []k8s.PVCInfo
-	PVs         []k8s.PVInfo
-	SystemCount int      // when > 0 in an Apps root, append a synthetic SystemFold row
-	SystemNS    []string // populated alongside SystemCount
+	Kind       string
+	Contexts   []config.ContextInfo // populated for KindContextList
+	Apps       []k8s.AppInfo
+	Pods       []k8s.PodInfo
+	Containers []k8s.ContainerInfo
+	Pools      []k8s.NodePoolInfo
+	Nodes      []k8s.NodeInfo
+	Namespaces []k8s.NamespaceInfo
+	ConfigMaps []k8s.ConfigMapInfo
+	Secrets    []k8s.SecretInfo
+	Services   []k8s.ServiceInfo
+	Ingresses  []k8s.IngressInfo
+	PVCs       []k8s.PVCInfo
+	PVs        []k8s.PVInfo
+	// Generic carries instances of an enabled CRD/other GVR returned via
+	// the dynamic client. Populated when Kind == KindGenericResource.
+	Generic     []k8s.GenericResource
+	SystemCount int                 // when > 0 in an Apps root, append a synthetic SystemFold row
+	SystemNS    []string            // populated alongside SystemCount
+	UserNS      []k8s.NamespaceInfo // user-namespace folders at cluster root (Kind == KindNamespaceFolder)
 }
 
 // ── Tree section ─────────────────────────────────────────────────────
@@ -59,6 +69,15 @@ type Children struct {
 type Tree struct {
 	Focused bool
 	Loading bool
+
+	// Refreshing is the "background reload in flight" flag — true while a
+	// refresh (manual R or auto-tick) is fetching new data and we already
+	// have stale rows on screen. Loading is the "first-time / no data yet"
+	// flag and triggers a centered body spinner; Refreshing is quieter and
+	// only puts a small spinner suffix in the panel title so the operator
+	// knows data is updating without losing visual continuity. Cleared by
+	// SetChildren / load error handler, same as Loading.
+	Refreshing bool
 
 	// LoadErr is the last error from the loader for the current focus.
 	// Distinguishes "API call failed" from "API returned zero items" so the
@@ -110,6 +129,18 @@ type Tree struct {
 	// so SetChildren can detect a flip. Initial sightings don't pulse —
 	// the operator only cares about transitions.
 	lastHealth map[string]k8s.Health
+
+	// enabledResources mirrors AppConfig.EnabledResources. Drives which
+	// folds visibleRows() emits at the namespace / All level. The model
+	// keeps this in sync via SetEnabledResources whenever the user
+	// confirms a change in the Resource Browser.
+	enabledResources []config.ResourceRef
+
+	// discoveredKinds caches the result of ListAvailableResources for the
+	// current cluster, keyed by "group/version/resource". Used to render
+	// custom-fold labels with the real Kind name instead of the lowercase
+	// plural Resource. Cleared on cluster switch.
+	discoveredKinds map[string]k8s.ResourceKind
 }
 
 // nsHealthSummary aggregates the worst app-health state and a count for
@@ -144,19 +175,225 @@ const sparkWidth = 4
 // always-running tree section doesn't grow unbounded across long sessions.
 const metricsHistCap = 32
 
+// Domain-aware floor ceilings for the rolling buffers. Picked so a pod
+// stable at 1 millicore / 2 MiB renders as a near-zero floor line in
+// gray instead of as max-height red bars (the bug the user surfaced):
+//   - cpuCeilingFloor: 1 core = 1000 millicores. A single core is the
+//     natural "100%" reference for a generic pod; the buffer ratchets up
+//     in 2× steps (2000m, 4000m, ...) when observed usage exceeds it.
+//   - memCeilingFloor: 256 MiB. Most application pods sit comfortably
+//     under this; bursty workloads ratchet to 512 MiB / 1 GiB / 2 GiB
+//     automatically.
+//
+// These are deliberately *not* the same as k8s `resources.limits` —
+// fetching limits would require a per-pod GET, which the tree's batch
+// list doesn't carry today. The floor approach gets the user 95% of the
+// way for ~0 code; threading real limits through PodInfo is a follow-up.
+const (
+	cpuCeilingFloor int64 = 1000
+	memCeilingFloor int64 = 256 * 1024 * 1024
+)
+
 // NewTree builds an empty Tree rooted at the unified root.
 func NewTree(c *tuictx.Ctx) Tree {
 	t := Tree{
-		cursorByKey:   make(map[string]int),
-		cache:         make(map[string]*Children),
-		metricsHist:   make(map[string]*metricSeries),
-		nsHealthCache: make(map[string]nsHealthSummary),
-		healthPulse:   make(map[string]time.Time),
-		lastHealth:    make(map[string]k8s.Health),
-		filter:        components.NewFilter(c.Theme),
+		cursorByKey:      make(map[string]int),
+		cache:            make(map[string]*Children),
+		metricsHist:      make(map[string]*metricSeries),
+		nsHealthCache:    make(map[string]nsHealthSummary),
+		healthPulse:      make(map[string]time.Time),
+		lastHealth:       make(map[string]k8s.Health),
+		filter:           components.NewFilter(c.Theme),
+		enabledResources: config.DefaultEnabledResources(),
+		discoveredKinds:  make(map[string]k8s.ResourceKind),
 	}
 	t.path = []NodeRef{rootRef()}
 	return t
+}
+
+// SetEnabledResources updates the fold list driving namespace-level
+// rendering. Called by the root model after Load (boot) and after the
+// Resource Browser confirms a selection.
+func (t *Tree) SetEnabledResources(refs []config.ResourceRef) {
+	t.enabledResources = append([]config.ResourceRef(nil), refs...)
+}
+
+// EnabledResources returns the current fold list. The Resource Browser
+// reads it to seed its initial "what's checked" state.
+func (t *Tree) EnabledResources() []config.ResourceRef {
+	return append([]config.ResourceRef(nil), t.enabledResources...)
+}
+
+// SetDiscoveredKinds replaces the discovery cache used to resolve custom-
+// fold display labels. Indexed by GVR string ("group/version/resource").
+func (t *Tree) SetDiscoveredKinds(kinds []k8s.ResourceKind) {
+	t.discoveredKinds = make(map[string]k8s.ResourceKind, len(kinds))
+	for _, k := range kinds {
+		t.discoveredKinds[gvrKey(k.Group, k.Version, k.Resource)] = k
+	}
+}
+
+// DiscoveredKinds returns the cached discovery result. Empty until the
+// first ListAvailableResources call lands. The Resource Browser uses it
+// to populate the "all kinds" list.
+func (t *Tree) DiscoveredKinds() []k8s.ResourceKind {
+	out := make([]k8s.ResourceKind, 0, len(t.discoveredKinds))
+	for _, k := range t.discoveredKinds {
+		out = append(out, k)
+	}
+	return out
+}
+
+// gvrKey is the canonical string form of a GVR — what NodeRef.GVR and
+// the discoveredKinds map both use. Group is allowed to be empty.
+func gvrKey(group, version, resource string) string {
+	return group + "/" + version + "/" + resource
+}
+
+// foldSpec is one fold row at the namespace level — synthesized from a
+// ResourceRef + the tree's discovery cache. Kind is the NodeRef.Kind the
+// fold will emit; Label is the display name (plural); GVR is the encoded
+// "group/version/resource" used when Kind == KindCustomFold. countKind is
+// the cache key for foldDisplay's count lookup.
+type foldSpec struct {
+	Kind      string
+	Label     string
+	GVR       string
+	CountKind string // matches Kind for cache lookup
+}
+
+// foldSpecsFor expands a list of ResourceRefs into the fold rows the
+// tree should render. Built-in defaults map back to the existing fold
+// Kinds (KindConfigFold, KindSecretsFold, …) so the existing typed-
+// clientset list paths keep working. Everything else becomes a
+// KindCustomFold that drills via the dynamic client.
+//
+// Custom folds whose GVR isn't in the current cluster's discovery
+// cache are dropped — drilling them would 404, and the user just
+// switched to a cluster that doesn't have that CRD installed. The
+// underlying config stays intact: switching back to a cluster that
+// does have it re-surfaces the fold automatically. Built-in defaults
+// (configmaps/secrets/…) are always emitted; they exist on every
+// conformant cluster, and skipping the discovery check there avoids
+// an awkward gap during the brief window before discovery lands.
+func (t *Tree) foldSpecsFor(refs []config.ResourceRef) []foldSpec {
+	out := make([]foldSpec, 0, len(refs))
+	for _, r := range refs {
+		spec, ok := t.builtInFold(r)
+		if ok {
+			out = append(out, spec)
+			continue
+		}
+		if !t.kindDiscovered(r) {
+			continue
+		}
+		out = append(out, t.customFold(r))
+	}
+	return out
+}
+
+// kindDiscovered reports whether a non-default ResourceRef appears in
+// the current cluster's discovery cache. Returns true when the cache
+// hasn't been populated yet (so the fold renders by default during the
+// startup gap) — once discovery lands, the gate becomes strict.
+func (t *Tree) kindDiscovered(r config.ResourceRef) bool {
+	if len(t.discoveredKinds) == 0 {
+		return true
+	}
+	_, ok := t.discoveredKinds[gvrKey(r.Group, r.Version, r.Resource)]
+	return ok
+}
+
+// builtInFold returns the fold spec for the 6 historical defaults so the
+// tree keeps using the typed-clientset paths for them (faster, richer
+// row data). Returns ok=false for anything else.
+func (t *Tree) builtInFold(r config.ResourceRef) (foldSpec, bool) {
+	if r.Synthetic == "Workloads" {
+		return foldSpec{Kind: k8s.KindWorkloadsFold, Label: "Workloads", CountKind: "WorkloadsFold"}, true
+	}
+	switch {
+	case r.Group == "" && r.Resource == "configmaps":
+		return foldSpec{Kind: k8s.KindConfigFold, Label: "ConfigMaps", CountKind: "ConfigFold"}, true
+	case r.Group == "" && r.Resource == "secrets":
+		return foldSpec{Kind: k8s.KindSecretsFold, Label: "Secrets", CountKind: "SecretsFold"}, true
+	case r.Group == "" && r.Resource == "services":
+		return foldSpec{Kind: k8s.KindNetworkFold, Label: "Services", CountKind: "NetworkFold"}, true
+	case r.Group == "networking.k8s.io" && r.Resource == "ingresses":
+		return foldSpec{Kind: k8s.KindIngressFold, Label: "Ingresses", CountKind: "IngressFold"}, true
+	case r.Group == "" && r.Resource == "persistentvolumeclaims":
+		return foldSpec{Kind: k8s.KindStorageFold, Label: "PVCs", CountKind: "StorageFold"}, true
+	}
+	return foldSpec{}, false
+}
+
+// customFold builds a KindCustomFold spec for a non-default ResourceRef.
+// Resolves the display label from the discovery cache (Kind name) and
+// falls back to a title-cased Resource when discovery hasn't populated
+// yet.
+func (t *Tree) customFold(r config.ResourceRef) foldSpec {
+	gvr := gvrKey(r.Group, r.Version, r.Resource)
+	label := titleCasePlural(r.Resource)
+	if rk, ok := t.discoveredKinds[gvr]; ok && rk.Kind != "" {
+		label = kindNameAsPlural(rk.Kind)
+	}
+	return foldSpec{Kind: k8s.KindCustomFold, Label: label, GVR: gvr, CountKind: gvr}
+}
+
+// titleCasePlural is the fallback when the discovery cache hasn't
+// populated yet — uppercase the first rune of the plural resource name
+// so "prometheusrules" reads as "Prometheusrules". Not as good as the
+// real Kind name but works without a network call.
+func titleCasePlural(resource string) string {
+	if resource == "" {
+		return resource
+	}
+	first := strings.ToUpper(resource[:1])
+	return first + resource[1:]
+}
+
+// kindNameAsPlural turns a singular Kind name into a display plural. Not
+// a full inflection engine — handles the patterns that cover the
+// overwhelming majority of K8s Kind names. Edge cases that don't match
+// (e.g. "Endpoints" which is already plural) round-trip to "Endpoints"
+// because they already end in "s".
+func kindNameAsPlural(kind string) string {
+	if kind == "" {
+		return kind
+	}
+	switch {
+	case strings.HasSuffix(kind, "s"):
+		return kind
+	case strings.HasSuffix(kind, "y"):
+		return kind[:len(kind)-1] + "ies"
+	case strings.HasSuffix(kind, "x"), strings.HasSuffix(kind, "ch"), strings.HasSuffix(kind, "sh"):
+		return kind + "es"
+	}
+	return kind + "s"
+}
+
+// foldDisplay builds the cluster-root fold label "Name (N)" using the
+// count of items the cache holds for that fold's drill-target path. If
+// the operator hasn't drilled the fold yet the cache is empty and we
+// render "Name (?)" — "?" makes the unknown state explicit instead of
+// pretending an empty fold has zero items. Once the fold has been
+// visited once this session the count populates and the question mark
+// resolves automatically.
+//
+// foldKind is the synthetic Kind constant the drill-target uses (e.g.
+// "ConfigFold"); it composes into a path key the same way visibleRows
+// does so the lookup matches. gvr is non-empty for KindCustomFold; the
+// path key includes it so two CRDs that share a Kind name in different
+// groups don't share a cache entry.
+func (t *Tree) foldDisplay(label, foldKind, gvr string) string {
+	contextPath := t.path
+	childPath := append([]NodeRef(nil), contextPath...)
+	childPath = append(childPath, NodeRef{Kind: foldKind, Name: label, Display: label, GVR: gvr})
+	ch := t.cache[pathKeyFor(childPath)]
+	if ch == nil {
+		return fmt.Sprintf("%s (?)", label)
+	}
+	n := len(ch.ConfigMaps) + len(ch.Secrets) + len(ch.Services) + len(ch.Ingresses) + len(ch.PVCs) + len(ch.Pools) + len(ch.Generic)
+	return fmt.Sprintf("%s (%d)", label, n)
 }
 
 // recordHealthPulse compares a resource's new health against its last
@@ -199,8 +436,8 @@ func (t *Tree) pushMetricSamples(kind, namespace, name string, cpu, mem int64) {
 	s, ok := t.metricsHist[k]
 	if !ok {
 		s = &metricSeries{
-			cpu: components.NewMetricBuffer(metricsHistCap),
-			mem: components.NewMetricBuffer(metricsHistCap),
+			cpu: components.NewMetricBufferWithFloor(metricsHistCap, cpuCeilingFloor),
+			mem: components.NewMetricBufferWithFloor(metricsHistCap, memCeilingFloor),
 		}
 		t.metricsHist[k] = s
 	}
@@ -216,6 +453,13 @@ func (t *Tree) metricSeriesFor(kind, namespace, name string) (*components.Metric
 		return nil, nil
 	}
 	return s.cpu, s.mem
+}
+
+// MetricSeriesFor is the exported counterpart used by the Inspector tile so
+// it can render the same sparkline the row already shows. Returns nil pair
+// when there's no history yet (the tile then skips the metric block).
+func (t *Tree) MetricSeriesFor(kind, namespace, name string) (*components.MetricBuffer, *components.MetricBuffer) {
+	return t.metricSeriesFor(kind, namespace, name)
 }
 
 // Cache exposes the level cache to the command palette indexer. The
@@ -294,7 +538,7 @@ func (t *Tree) pathKey() string { return pathKeyFor(t.path) }
 func pathKeyFor(p []NodeRef) string {
 	parts := make([]string, len(p))
 	for i, r := range p {
-		parts[i] = r.Kind + "/" + r.Namespace + "/" + r.Name + "/" + string(r.UID)
+		parts[i] = r.Kind + "/" + r.Namespace + "/" + r.Name + "/" + string(r.UID) + "/" + r.GVR
 	}
 	return strings.Join(parts, "|")
 }
@@ -316,7 +560,7 @@ func (t *Tree) FilterActive() bool { return t.filter.Active() }
 func (t *Tree) YankPayload() string {
 	ref := t.SelectedRef()
 	switch ref.Kind {
-	case k8s.KindContext, k8s.KindNode, k8s.KindNodePool, k8s.KindNamespace:
+	case k8s.KindContext, k8s.KindNode, k8s.KindNodePool, k8s.KindNamespace, k8s.KindNamespaceFolder:
 		return ref.Name
 	case k8s.KindApp, k8s.KindPod, k8s.KindService, k8s.KindConfigMap, k8s.KindIngress,
 		k8s.KindSecret, k8s.KindPVC:
@@ -390,6 +634,21 @@ func (t *Tree) SelectedPodInfo() (k8s.PodInfo, bool) {
 	return pods[t.cursor], true
 }
 
+// SelectedNodeInfo returns the highlighted NodeInfo when the focus renders
+// nodes; otherwise zero value and false. The cordon/drain dispatchers read
+// the Schedulable bit off this so the C-toggle picks cordon vs uncordon
+// without an extra API round-trip.
+func (t *Tree) SelectedNodeInfo() (k8s.NodeInfo, bool) {
+	if t.children == nil || t.children.Kind != k8s.KindNode {
+		return k8s.NodeInfo{}, false
+	}
+	nodes := t.filteredNodes()
+	if t.cursor < 0 || t.cursor >= len(nodes) {
+		return k8s.NodeInfo{}, false
+	}
+	return nodes[t.cursor], true
+}
+
 // SetChildren stores the loaded payload for the given path and updates the
 // current view if that path is still the focus.
 //
@@ -421,6 +680,23 @@ func (t *Tree) SetChildren(path []NodeRef, ch *Children) {
 		}
 		for _, c := range ch.Containers {
 			t.pushMetricSamples(k8s.KindContainer, c.Namespace, c.PodName+"/"+c.Name, c.CPU, c.Memory)
+		}
+		// Nodes and pools encode utilization as per-mille of allocatable so the
+		// sparkline's 0-1000 range maps to 0-100% of capacity — same gradient
+		// thresholds (green/yellow/red) line up with the percentage text the
+		// row already shows. Overcommit beyond 100% ratchets the buffer to
+		// 2000, which gracefully degrades instead of clipping.
+		for _, n := range ch.Nodes {
+			t.pushMetricSamples(k8s.KindNode, "", n.Name,
+				perMille(n.CPUUsed, n.CPUAlloc),
+				perMille(n.MemUsed, n.MemAlloc))
+			t.recordHealthPulse(k8s.KindNode, "", n.Name, n.Health)
+		}
+		for _, p := range ch.Pools {
+			t.pushMetricSamples(k8s.KindNodePool, "", p.Name,
+				perMille(p.CPUUsed, p.CPUAlloc),
+				perMille(p.MemUsed, p.MemAlloc))
+			t.recordHealthPulse(k8s.KindNodePool, "", p.Name, p.Health)
 		}
 		// Namespace health rollup: when a level delivers Apps, group
 		// them by namespace and record a worst-of summary per namespace.
@@ -617,6 +893,15 @@ func (t *Tree) View(c *tuictx.Ctx, w, h int) string {
 	// repeating itself on every drill.
 	innerW := components.PanelContentWidth(w)
 	title := t.PanelTitle()
+	// Background-refresh feedback: while a reload is in flight (manual R
+	// or auto-tick) we keep the existing rows on screen and append a
+	// small spinner to the panel title — the operator sees "data is
+	// updating" without losing context. The PanelWithAccent loader-state
+	// branch (Loading=true && children==nil) still owns the empty-screen
+	// case; this is for the "we have data, refreshing it" case.
+	if t.Refreshing && t.children != nil {
+		title = title + " " + c.Spinner.View()
+	}
 
 	// Title goes Dim, not cyan-bold — it's a label, not a headline. The
 	// loudest text on this panel should be the data rows, and the loudest
@@ -682,8 +967,18 @@ func (t *Tree) PanelTitle() string {
 		switch t.children.Kind {
 		case k8s.KindContextList:
 			return "Clusters"
+		case k8s.KindNamespaceFolder:
+			return "Namespaces"
 		case k8s.KindApp:
-			return "Apps"
+			// Inside a namespace folder or the All folder, the panel lists
+			// scoped resource folds — not apps directly. Label accordingly.
+			focusKind := t.Focus().Kind
+			if t.filter.Value() == "" && (focusKind == k8s.KindAllNamespacesFold ||
+				focusKind == k8s.KindNamespaceFolder ||
+				focusKind == k8s.KindNamespace) {
+				return "Resources"
+			}
+			return "Workloads"
 		case k8s.KindPod:
 			return "Pods"
 		case k8s.KindContainer:
@@ -694,6 +989,18 @@ func (t *Tree) PanelTitle() string {
 			return "Nodes"
 		case k8s.KindNamespace:
 			return "Namespaces"
+		case k8s.KindConfigMap:
+			return "ConfigMaps"
+		case k8s.KindSecret:
+			return "Secrets"
+		case k8s.KindService:
+			return "Services"
+		case k8s.KindIngress:
+			return "Ingresses"
+		case k8s.KindPVC:
+			return "PVCs"
+		case k8s.KindPV:
+			return "PersistentVolumes"
 		}
 	}
 	return childKindLabel(t.Focus().Kind)
@@ -705,8 +1012,10 @@ func childKindLabel(focusKind string) string {
 	switch focusKind {
 	case k8s.KindContextList:
 		return "Clusters"
-	case k8s.KindContext, k8s.KindNamespace:
-		return "Apps"
+	case k8s.KindContext:
+		return "Namespaces"
+	case k8s.KindAllNamespacesFold, k8s.KindNamespaceFolder, k8s.KindNamespace:
+		return "Resources"
 	case k8s.KindApp:
 		return "Pods"
 	case k8s.KindPod:
@@ -717,6 +1026,22 @@ func childKindLabel(focusKind string) string {
 		return "Nodes"
 	case k8s.KindSystemFold:
 		return "Namespaces"
+	case k8s.KindWorkloadsFold:
+		return "Workloads"
+	case k8s.KindConfigFold:
+		return "ConfigMaps"
+	case k8s.KindSecretsFold:
+		return "Secrets"
+	case k8s.KindNetworkFold:
+		return "Services"
+	case k8s.KindIngressFold:
+		return "Ingresses"
+	case k8s.KindStorageFold:
+		return "PVCs"
+	case k8s.KindService:
+		return "Ingresses"
+	case k8s.KindPVC:
+		return "PersistentVolumes"
 	}
 	return ""
 }
@@ -729,13 +1054,45 @@ func pctOf(used, total int64) string {
 	return fmt.Sprintf("%d%%", pct)
 }
 
+// perMille rescales used/total into 0-1000 ("per-mille") so a node's
+// utilization can be pushed into a MetricBuffer whose floor is 1000 — the
+// sparkline's gradient (green <50%, yellow 50-80%, red ≥80%) then aligns
+// directly with the percentage text rendered next to it. Returns 0 when
+// total is zero so the buffer absorbs idle samples cleanly rather than
+// crashing on div-by-zero.
+func perMille(used, total int64) int64 {
+	if total <= 0 {
+		return 0
+	}
+	return used * 1000 / total
+}
+
+// fracOf is the float counterpart to pctOf — returns the utilization
+// fraction in [0,1] (or 0 when there's no allocation to divide against).
+// Used by the row renderers to drive theme.UtilColor for the numeric cell.
+func fracOf(used, total int64) float64 {
+	if total <= 0 {
+		return 0
+	}
+	return float64(used) / float64(total)
+}
+
 // ── Body rendering (per-kind dispatch) ───────────────────────────────
+
+// treeEmpty is the one-shape empty-state line every per-kind renderer uses
+// when the list comes back zero. Keeps the wording uniform ("no X yet") so
+// the operator reads the same idiom in every panel — was a mix of "no X",
+// "(empty)", and "…" before. Reserved for the API-said-zero case; the
+// genuinely-indeterminate "load not yet started" still renders as "…".
+func (t *Tree) treeEmpty(c *tuictx.Ctx, kindLabel string) string {
+	return c.Theme.Idle.Render("no " + kindLabel + " yet")
+}
 
 func (t *Tree) renderBody(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	th := c.Theme
 
 	if t.Loading && (t.children == nil) {
-		return th.Idle.Render(c.Spinner.View() + " loading")
+		return th.Idle.Render(c.Spinner.View() + " loading resources…")
 	}
 	// Distinguish "load failed" from "no children yet" (in-flight) and from
 	// "API said zero rows" (handled by the per-kind renderers below). Without
@@ -756,6 +1113,10 @@ func (t *Tree) renderBody(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	switch t.children.Kind {
 	case k8s.KindContextList:
 		return t.renderContextRows(c, innerW, rowsAvail)
+	case k8s.KindNamespaceFolder:
+		return t.renderNamespaceFolderRows(c, innerW, rowsAvail)
+	case k8s.KindInfrastructureFold:
+		return t.renderInfrastructureRows(c, innerW, rowsAvail)
 	case k8s.KindApp:
 		return t.renderAppRows(c, innerW, rowsAvail)
 	case k8s.KindPod:
@@ -780,6 +1141,8 @@ func (t *Tree) renderBody(c *tuictx.Ctx, innerW, rowsAvail int) string {
 		return t.renderPVCRows(c, innerW, rowsAvail)
 	case k8s.KindPV:
 		return t.renderPVRows(c, innerW, rowsAvail)
+	case k8s.KindGenericResource:
+		return t.renderGenericRows(c, innerW, rowsAvail)
 	}
 	return th.Idle.Render("(empty)")
 }
@@ -802,61 +1165,104 @@ func (t *Tree) visibleRows() []NodeRef {
 			}
 		}
 		return out
-	case k8s.KindApp:
-		apps := t.filteredApps()
-		atRoot := t.Focus().Kind == k8s.KindContext
-		out := make([]NodeRef, 0, len(apps)+6)
-		// Cluster lives at the very top of the root so the on-caller's eye
-		// lands on infra capacity first; System tucks at the bottom so it
-		// stays out of the scan path. Config, Secrets, Network, and Storage
-		// folds sit between Apps and System. All are hidden once a filter is on.
-		if atRoot && t.filter.Value() == "" {
+	case k8s.KindNamespaceFolder:
+		// Cluster-root is workload-first: All (fast path) + every user
+		// namespace, then a single Infrastructure fold that holds Nodes,
+		// System namespaces, and the Configure resources settings entry.
+		// Before this layout, those three sat inline as peers of
+		// `default/`, `payments/`, which was a category mix the user
+		// flagged as confusing.
+		out := make([]NodeRef, 0, 2+len(t.children.UserNS))
+		if t.filter.Value() == "" {
 			out = append(out, NodeRef{
-				Kind:    k8s.KindClusterFold,
-				Name:    "Cluster",
-				Display: "Cluster",
+				Kind:    k8s.KindAllNamespacesFold,
+				Name:    "All",
+				Display: fmt.Sprintf("All (%d)", len(t.children.Apps)),
 				Health:  k8s.HealthUnknown,
 			})
 		}
-		for _, a := range apps {
+		nss := t.filteredUserNamespaces()
+		for _, ns := range nss {
 			out = append(out, NodeRef{
-				Kind: k8s.KindApp, SubKind: a.Kind,
-				Namespace: a.Namespace, Name: a.Name, UID: a.UID,
-				Display: a.Name, Health: a.Health,
+				Kind: k8s.KindNamespaceFolder, Name: ns.Name, Namespace: ns.Name,
+				Display: ns.Name,
 			})
 		}
-		if atRoot && t.filter.Value() == "" {
+		if t.filter.Value() == "" {
 			out = append(out, NodeRef{
-				Kind:    k8s.KindConfigFold,
-				Name:    "Config",
-				Display: "Config",
-				Health:  k8s.HealthUnknown,
-			})
-			out = append(out, NodeRef{
-				Kind:    k8s.KindSecretsFold,
-				Name:    "Secrets",
-				Display: "Secrets",
-				Health:  k8s.HealthUnknown,
-			})
-			out = append(out, NodeRef{
-				Kind:    k8s.KindNetworkFold,
-				Name:    "Network",
-				Display: "Network",
-				Health:  k8s.HealthUnknown,
-			})
-			out = append(out, NodeRef{
-				Kind:    k8s.KindStorageFold,
-				Name:    "Storage",
-				Display: "Storage",
+				Kind:    k8s.KindInfrastructureFold,
+				Name:    "Infrastructure",
+				Display: "Infrastructure",
 				Health:  k8s.HealthUnknown,
 			})
 		}
-		if atRoot && t.children.SystemCount > 0 && t.filter.Value() == "" {
+		return out
+	case k8s.KindInfrastructureFold:
+		// Children of the Infrastructure fold: Nodes + System
+		// namespaces. Settings used to live here too; it now opens via
+		// the `,` keybinding from anywhere (more discoverable in the
+		// footer; doesn't pollute the navigation tree).
+		out := make([]NodeRef, 0, 2)
+		out = append(out, NodeRef{
+			Kind:    k8s.KindClusterFold,
+			Name:    "Nodes",
+			Display: t.foldDisplay("Nodes", "ClusterFold", ""),
+			Health:  k8s.HealthUnknown,
+		})
+		if t.children != nil && t.children.SystemCount > 0 {
 			out = append(out, NodeRef{
 				Kind:    k8s.KindSystemFold,
 				Name:    "System",
 				Display: fmt.Sprintf("System (%d)", t.children.SystemCount),
 				Health:  k8s.HealthUnknown,
+			})
+		}
+		return out
+	case k8s.KindApp:
+		apps := t.filteredApps()
+		// "In a folder" means the focus is one of: the virtual All folder,
+		// a user-namespace folder, or a system namespace row. Those are
+		// the levels where the renderer mixes Workloads/Config/Secrets/
+		// Network/Storage fold rows above the apps list (or replaces apps
+		// with fold rows when no filter is active — preserving the old
+		// cluster-root table-of-contents feel one level down).
+		focusKind := t.Focus().Kind
+		inFolder := focusKind == k8s.KindAllNamespacesFold ||
+			focusKind == k8s.KindNamespaceFolder ||
+			focusKind == k8s.KindNamespace
+		out := make([]NodeRef, 0, len(apps)+len(t.enabledResources)+1)
+
+		if inFolder && t.filter.Value() == "" {
+			// Folds are driven by AppConfig.EnabledResources — the user can
+			// add CRDs / hide defaults via the Resource Browser. Labels
+			// stay the plural k8s resource names so the breadcrumb segment
+			// matches what `kubectl get <thing>` would return.
+			for _, spec := range t.foldSpecsFor(t.enabledResources) {
+				display := t.foldDisplay(spec.Label, spec.CountKind, spec.GVR)
+				if spec.Kind == k8s.KindWorkloadsFold {
+					// Workloads count is already on hand (we always load
+					// apps for the namespace) — skip the cache lookup so
+					// the badge populates without a drill.
+					display = fmt.Sprintf("%s (%d)", spec.Label, len(t.children.Apps))
+				}
+				out = append(out, NodeRef{
+					Kind:    spec.Kind,
+					Name:    spec.Label,
+					Display: display,
+					GVR:     spec.GVR,
+					Health:  k8s.HealthUnknown,
+				})
+			}
+			return out
+		}
+
+		// One level deeper (under Workloads, or via filter-typed search):
+		// the children ARE the apps. Emit them directly.
+		for _, a := range apps {
+			out = append(out, NodeRef{
+				Kind: k8s.KindApp, SubKind: a.Kind,
+				Namespace: a.Namespace, Name: a.Name, UID: a.UID,
+				Display: a.Name, Health: a.Health,
 			})
 		}
 		return out
@@ -943,6 +1349,27 @@ func (t *Tree) visibleRows() []NodeRef {
 			out[i] = NodeRef{Kind: k8s.KindPV, Name: p.Name, Display: p.Name}
 		}
 		return out
+	case k8s.KindGenericResource:
+		items := t.filteredGeneric()
+		// Generic rows inherit the GVR from the parent CustomFold so verb
+		// dispatch (describe/edit/delete) can route via the dynamic client
+		// without re-resolving the kind from the breadcrumb.
+		gvr := ""
+		for i := len(t.path) - 1; i >= 0; i-- {
+			if t.path[i].Kind == k8s.KindCustomFold {
+				gvr = t.path[i].GVR
+				break
+			}
+		}
+		out := make([]NodeRef, len(items))
+		for i, r := range items {
+			out[i] = NodeRef{
+				Kind:      k8s.KindGenericResource,
+				Namespace: r.Namespace, Name: r.Name, UID: r.UID,
+				Display: r.Name, GVR: gvr,
+			}
+		}
+		return out
 	}
 	return nil
 }
@@ -956,7 +1383,7 @@ func (t *Tree) renderAppRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	apps := t.filteredApps()
 	rows := t.visibleRows()
 	if len(rows) == 0 {
-		return th.Idle.Render("no apps")
+		return t.treeEmpty(c, "apps")
 	}
 
 	// Progressive disclosure of columns: NS only when there's more than one
@@ -1056,7 +1483,10 @@ func (t *Tree) renderAppRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 		bg := th.RowBgFor(i, selected)
 		if ref.Kind == k8s.KindClusterFold || ref.Kind == k8s.KindSystemFold ||
 			ref.Kind == k8s.KindConfigFold || ref.Kind == k8s.KindNetworkFold ||
-			ref.Kind == k8s.KindSecretsFold || ref.Kind == k8s.KindStorageFold {
+			ref.Kind == k8s.KindIngressFold || ref.Kind == k8s.KindSecretsFold ||
+			ref.Kind == k8s.KindStorageFold || ref.Kind == k8s.KindWorkloadsFold ||
+			ref.Kind == k8s.KindAllNamespacesFold || ref.Kind == k8s.KindNamespaceFolder ||
+			ref.Kind == k8s.KindCustomFold {
 			vals := []string{
 				kindGlyph(ref.Kind, ""),
 				th.NameStrongOn(components.TruncPad(ref.Display, nW), bg),
@@ -1106,11 +1536,26 @@ func (t *Tree) renderAppRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 
 // renderMetricCell composes one column of the metric pair: sparkline on
 // the left (gradient by relative magnitude), one-cell gap, then the
-// human-formatted value right-padded to numW. Sparkline + value share the
-// same row background so column alignment stays exact.
+// human-formatted value right-padded to numW. The row's bg style is
+// threaded into the sparkline so every cell inherits the stripe / select
+// background — without this the spark cells render with the terminal's
+// default bg and look like a column gap on striped rows.
 func renderMetricCell(th *theme.Theme, buf *components.MetricBuffer, value string, numW int, bg lipgloss.Style) string {
-	spark := components.Sparkline(th, buf, sparkWidth)
+	spark := components.Sparkline(th, buf, sparkWidth, bg)
 	val := th.MetaOn(components.TruncPad(value, numW), bg)
+	gap := bg.Render(" ")
+	return spark + gap + val
+}
+
+// renderUtilMetricCell is the percentage-shaped sibling of renderMetricCell:
+// the numeric value is colorized with the same green/yellow/red gradient
+// the sparkline uses, so the whole cell reads as a single utilization band
+// instead of "red bars next to a dim 92%". `frac` is the utilization in
+// [0,1]; values outside the range still color sensibly (clamped via
+// theme.UtilColor's gradient).
+func renderUtilMetricCell(th *theme.Theme, buf *components.MetricBuffer, value string, frac float64, numW int, bg lipgloss.Style) string {
+	spark := components.Sparkline(th, buf, sparkWidth, bg)
+	val := bg.Foreground(th.UtilColor(frac)).Bold(true).Render(components.TruncPad(value, numW))
 	gap := bg.Render(" ")
 	return spark + gap + val
 }
@@ -1144,7 +1589,7 @@ func (t *Tree) renderPodRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	th := c.Theme
 	pods := t.filteredPods()
 	if len(pods) == 0 {
-		return th.Idle.Render("no pods")
+		return t.treeEmpty(c, "pods")
 	}
 	showMetrics := anyPodMetrics(pods)
 
@@ -1220,7 +1665,7 @@ func (t *Tree) renderContainerRows(c *tuictx.Ctx, innerW, rowsAvail int) string 
 	th := c.Theme
 	cs := t.filteredContainers()
 	if len(cs) == 0 {
-		return th.Idle.Render("no containers")
+		return t.treeEmpty(c, "containers")
 	}
 	showMetrics := anyContainerMetrics(cs)
 
@@ -1298,15 +1743,15 @@ func (t *Tree) renderPoolRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	th := c.Theme
 	pools := t.filteredPools()
 	if len(pools) == 0 {
-		return th.Idle.Render("no node pools")
+		return t.treeEmpty(c, "node pools")
 	}
 	tableW := innerW - components.EdgeTotal()
 	const (
 		kW    = 1
 		hW    = 1
 		nodes = 6
-		cpuW  = 8
-		memW  = 8
+		cpuW  = sparkWidth + 1 + 4 // sparkline + space + 4-char "100%"
+		memW  = sparkWidth + 1 + 4
 		podsW = 9
 	)
 	gaps := components.GapTotal(7)
@@ -1319,7 +1764,7 @@ func (t *Tree) renderPoolRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 		components.AlignLeft, components.AlignLeft, components.AlignLeft,
 		components.AlignRight, components.AlignRight, components.AlignRight, components.AlignRight,
 	}
-	header := components.Header(th, []string{"", "", "POOL", "NODES", "CPU%", "MEM%", "PODS"}, cols, aligns)
+	header := components.Header(th, []string{"", "", "NAME", "NODES", "CPU%", "MEM%", "PODS"}, cols, aligns)
 
 	start, end := components.VisibleRange(t.cursor, len(pools), rowsAvail-1)
 	out := []string{header}
@@ -1329,12 +1774,13 @@ func (t *Tree) renderPoolRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 		bg := th.RowBgFor(i, selected)
 		health := healthGlyphColored(th, p.Health, bg)
 		nameCell := th.NameStrongOn(components.TruncPad(p.Name, nW), bg)
-		nodes := fmt.Sprintf("%d", p.Nodes)
-		cpu := pctOf(p.CPUUsed, p.CPUAlloc)
-		mem := pctOf(p.MemUsed, p.MemAlloc)
+		nodesCell := fmt.Sprintf("%d", p.Nodes)
+		cpuBuf, memBuf := t.metricSeriesFor(k8s.KindNodePool, "", p.Name)
+		cpuCell := renderUtilMetricCell(th, cpuBuf, pctOf(p.CPUUsed, p.CPUAlloc), fracOf(p.CPUUsed, p.CPUAlloc), 4, bg)
+		memCell := renderUtilMetricCell(th, memBuf, pctOf(p.MemUsed, p.MemAlloc), fracOf(p.MemUsed, p.MemAlloc), 4, bg)
 		pods := fmt.Sprintf("%d/%d", p.PodsCurrent, p.PodsMax)
 		out = append(out, components.Row(th,
-			[]string{kindGlyph(k8s.KindNodePool, ""), health, nameCell, nodes, cpu, mem, pods},
+			[]string{kindGlyph(k8s.KindNodePool, ""), health, nameCell, nodesCell, cpuCell, memCell, pods},
 			cols, aligns, selected, i))
 	}
 	return strings.Join(out, "\n")
@@ -1344,28 +1790,33 @@ func (t *Tree) renderNodeRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	th := c.Theme
 	nodes := t.filteredNodes()
 	if len(nodes) == 0 {
-		return th.Idle.Render("no nodes")
+		return t.treeEmpty(c, "nodes")
 	}
 	tableW := innerW - components.EdgeTotal()
+	// prW is a small fixed-width column for the node's active pressure
+	// conditions (MemoryPressure/DiskPressure/PIDPressure/NetworkUnavailable).
+	// Most rows render empty here; nodes in trouble light up — the same role
+	// btop's temperature column plays for hardware throttling.
 	const (
 		kW   = 1
 		hW   = 1
 		stW  = 12
-		cpuW = 8
-		memW = 8
+		prW  = 4
+		cpuW = sparkWidth + 1 + 4 // sparkline + space + 4-char "100%"
+		memW = sparkWidth + 1 + 4
 		podW = 9
 	)
-	gaps := components.GapTotal(7)
-	nW := tableW - kW - hW - stW - cpuW - memW - podW - gaps
+	gaps := components.GapTotal(8)
+	nW := tableW - kW - hW - stW - prW - cpuW - memW - podW - gaps
 	if nW < 10 {
 		nW = 10
 	}
-	cols := []int{kW, hW, nW, stW, cpuW, memW, podW}
+	cols := []int{kW, hW, nW, stW, prW, cpuW, memW, podW}
 	aligns := []components.Align{
 		components.AlignLeft, components.AlignLeft, components.AlignLeft, components.AlignLeft,
-		components.AlignRight, components.AlignRight, components.AlignRight,
+		components.AlignLeft, components.AlignRight, components.AlignRight, components.AlignRight,
 	}
-	header := components.Header(th, []string{"", "", "NAME", "STATUS", "CPU%", "MEM%", "PODS"}, cols, aligns)
+	header := components.Header(th, []string{"", "", "NAME", "STATUS", "PRES", "CPU%", "MEM%", "PODS"}, cols, aligns)
 
 	start, end := components.VisibleRange(t.cursor, len(nodes), rowsAvail-1)
 	out := []string{header}
@@ -1376,21 +1827,64 @@ func (t *Tree) renderNodeRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 		health := healthGlyphColored(th, n.Health, bg)
 		nameCell := th.NameStrongOn(components.TruncPad(n.Name, nW), bg)
 		statusCell := th.StatusGlyph(n.Status, stW, bg)
-		cpu := pctOf(n.CPUUsed, n.CPUAlloc)
-		mem := pctOf(n.MemUsed, n.MemAlloc)
+		pressureCell := renderPressureCell(th, n.Pressures, prW, bg)
+		cpuBuf, memBuf := t.metricSeriesFor(k8s.KindNode, "", n.Name)
+		cpuCell := renderUtilMetricCell(th, cpuBuf, pctOf(n.CPUUsed, n.CPUAlloc), fracOf(n.CPUUsed, n.CPUAlloc), 4, bg)
+		memCell := renderUtilMetricCell(th, memBuf, pctOf(n.MemUsed, n.MemAlloc), fracOf(n.MemUsed, n.MemAlloc), 4, bg)
 		pods := fmt.Sprintf("%d/%d", n.PodsCurrent, n.PodsMax)
 		out = append(out, components.Row(th,
-			[]string{kindGlyph(k8s.KindNode, ""), health, nameCell, statusCell, cpu, mem, pods},
+			[]string{kindGlyph(k8s.KindNode, ""), health, nameCell, statusCell, pressureCell, cpuCell, memCell, pods},
 			cols, aligns, selected, i))
 	}
 	return strings.Join(out, "\n")
+}
+
+// renderPressureCell stamps the active pressure-condition glyphs for a
+// node into a fixed-width cell. Mp = MemoryPressure, Dp = DiskPressure,
+// Pp = PIDPressure, Nu = NetworkUnavailable — short two-letter labels
+// because the on-caller's eye is scanning a column, not reading prose,
+// and the colour (red bold) is the load-bearing signal. Empty when the
+// node has no active pressure conditions.
+func renderPressureCell(th *theme.Theme, pressures []string, width int, bg lipgloss.Style) string {
+	if len(pressures) == 0 {
+		return bg.Render(strings.Repeat(" ", width))
+	}
+	var b strings.Builder
+	for i, p := range pressures {
+		if i > 0 {
+			b.WriteString(bg.Render(" "))
+		}
+		var label string
+		switch p {
+		case "MemoryPressure":
+			label = "Mp"
+		case "DiskPressure":
+			label = "Dp"
+		case "PIDPressure":
+			label = "Pp"
+		case "NetworkUnavailable":
+			label = "Nu"
+		default:
+			if len(p) >= 2 {
+				label = p[:2]
+			} else {
+				label = p
+			}
+		}
+		b.WriteString(bg.Foreground(th.P.Red).Bold(true).Render(label))
+	}
+	out := b.String()
+	if lipgloss.Width(out) > width {
+		return out
+	}
+	return out + bg.Render(strings.Repeat(" ", width-lipgloss.Width(out)))
 }
 
 func (t *Tree) renderConfigMapRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	th := c.Theme
 	cms := t.filteredConfigMaps()
 	if len(cms) == 0 {
-		return th.Idle.Render("no configmaps")
+		return t.treeEmpty(c, "configmaps")
 	}
 	tableW := innerW - components.EdgeTotal()
 	const (
@@ -1427,7 +1921,7 @@ func (t *Tree) renderServiceRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	th := c.Theme
 	svcs := t.filteredServices()
 	if len(svcs) == 0 {
-		return th.Idle.Render("no services")
+		return t.treeEmpty(c, "services")
 	}
 	tableW := innerW - components.EdgeTotal()
 	const (
@@ -1466,7 +1960,7 @@ func (t *Tree) renderIngressRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	th := c.Theme
 	ings := t.filteredIngresses()
 	if len(ings) == 0 {
-		return th.Idle.Render("no ingresses")
+		return t.treeEmpty(c, "ingresses")
 	}
 	tableW := innerW - components.EdgeTotal()
 	const (
@@ -1503,7 +1997,7 @@ func (t *Tree) renderSecretRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	th := c.Theme
 	secrets := t.filteredSecrets()
 	if len(secrets) == 0 {
-		return th.Idle.Render("no secrets")
+		return t.treeEmpty(c, "secrets")
 	}
 	tableW := innerW - components.EdgeTotal()
 	const (
@@ -1542,7 +2036,7 @@ func (t *Tree) renderPVCRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	th := c.Theme
 	pvcs := t.filteredPVCs()
 	if len(pvcs) == 0 {
-		return th.Idle.Render("no PVCs")
+		return t.treeEmpty(c, "PVCs")
 	}
 	tableW := innerW - components.EdgeTotal()
 	const (
@@ -1583,7 +2077,7 @@ func (t *Tree) renderPVRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	th := c.Theme
 	pvs := t.filteredPVs()
 	if len(pvs) == 0 {
-		return th.Idle.Render("no PVs")
+		return t.treeEmpty(c, "PVs")
 	}
 	tableW := innerW - components.EdgeTotal()
 	const (
@@ -1618,11 +2112,184 @@ func (t *Tree) renderPVRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	return strings.Join(out, "\n")
 }
 
+// renderGenericRows renders instances of an enabled custom GVR fetched
+// via the dynamic client. Columns: glyph · NAME · NS · STATUS · AGE. NS
+// is suppressed for cluster-scoped GVRs (no namespace on any row).
+func (t *Tree) renderGenericRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
+	th := c.Theme
+	items := t.filteredGeneric()
+	if len(items) == 0 {
+		return t.treeEmpty(c, "items")
+	}
+	showNS := false
+	for _, r := range items {
+		if r.Namespace != "" {
+			showNS = true
+			break
+		}
+	}
+	tableW := innerW - components.EdgeTotal()
+	const (
+		kW  = 1
+		stW = 10
+		agW = 5
+	)
+	nsW := 12
+	if !showNS {
+		nsW = 0
+	}
+	colsCount := 4
+	if showNS {
+		colsCount = 5
+	}
+	gaps := components.GapTotal(colsCount)
+	nW := tableW - kW - nsW - stW - agW - gaps
+	if nW < 10 {
+		nW = 10
+	}
+	cols := []int{kW, nW}
+	aligns := []components.Align{components.AlignLeft, components.AlignLeft}
+	headers := []string{"", "NAME"}
+	if showNS {
+		cols = append(cols, nsW)
+		aligns = append(aligns, components.AlignLeft)
+		headers = append(headers, "NS")
+	}
+	cols = append(cols, stW, agW)
+	aligns = append(aligns, components.AlignLeft, components.AlignRight)
+	headers = append(headers, "STATUS", "AGE")
+	header := components.Header(th, headers, cols, aligns)
+
+	start, end := components.VisibleRange(t.cursor, len(items), rowsAvail-1)
+	out := []string{header}
+	for i := start; i < end; i++ {
+		r := items[i]
+		selected := i == t.cursor && t.Focused
+		bg := th.RowBgFor(i, selected)
+		nameCell := th.NameStrongOn(components.TruncPad(r.Name, nW), bg)
+		vals := []string{kindGlyph(k8s.KindGenericResource, ""), nameCell}
+		if showNS {
+			vals = append(vals, th.MetaOn(components.TruncPad(r.Namespace, nsW), bg))
+		}
+		vals = append(vals, th.MetaOn(components.TruncPad(r.Status, stW), bg), th.Age(r.Age, bg))
+		out = append(out, components.Row(th, vals, cols, aligns, selected, i))
+	}
+	return strings.Join(out, "\n")
+}
+
+// renderInfrastructureRows renders the children of the Infrastructure
+// fold — Nodes, System (if any), and the Configure resources settings
+// row. Three rows max, so we keep the layout minimal: glyph + label,
+// no extra columns.
+func (t *Tree) renderInfrastructureRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
+	th := c.Theme
+	rows := t.visibleRows()
+	if len(rows) == 0 {
+		return th.Idle.Render("(empty)")
+	}
+	tableW := innerW - components.EdgeTotal()
+	const kW = 1
+	gaps := components.GapTotal(2)
+	nW := tableW - kW - gaps
+	if nW < 10 {
+		nW = 10
+	}
+	cols := []int{kW, nW}
+	aligns := []components.Align{components.AlignLeft, components.AlignLeft}
+	header := components.Header(th, []string{"", "NAME"}, cols, aligns)
+
+	start, end := components.VisibleRange(t.cursor, len(rows), rowsAvail-1)
+	out := []string{header}
+	for i := start; i < end; i++ {
+		ref := rows[i]
+		selected := i == t.cursor && t.Focused
+		bg := th.RowBgFor(i, selected)
+		out = append(out, components.Row(th,
+			[]string{kindGlyph(ref.Kind, ""), th.NameStrongOn(components.TruncPad(ref.Display, nW), bg)},
+			cols, aligns, selected, i))
+	}
+	return strings.Join(out, "\n")
+}
+
+// renderNamespaceFolderRows renders the cluster-root level: the All
+// fast-path folder, every user namespace folder, and a single
+// Infrastructure fold that contains the non-workload chrome. User
+// namespace folders mirror the renderNamespaceRows layout so health
+// pips + app counts feel consistent across drill levels.
+func (t *Tree) renderNamespaceFolderRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
+	th := c.Theme
+	rows := t.visibleRows()
+	if len(rows) == 0 {
+		return t.treeEmpty(c, "namespaces")
+	}
+
+	tableW := innerW - components.EdgeTotal()
+	const (
+		kW   = 1
+		pipW = 1
+		cntW = 5
+		agW  = 5
+	)
+	gaps := components.GapTotal(5)
+	nW := tableW - kW - pipW - cntW - agW - gaps
+	if nW < 10 {
+		nW = 10
+	}
+	cols := []int{kW, nW, pipW, cntW, agW}
+	aligns := []components.Align{components.AlignLeft, components.AlignLeft, components.AlignLeft, components.AlignRight, components.AlignRight}
+	header := components.Header(th, []string{"", "NAME", "", "APPS", "AGE"}, cols, aligns)
+
+	// Index UserNS by name so the per-row render can look up age + cached
+	// health summary without scanning the slice for every row.
+	nsByName := make(map[string]k8s.NamespaceInfo, len(t.children.UserNS))
+	for _, n := range t.children.UserNS {
+		nsByName[n.Name] = n
+	}
+
+	start, end := components.VisibleRange(t.cursor, len(rows), rowsAvail-1)
+	out := []string{header}
+	for i := start; i < end; i++ {
+		ref := rows[i]
+		selected := i == t.cursor && t.Focused
+		bg := th.RowBgFor(i, selected)
+
+		switch ref.Kind {
+		case k8s.KindNamespaceFolder:
+			ns := nsByName[ref.Name]
+			nameCell := th.NameStrongOn(components.TruncPad(ref.Name, nW), bg)
+			ageCell := th.Age(ns.Age, bg)
+			pip, cnt := nsHealthCells(th, t.nsHealthCache[ref.Name], bg)
+			out = append(out, components.Row(th,
+				[]string{kindGlyph(k8s.KindNamespaceFolder, ""), nameCell, pip, cnt, ageCell},
+				cols, aligns, selected, i))
+		case k8s.KindAllNamespacesFold:
+			// "All" is the on-caller fast path — keep it bold like the
+			// namespace folders so it competes for the cursor's attention.
+			vals := []string{kindGlyph(ref.Kind, ""), th.NameStrongOn(components.TruncPad(ref.Display, nW), bg)}
+			for j := 2; j < len(cols); j++ {
+				vals = append(vals, "")
+			}
+			out = append(out, components.Row(th, vals, cols, aligns, selected, i))
+		case k8s.KindInfrastructureFold:
+			// Single chrome row at the bottom of the cluster root —
+			// dim so it sits below the namespace list as a category
+			// escape hatch, not a peer of the workload namespaces.
+			dim := bg.Foreground(th.P.Dim)
+			vals := []string{dim.Render(kindGlyph(ref.Kind, "")), dim.Render(components.TruncPad(ref.Display, nW))}
+			for j := 2; j < len(cols); j++ {
+				vals = append(vals, "")
+			}
+			out = append(out, components.Row(th, vals, cols, aligns, selected, i))
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
 func (t *Tree) renderNamespaceRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	th := c.Theme
 	nss := t.filteredNamespaces()
 	if len(nss) == 0 {
-		return th.Idle.Render("no namespaces")
+		return t.treeEmpty(c, "namespaces")
 	}
 	tableW := innerW - components.EdgeTotal()
 	const (
@@ -1638,7 +2305,7 @@ func (t *Tree) renderNamespaceRows(c *tuictx.Ctx, innerW, rowsAvail int) string 
 	}
 	cols := []int{kW, nW, pipW, cntW, agW}
 	aligns := []components.Align{components.AlignLeft, components.AlignLeft, components.AlignLeft, components.AlignRight, components.AlignRight}
-	header := components.Header(th, []string{"", "NAMESPACE", "", "APPS", "AGE"}, cols, aligns)
+	header := components.Header(th, []string{"", "NAME", "", "APPS", "AGE"}, cols, aligns)
 
 	start, end := components.VisibleRange(t.cursor, len(nss), rowsAvail-1)
 	out := []string{header}
@@ -1754,7 +2421,7 @@ func (t *Tree) renderContextRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 
 	cols := []int{kW, nW}
 	aligns := []components.Align{components.AlignLeft, components.AlignLeft}
-	headerLabels := []string{"", "CLUSTER"}
+	headerLabels := []string{"", "NAME"}
 	if showCluster {
 		cols = append(cols, cW)
 		aligns = append(aligns, components.AlignLeft)
@@ -1767,8 +2434,14 @@ func (t *Tree) renderContextRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	}
 	header := components.Header(th, headerLabels, cols, aligns)
 
-	start, end := components.VisibleRange(t.cursor, len(ctxs), rowsAvail-1)
-	out := []string{header}
+	// Teach the action up-front. The panel title says "Clusters" but doesn't
+	// say what to *do*; new users land on a list of names and have to guess
+	// that ↵ drills in. One dim-italic line above the header carries that
+	// instruction without competing visually with the rows.
+	hint := th.DimTxt.Italic(true).Render("pick a cluster to begin · ↵ open")
+
+	start, end := components.VisibleRange(t.cursor, len(ctxs), rowsAvail-2)
+	out := []string{hint, header}
 	for i := start; i < end; i++ {
 		ci := ctxs[i]
 		selected := i == t.cursor && t.Focused
@@ -1943,6 +2616,30 @@ func (t *Tree) filteredNamespaces() []k8s.NamespaceInfo {
 	return nss
 }
 
+// filteredUserNamespaces is the cluster-root counterpart to filteredNamespaces:
+// reads the UserNS list off Children (populated when Kind == KindNamespaceFolder)
+// and applies the active filter. Kept separate so a stale filter from a prior
+// drill into a sibling level can't accidentally narrow the cluster-root view.
+func (t *Tree) filteredUserNamespaces() []k8s.NamespaceInfo {
+	if t.children == nil {
+		return nil
+	}
+	nss := t.children.UserNS
+	if q := t.filter.Value(); q != "" {
+		names := make([]string, len(nss))
+		for i, n := range nss {
+			names[i] = n.Name
+		}
+		idx := components.FuzzyMatch(q, names)
+		filtered := make([]k8s.NamespaceInfo, 0, len(idx))
+		for _, i := range idx {
+			filtered = append(filtered, nss[i])
+		}
+		nss = filtered
+	}
+	return nss
+}
+
 func (t *Tree) filteredConfigMaps() []k8s.ConfigMapInfo {
 	if t.children == nil {
 		return nil
@@ -2061,6 +2758,26 @@ func (t *Tree) filteredPVs() []k8s.PVInfo {
 		pvs = filtered
 	}
 	return pvs
+}
+
+func (t *Tree) filteredGeneric() []k8s.GenericResource {
+	if t.children == nil {
+		return nil
+	}
+	items := t.children.Generic
+	if q := t.filter.Value(); q != "" {
+		names := make([]string, len(items))
+		for i, p := range items {
+			names[i] = p.Name
+		}
+		idx := components.FuzzyMatch(q, names)
+		filtered := make([]k8s.GenericResource, 0, len(idx))
+		for _, i := range idx {
+			filtered = append(filtered, items[i])
+		}
+		items = filtered
+	}
+	return items
 }
 
 func shortSecretType(t string) string {
@@ -2185,10 +2902,20 @@ func kindGlyph(kind, sub string) string {
 		return "▥"
 	case k8s.KindNode:
 		return "□"
-	case k8s.KindNamespace:
+	case k8s.KindNamespace, k8s.KindNamespaceFolder:
 		return "▢"
 	case k8s.KindSystemFold:
 		return "⊟"
+	case k8s.KindAllNamespacesFold:
+		// Asterisk-operator: "all", visually distinct from the squared-
+		// operator fold family so the on-caller can pick it out as a
+		// special-case sibling next to the named namespace folders.
+		return "✻"
+	case k8s.KindWorkloadsFold:
+		// Squared-plus operator family — pairs visually with the other
+		// resource folds (⊞ Config, ⊠ Secrets, ⊜ Network, ⊡ Storage,
+		// ⊟ System). ⊕ reads as "all the workloads added together".
+		return "⊕"
 	case k8s.KindHPA:
 		return "↕"
 	case k8s.KindConfigFold:
@@ -2197,6 +2924,12 @@ func kindGlyph(kind, sub string) string {
 		return "⊠"
 	case k8s.KindNetworkFold:
 		return "⊜"
+	case k8s.KindIngressFold:
+		// Reuse the Ingress leaf glyph (⇥) so the fold and its children
+		// read as the same concept. Off-family from the squared-operator
+		// folds but distinct enough that the eye doesn't confuse it with
+		// Services (⊜).
+		return "⇥"
 	case k8s.KindStorageFold:
 		return "⊡"
 	case k8s.KindConfigMap:
@@ -2211,6 +2944,20 @@ func kindGlyph(kind, sub string) string {
 		return "◰"
 	case k8s.KindPV:
 		return "◲"
+	case k8s.KindCustomFold:
+		// Diamond — outside the squared-operator fold family so the eye
+		// reads "this is a non-default fold, beyond the safina built-ins".
+		// Distinct enough from the App workload glyphs.
+		return "◇"
+	case k8s.KindGenericResource:
+		// Diamond bullet for an individual instance of a custom GVR.
+		return "◈"
+	case k8s.KindInfrastructureFold:
+		// Stacked-bars glyph: "the pile of cluster-internal stuff" —
+		// Nodes, System namespaces, Configure resources. Reads as a
+		// folder of meta things, distinct from the squared-operator
+		// resource folds inside namespaces.
+		return "▦"
 	}
 	return ""
 }

@@ -17,6 +17,8 @@ var (
 	kubeconfig string
 	context    string
 	namespace  string
+	debugFlag  bool
+	logFile    string
 )
 
 func main() {
@@ -27,6 +29,16 @@ func main() {
 operators to browse multiple clusters, list namespaces, view pods with
 color-coded status, and perform actions like scaling, rollback, and log viewing.`,
 		Run: func(cmd *cobra.Command, args []string) {
+			// Flags are sugar over the existing env-var contract so a user can
+			// flip on debug without remembering SAFINA_DEBUG. The env vars
+			// stay authoritative if both are set — env wins, matching the
+			// usual 12-factor expectation.
+			if debugFlag && os.Getenv("SAFINA_DEBUG") == "" {
+				_ = os.Setenv("SAFINA_DEBUG", "1")
+			}
+			if logFile != "" && os.Getenv("SAFINA_DEBUG_FILE") == "" {
+				_ = os.Setenv("SAFINA_DEBUG_FILE", logFile)
+			}
 			debugPath := debug.Init()
 			defer debug.Close()
 			debug.Log("safina.start",
@@ -109,6 +121,8 @@ color-coded status, and perform actions like scaling, rollback, and log viewing.
 	rootCmd.Flags().StringVar(&kubeconfig, "kubeconfig", "", "Path to kubeconfig file")
 	rootCmd.Flags().StringVar(&context, "context", "", "Kubernetes context to use")
 	rootCmd.Flags().StringVar(&namespace, "namespace", "", "Kubernetes namespace to use")
+	rootCmd.Flags().BoolVar(&debugFlag, "debug", false, "Write JSON debug log (sets SAFINA_DEBUG=1)")
+	rootCmd.Flags().StringVar(&logFile, "log-file", "", "Debug log path (default ~/.safina/debug.log)")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

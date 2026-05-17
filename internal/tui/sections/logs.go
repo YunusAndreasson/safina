@@ -102,6 +102,42 @@ func (l *Logs) SetSize(termW, termH int) {
 	l.recomputeViewportSize()
 }
 
+// SetPaneSize sizes the section for inline rendering inside the workspace
+// body area of inner dimensions (innerW, innerH). The workspace pane owns
+// the outer border; inside the body the section reserves 2 rows for status
+// + keys. modalW/modalH are back-computed so the existing PanelContentWidth
+// and ModalChrome math still resolves to (innerW, innerH-2) for the viewport.
+func (l *Logs) SetPaneSize(innerW, innerH int) {
+	if innerW < 14 {
+		innerW = 14
+	}
+	if innerH < 4 {
+		innerH = 4
+	}
+	l.modalW = innerW + 2
+	l.modalH = innerH + 2
+	l.recomputeViewportSize()
+}
+
+// Body returns the section's content (status row + viewport + keys row) as
+// an unframed stack — for embedding inside the workspace pane, which owns
+// the panel border / focus ring.
+func (l *Logs) Body(c *tuictx.Ctx) string {
+	return lipgloss.JoinVertical(lipgloss.Left,
+		l.renderStatusRow(c),
+		l.viewportBlock(c),
+		l.renderKeysRow(),
+	)
+}
+
+// PaneTitle returns the workspace tab title for this section.
+func (l *Logs) PaneTitle() string {
+	if l.namespace != "" {
+		return fmt.Sprintf("logs · %s · %s", l.pod, l.namespace)
+	}
+	return fmt.Sprintf("logs · %s", l.pod)
+}
+
 func (l *Logs) recomputeViewportSize() {
 	inner := components.PanelContentWidth(l.modalW)
 	l.vp.SetWidth(inner)
@@ -298,21 +334,6 @@ func (l *Logs) handleFilterKey(km tea.KeyPressMsg) (tea.Cmd, bool) {
 		}
 	}
 	return cmd, false
-}
-
-// View renders the modal centred over a backdrop. termW/termH are the full
-// terminal dimensions; the modal occupies modalW × modalH within them.
-func (l *Logs) View(c *tuictx.Ctx, termW, termH int) string {
-	title := fmt.Sprintf("logs · %s", l.pod)
-	if l.namespace != "" {
-		title = fmt.Sprintf("logs · %s · %s", l.pod, l.namespace)
-	}
-	return components.RenderModal(c.Theme, termW, termH, l.modalW, l.modalH,
-		title,
-		l.renderStatusRow(c),
-		l.viewportBlock(c),
-		l.renderKeysRow(),
-	)
 }
 
 // viewportBlock returns the viewport's view, replacing it with a centred

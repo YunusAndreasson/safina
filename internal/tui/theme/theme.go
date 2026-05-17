@@ -8,6 +8,39 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
+// Phi is the golden ratio. The layout uses it structurally: pane widths,
+// vertical hierarchy within panels, and the spacer ladder all derive from φ
+// (or its Fibonacci approximations) so the eye reads the composition as
+// "rested" without anyone announcing why.
+const Phi = 1.6180339887498949
+
+// PhiSplit returns (small, big) widths summing to total with a 1:φ ratio,
+// minus one cell of gutter. Used by view composition to size adjacent panes
+// without re-deriving the math each call. Floors small at minSmall so a tiny
+// terminal doesn't crush the tree pane to an unusable sliver.
+func PhiSplit(total, gutter, minSmall int) (small, big int) {
+	if total < minSmall+8+gutter {
+		return minSmall, total - gutter - minSmall
+	}
+	usable := total - gutter
+	small = int(float64(usable) / (1 + Phi))
+	if small < minSmall {
+		small = minSmall
+	}
+	big = usable - small
+	return small, big
+}
+
+// Fibonacci spacer ladder. Cells stack visually like a φ progression even
+// when terminal cells force integer widths. Use these instead of magic
+// numbers so the same rhythm runs through every panel.
+const (
+	SpaceTight = 1 // inside a row, between two pieces of the same atom
+	SpaceBase  = 2 // between two atoms in the same panel
+	SpaceWide  = 3 // between panel sections
+	SpaceHero  = 5 // between major regions (topbar / main / footer)
+)
+
 // Theme bundles a Palette with derived lipgloss styles. Components take a
 // *Theme so a single switch recolors the whole app.
 type Theme struct {
@@ -220,6 +253,23 @@ func (t *Theme) MetaOn(s string, bg lipgloss.Style) string {
 	return bg.Foreground(t.P.Dim).Render(s)
 }
 
+// UtilColor maps a [0,1] utilization fraction to the same green/yellow/red
+// gradient the inline sparkline uses (sparkColor in components.Sparkline).
+// Used to colorize the numeric percentage that sits next to a node or pool
+// row's sparkline — so a 92% CPU row reads red on both halves of the cell
+// instead of red sparkline + flat-dim "92%". Single source of truth for
+// the utilization band thresholds.
+func (t *Theme) UtilColor(frac float64) color.Color {
+	switch {
+	case frac < 0.50:
+		return t.P.Green
+	case frac < 0.80:
+		return t.P.Yellow
+	default:
+		return t.P.Red
+	}
+}
+
 // NameStrongOn renders a primary identifier (deployment / pod / node name)
 // over the given row bg.
 func (t *Theme) NameStrongOn(s string, bg lipgloss.Style) string {
@@ -231,6 +281,50 @@ func (t *Theme) NameStrongOn(s string, bg lipgloss.Style) string {
 // app shares one shape and one color.
 func (t *Theme) ActiveDot() string {
 	return lipgloss.NewStyle().Foreground(t.P.Green).Render("●")
+}
+
+// FocusGradient returns an n-cell color gradient used by focused panel
+// borders, anchored on `base`. Brand-color anchors (Blue/Cyan/Pink) blend
+// Blue → base → Pink so every focused panel paints the same luminous
+// trichromatic arc — the unmistakable Charm signature. Warning anchors
+// (Yellow/Red) collapse to a flat run so a state signal (yellow=needs-input,
+// red=error) isn't muddied by surrounding hues.
+//
+// The gradient is computed in CIELAB by lipgloss.Blend1D for perceptually
+// even steps; downsamples gracefully to 256-color terminals.
+func (t *Theme) FocusGradient(base color.Color, n int) []color.Color {
+	if n < 1 {
+		n = 1
+	}
+	if base == t.P.Yellow || base == t.P.Red {
+		out := make([]color.Color, n)
+		for i := range out {
+			out[i] = base
+		}
+		return out
+	}
+	return lipgloss.Blend1D(n, t.P.Blue, base, t.P.Pink)
+}
+
+// Divider returns a typographic section heading sized to `width` cells:
+//
+//	── ◇ Title ◇ ──
+//
+// Rules render in Dim, glyphs in Pink, the title in CyanBold — three weights
+// the eye reads as "this is a heading," not just "this is bold text on its
+// own line." When width is too small to fit the rules we drop them and just
+// return the inner `◇ Title ◇` cluster.
+func (t *Theme) Divider(title string, width int) string {
+	glyph := lipgloss.NewStyle().Foreground(t.P.Pink).Render("◇")
+	titleSeg := t.CyanBold.Render(strings.TrimSpace(title))
+	inner := glyph + " " + titleSeg + " " + glyph
+	innerW := lipgloss.Width(inner)
+	if width <= innerW+2 {
+		return inner
+	}
+	half := (width - innerW - 2) / 2
+	rule := t.DimTxt.Render(strings.Repeat("─", half))
+	return rule + " " + inner + " " + rule
 }
 
 func parseRatio(s string) (ready, total int, ok bool) {

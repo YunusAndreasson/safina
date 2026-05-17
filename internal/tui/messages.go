@@ -1,6 +1,19 @@
 package tui
 
-import "time"
+import (
+	"time"
+
+	"github.com/yunus/safina/internal/k8s"
+)
+
+// clusterHealthMsg carries the periodic cluster-health snapshot for the
+// topbar pill. Err is set on failure; the model keeps the previous
+// snapshot on a transient failure rather than zeroing the pill.
+type clusterHealthMsg struct {
+	Context string // the active context at the time of the load
+	Health  k8s.ClusterHealth
+	Err     error
+}
 
 // refreshMsg is delivered every refreshInterval seconds; the root reloads
 // deployments if the main view is active.

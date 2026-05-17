@@ -11,6 +11,7 @@ import (
 	"github.com/yunus/safina/internal/k8s"
 	"github.com/yunus/safina/internal/tui/components"
 	"github.com/yunus/safina/internal/tui/keys"
+	"github.com/yunus/safina/internal/tui/sections"
 	"github.com/yunus/safina/internal/tui/theme"
 )
 
@@ -26,8 +27,6 @@ import (
 // byte. Terminals that don't support the protocol fall back gracefully to
 // v1 semantics; nothing breaks.
 func (m *Model) View() tea.View {
-	// Render first so the chat's layout state (input row offset) is fresh
-	// before we read its hardware-cursor position.
 	content := m.render()
 	v := tea.View{
 		Content:     content,
@@ -38,57 +37,365 @@ func (m *Model) View() tea.View {
 			ReportAlternateKeys: true,
 		},
 	}
-	// Hardware cursor only when the user is actively typing into the chat
-	// textarea, on the main view. Modal states (logs/events/describe/shell/
-	// help/confirm) leave Cursor=nil so the cursor stays hidden.
-	if m.state == stateMain {
+	// Hardware cursor is shown only on the Chat tab while it's active.
+	// Every other surface has its caret implied by the row highlight.
+	if m.state == stateChatView {
 		v.Cursor = m.chat.Cursor()
 	}
 	return v
 }
 
 func (m *Model) render() string {
+	w, h := m.ctx.Width, m.ctx.Height
+	if w < 50 || h < 14 {
+		return m.ctx.Theme.DimPad.Render("terminal too small")
+	}
+
+	// Shell takes the full screen — it owns a pty session, so the tree /
+	// workspace composition is meaningless during a shell session.
+	if m.state == stateShellView {
+		return m.shell.View(m.ctx, w, h)
+	}
+
+	base := m.renderBase(w, h)
+
+	// Overlays compose ON TOP of the base — the tree and workspace stay
+	// visible underneath a dimmed backdrop. This is the cosmic-horizon
+	// design choice: nothing swallows the screen except shells. Confirms,
+	// pickers, palette, help, cluster switcher all float.
+	switch m.state {
+	case stateHelp:
+		return m.composeOverlay(base, m.renderHelpModal())
+	case statePalette:
+		return m.composeOverlay(base, m.palette.View(m.ctx, w, h))
+	case stateClusters:
+		return m.composeOverlay(base, m.clusters.View(m.ctx, w, h, m.ctx.ActiveContext))
+	case stateBrowser:
+		return m.composeOverlay(base, m.browser.View(m.ctx, w, h))
+	case stateScaleInput:
+		return m.composeOverlay(base, m.renderScaleModal())
+	case stateDeleteConfirm:
+		verb, subject := m.deleteConfirmText()
+		return m.composeOverlay(base, m.renderConfirmModal(verb, subject))
+	case stateRollbackConfirm:
+		return m.composeOverlay(base, m.renderConfirmModal("revert deployment", m.deployName()))
+	case stateRestartConfirm:
+		return m.composeOverlay(base, m.renderConfirmModal("restart app", m.deployName()))
+	case stateRestartPodConfirm:
+		return m.composeOverlay(base, m.renderConfirmModal("restart pod", m.tree.SelectedRef().Name))
+	case stateEditConfirm:
+		return m.composeOverlay(base, m.renderEditConfirmModal())
+	case statePortForwardInput:
+		return m.composeOverlay(base, m.renderPortForwardModal())
+	case stateCordonConfirm:
+		verb := "cordon"
+		if !m.nodeTarget.Schedulable {
+			verb = "uncordon"
+		}
+		return m.composeOverlay(base, m.renderConfirmModal(verb+" node", m.nodeTarget.Name))
+	case stateDrainConfirm:
+		subj := m.nodeTarget.Name
+		if m.drainConfirmPods >= 0 {
+			subj = fmt.Sprintf("%s · evicts %d pods", m.nodeTarget.Name, m.drainConfirmPods)
+		}
+		return m.composeOverlay(base, m.renderConfirmModal("drain node", subj))
+	}
+	return base
+}
+
+// composeOverlay layers an overlay (modal / palette / picker) over the base.
+// The overlay strings are already self-positioned (via lipgloss.Place) so we
+// simply return the overlay — Place fills the whole terminal with backdrop
+// dots. The base is captured for the side-effect of any layout state it
+// computed (sizing, selection sync) even though only the overlay is shown.
+func (m *Model) composeOverlay(_, overlay string) string {
+	return overlay
+}
+
+// renderBase composes the steady-state frame: topbar / optional banner /
+// main split / footer. The chat drawer is part of the main split when open.
+func (m *Model) renderBase(w, h int) string {
+	parts := []string{}
+	used := 1 // footer (reserved)
+
+	// Topbar: brand + breadcrumb (with brightness ramp) + clock / refresh /
+	// health on the right. No mode capsule — the focused border already
+	// answers "what surface owns my keystrokes".
+	fwdCount := 0
+	if m.ctx.Manager != nil && m.ctx.Manager.Forwards != nil {
+		fwdCount = m.ctx.Manager.Forwards.Count()
+	}
+	parts = append(parts, components.Topbar(
+		m.ctx.Theme, w,
+		m.tree.BreadcrumbCrumbs(),
+		m.refreshAge(),
+		m.now.Format("15:04:05"),
+		fwdCount,
+		m.topbarClusterHealth(),
+	))
+	used++
+
+	if m.bannerMsg != "" {
+		parts = append(parts, m.renderBanner(w))
+		used++
+	}
+
+	botH := h - used
+	if botH < 8 {
+		botH = 8
+	}
+
+	parts = append(parts, m.renderMainSplit(w, botH), m.renderFooter())
+	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+}
+
+// renderMainSplit composes the body region: a clean two-pane φ split.
+// Tree on the left (38.2%), workspace on the right (61.8%). Chat lives
+// inside the workspace as a tab — no third pane, no drawer geometry. The
+// active surface (tree vs workspace) is implied by which tab is active:
+// Inspector tab → tree drives, immersive tabs (Logs/Events/Yaml/Chat/Hot
+// /Forwards/Drain) → workspace drives.
+func (m *Model) renderMainSplit(w, h int) string {
+	const treeMin = 28
+	treeW, wsW := theme.PhiSplit(w, 0, treeMin)
+	if wsW < 32 {
+		wsW = 32
+		treeW = w - wsW
+		if treeW < treeMin {
+			treeW = treeMin
+		}
+	}
+
+	workspaceFocused := m.workspaceOwnsFocus()
+	// Only one pane wears the gradient border. Sync the tree's Focused field
+	// so its View() draws a flat dim border when the workspace owns focus.
+	// Restored on return so update.go's state transitions remain authoritative.
+	prevTreeFocused := m.tree.Focused
+	m.tree.Focused = !workspaceFocused
+	defer func() { m.tree.Focused = prevTreeFocused }()
+
+	// Chat lives inside the workspace tab; record its screen origin so the
+	// hardware cursor lands at the right pixel when the user types.
+	originX := treeW
+	originY := 1
+	if m.bannerMsg != "" {
+		originY = 2
+	}
+	m.chat.SetScreenOrigin(originX, originY)
+
+	treeView := m.tree.View(m.ctx, treeW, h)
+	workspaceView := m.renderWorkspace(wsW, h, workspaceFocused)
+	return lipgloss.JoinHorizontal(lipgloss.Top, treeView, workspaceView)
+}
+
+// renderWorkspace builds the right-hand workspace pane: a tab strip + the
+// active tab's body, wrapped in a single panel that takes the focus
+// gradient when active. The tab strip lives in the panel's first content
+// row (rather than the title bar) so per-tab styling survives.
+func (m *Model) renderWorkspace(w, h int, focused bool) string {
+	t := m.ctx.Theme
+	active := m.activeWorkspaceTab()
+	availability := m.workspaceTabAvailability()
+	tabs := sections.AvailableTabs(availability)
+	if !containsTab(tabs, active) {
+		active = sections.WSTabInspector
+	}
+
+	inner := sections.WorkspaceBodyWidth(w)
+	bodyH := sections.WorkspaceBodyHeight(h)
+	tabStrip := sections.RenderWorkspaceTabStrip(t, tabs, active, inner)
+	title := m.workspaceTitle(active)
+	body := m.renderTabBody(active, inner, bodyH)
+	return sections.RenderWorkspacePane(t, w, h, title, tabStrip, body, focused)
+}
+
+func containsTab(tabs []sections.WorkspaceTab, want sections.WorkspaceTab) bool {
+	for _, t := range tabs {
+		if t == want {
+			return true
+		}
+	}
+	return false
+}
+
+// workspaceOwnsFocus returns true when the model state designates the
+// workspace pane as the active surface (an immersive tab is open and
+// consuming keystrokes). The tree stays visible but the gradient border
+// migrates to the workspace.
+func (m *Model) workspaceOwnsFocus() bool {
+	switch m.state {
+	case stateLogView, stateEventsView, stateDescribeView,
+		stateHotView, stateForwardsList, stateDrainProgress,
+		stateChatView:
+		return true
+	}
+	return false
+}
+
+// activeWorkspaceTab derives which tab the workspace should display from
+// the model's current state. Immersive states (logs / events / describe /
+// hot / forwards / drain) drive the matching tab; everything else falls
+// back to Inspector (the default).
+func (m *Model) activeWorkspaceTab() sections.WorkspaceTab {
 	switch m.state {
 	case stateLogView:
-		return m.logs.View(m.ctx, m.ctx.Width, m.ctx.Height)
+		return sections.WSTabLogs
 	case stateEventsView:
-		return m.events.View(m.ctx, m.ctx.Width, m.ctx.Height)
+		return sections.WSTabEvents
 	case stateDescribeView:
-		return m.describe.View(m.ctx, m.ctx.Width, m.ctx.Height)
-	case stateShellView:
-		return m.shell.View(m.ctx, m.ctx.Width, m.ctx.Height)
-	case stateHelp:
-		return m.renderHelpModal()
-	case stateScaleInput:
-		return m.renderScaleModal()
-	case stateDeleteConfirm:
-		return m.renderConfirmModal("restart pod", m.podName())
-	case stateRollbackConfirm:
-		return m.renderConfirmModal("revert deployment", m.deployName())
-	case stateRestartConfirm:
-		return m.renderConfirmModal("restart app", m.deployName())
-	case stateEditConfirm:
-		return m.renderEditConfirmModal()
-	case statePalette:
-		// Palette renders over the main view — caller can see the tree
-		// behind the modal backdrop, which helps orient them when they
-		// drill through the palette to a faraway resource.
-		return m.palette.View(m.ctx, m.ctx.Width, m.ctx.Height)
-	default:
-		return m.renderMain()
+		return sections.WSTabYaml
+	case stateChatView:
+		return sections.WSTabChat
+	case stateHotView:
+		return sections.WSTabHot
+	case stateForwardsList:
+		return sections.WSTabForwards
+	case stateDrainProgress:
+		return sections.WSTabDrain
 	}
+	return sections.WSTabInspector
 }
+
+// workspaceTabAvailability returns which tabs are exposed in the strip
+// given the current selection and active operations. Standard tabs
+// (Logs / Events / Yaml) appear when the selected resource supports them;
+// pinned tabs (Hot / Forwards / Drain) appear only while their op is live.
+func (m *Model) workspaceTabAvailability() sections.WSTabAvailability {
+	ref := m.tree.SelectedRef()
+	av := sections.WSTabAvailability{}
+	switch ref.Kind {
+	case k8s.KindPod, k8s.KindContainer:
+		av.Logs, av.Events, av.Yaml = true, true, true
+	case k8s.KindApp:
+		av.Logs, av.Events, av.Yaml = true, true, true
+	case k8s.KindNode:
+		av.Events, av.Yaml = true, true
+	case k8s.KindNamespace, k8s.KindNamespaceFolder,
+		k8s.KindService, k8s.KindIngress, k8s.KindPVC,
+		k8s.KindConfigMap, k8s.KindSecret, k8s.KindPV:
+		av.Events, av.Yaml = true, true
+	}
+	// Chat is always offered once a cluster is picked — the LLM is a tool
+	// the operator always has on the right side of the screen, not a mode.
+	if m.ctx.ActiveContext != "" {
+		av.Chat = true
+	}
+	// Pinned tabs: appear only while their state is active. The user can
+	// switch back to Inspector by pressing 1 (or Esc on the tab).
+	switch m.state {
+	case stateHotView:
+		av.Hot = true
+	case stateForwardsList:
+		av.Forwards = true
+	case stateDrainProgress:
+		av.Drain = true
+	}
+	return av
+}
+
+// workspaceTitle is the panel title — a contextual one-liner anchored to
+// the active tab. Inspector shows the breadcrumb leaf; Logs/Events/Yaml
+// show their own section title; pinned tabs show the operation context.
+func (m *Model) workspaceTitle(tab sections.WorkspaceTab) string {
+	switch tab {
+	case sections.WSTabLogs:
+		return m.logs.PaneTitle()
+	case sections.WSTabEvents:
+		return m.events.PaneTitle()
+	case sections.WSTabYaml:
+		return m.describe.PaneTitle()
+	case sections.WSTabChat:
+		return m.chat.PaneTitle()
+	case sections.WSTabHot:
+		return m.hot.PaneTitle()
+	case sections.WSTabForwards:
+		return m.forwards.PaneTitle()
+	case sections.WSTabDrain:
+		return m.drain.PaneTitle()
+	}
+	// Inspector: leaf of the breadcrumb (the operator's current focus).
+	crumbs := m.tree.BreadcrumbCrumbs()
+	if len(crumbs) > 0 {
+		return crumbs[len(crumbs)-1].Label
+	}
+	return "workspace"
+}
+
+// renderTabBody dispatches to the section that owns the active tab's
+// content. Width and height are the workspace pane's inner content area
+// (the panel border + tab strip + hairline are already subtracted by
+// WorkspaceBodyWidth/Height).
+func (m *Model) renderTabBody(tab sections.WorkspaceTab, w, h int) string {
+	t := m.ctx.Theme
+	switch tab {
+	case sections.WSTabLogs:
+		m.logs.SetPaneSize(w, h)
+		return m.logs.Body(m.ctx)
+	case sections.WSTabEvents:
+		m.events.SetPaneSize(w, h)
+		return m.events.Body(m.ctx)
+	case sections.WSTabYaml:
+		m.describe.SetPaneSize(w, h)
+		return m.describe.Body(m.ctx)
+	case sections.WSTabChat:
+		return m.chat.Body(m.ctx, w, h)
+	case sections.WSTabHot:
+		return m.hot.Body(m.ctx, w, h)
+	case sections.WSTabForwards:
+		return m.forwards.Body(w)
+	case sections.WSTabDrain:
+		return m.drain.Body(w)
+	}
+	// Default: Inspector tab — selection summary stack.
+	if m.ctx.ActiveContext == "" {
+		// At the cluster picker no selection exists yet; show a calm
+		// orientation block instead of an empty Inspector.
+		return sections.IdlePlaceholder(t, w, h, "pick a cluster on the left to begin")
+	}
+	return sections.RenderInspectorTab(m.ctx, w, h, &m.inspector, &m.activity, &m.connected)
+}
+
+// ── banner / topbar helpers ───────────────────────────────────────────
 
 // renderBanner draws the transient status/error line above the main split.
 // Errors render in red (✗), successful action confirmations in green (✓).
-// Both share the same row so a fresh banner of either kind replaces whatever
-// was there — operators only ever look at one slot for "what just happened".
 func (m *Model) renderBanner(w int) string {
 	t := m.ctx.Theme
 	if m.bannerErr {
 		return t.ErrLine.Width(w).Render("  ✗  " + m.bannerMsg)
 	}
 	return t.OkLine.Width(w).Render("  ✓  " + m.bannerMsg)
+}
+
+// topbarClusterHealth packages the model's cluster-health snapshot into
+// the topbar component's render shape. Show=false at the picker, before
+// the first fetch lands, or right after a context switch — the topbar
+// then drops the pill rather than rendering stale numbers.
+func (m *Model) topbarClusterHealth() components.ClusterHealth {
+	if m.clusterHealthCtx == "" || m.clusterHealthCtx != m.ctx.ActiveContext || !m.clusterHealth.HasData() {
+		return components.ClusterHealth{}
+	}
+	h := m.clusterHealth
+	cpuFrac := 0.0
+	if h.CPUAlloc > 0 {
+		cpuFrac = float64(h.CPUUsed) / float64(h.CPUAlloc)
+	}
+	memFrac := 0.0
+	if h.MemAlloc > 0 {
+		memFrac = float64(h.MemUsed) / float64(h.MemAlloc)
+	}
+	return components.ClusterHealth{
+		Show:          true,
+		NodesReady:    h.NodesReady,
+		NodesTotal:    h.NodesTotal,
+		PodsRunning:   h.PodsRunning,
+		PodsCrashing:  h.PodsCrashing,
+		PodsPending:   h.PodsPending,
+		PodsTotal:     h.PodsTotal,
+		CPUFrac:       cpuFrac,
+		MemFrac:       memFrac,
+		PressureCount: h.PressureCount,
+	}
 }
 
 // refreshAge returns the "Ns" / "Nm" age of the last successful tree load,
@@ -113,13 +420,6 @@ func (m *Model) refreshAge() string {
 	return fmt.Sprintf("%dh", mins/60)
 }
 
-func (m *Model) podName() string {
-	if p, ok := m.tree.SelectedPodInfo(); ok {
-		return p.Name
-	}
-	return ""
-}
-
 func (m *Model) deployName() string {
 	if a, ok := m.tree.SelectedAppInfo(); ok {
 		return a.Name
@@ -127,66 +427,36 @@ func (m *Model) deployName() string {
 	return ""
 }
 
-// ── main layout ───────────────────────────────────────────────────────
-
-func (m *Model) renderMain() string {
-	w, h := m.ctx.Width, m.ctx.Height
-	if w < 50 || h < 14 {
-		return m.ctx.Theme.DimPad.Render("terminal too small")
+// deleteConfirmText builds the kind-aware (verb, subject) pair shown in
+// the delete confirm modal.
+func (m *Model) deleteConfirmText() (verb, subject string) {
+	ref := m.tree.SelectedRef()
+	subject = ref.Name
+	switch ref.Kind {
+	case k8s.KindPod:
+		return "delete pod", subject
+	case k8s.KindConfigMap:
+		return "delete configmap", subject
+	case k8s.KindSecret:
+		return "delete secret", subject
+	case k8s.KindService:
+		return "delete service", subject
+	case k8s.KindIngress:
+		return "delete ingress", subject
+	case k8s.KindPVC:
+		return "delete pvc · releases storage", subject
+	case k8s.KindApp:
+		return "delete " + strings.ToLower(ref.SubKind), subject
 	}
-
-	parts := []string{}
-	used := 1 // footer (reserved)
-
-	// Topbar carries the breadcrumb of the user's current tree location —
-	// the canonical "where am I" answer, hoisted from the panel title so
-	// it lives where users instinctively look. Refresh pill confirms data
-	// is live; clock floats right.
-	parts = append(parts, components.Topbar(
-		m.ctx.Theme, w,
-		m.tree.BreadcrumbCrumbs(),
-		m.refreshAge(),
-		m.now.Format("15:04:05"),
-	))
-	used++
-
-	if m.bannerMsg != "" {
-		parts = append(parts, m.renderBanner(w))
-		used++
-	}
-
-	botH := h - used
-	if botH < 8 {
-		botH = 8
-	}
-
-	// 60/40 split — tree stays the working surface, chat earns more width
-	// now that it's a real reading column (40 cols ≈ a comfortable text
-	// measure, where 35% of an 80-col term was too tight to read prose).
-	spacing := 2
-	lw := (w - spacing) * 60 / 100
-	rw := w - lw - spacing
-	// Pre-size the chat so its textarea/viewport math runs before View.
-	m.chat.SetSize(rw, botH)
-	// chatY is the screen row of the chat panel's top edge — sum of
-	// every preceding row block (topbar + optional banner). The chat
-	// uses this to place a real terminal cursor over its textarea.
-	chatY := used - 1 // used counts a reserved footer row that lives below the split
-	m.chat.SetScreenOrigin(lw+spacing, chatY)
-	bottom := lipgloss.JoinHorizontal(lipgloss.Top,
-		m.tree.View(m.ctx, lw, botH),
-		strings.Repeat(" ", spacing),
-		m.chat.View(m.ctx, rw, botH),
-	)
-	parts = append(parts, bottom, m.renderFooter())
-
-	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+	return "delete", subject
 }
+
+// ── footer ────────────────────────────────────────────────────────────
 
 func (m *Model) renderFooter() string {
 	t := m.ctx.Theme
 	var view string
-	if m.chat.Focused {
+	if m.state == stateChatView {
 		view = m.renderChatFooter()
 	} else {
 		view = m.renderTreeFooter()
@@ -199,12 +469,9 @@ func (m *Model) renderFooter() string {
 		Render(view)
 }
 
-// renderTreeFooter renders the contextual short help with two visual
-// layers: action verbs (the per-row "what can I do" set) get the bright
-// HelpKey style; chrome keys (refresh, filter, help, quit) render dim so
-// the eye reads them as global app affordances rather than row actions.
-// Convention says shortcuts live at the bottom — we keep them there but
-// give the operator a hierarchy to scan instead of a flat run of letters.
+// renderTreeFooter renders contextual short help with two visual layers:
+// action verbs are bright; chrome keys (refresh/filter/help/quit) are dim
+// so global affordances read as a separate visual register.
 func (m *Model) renderTreeFooter() string {
 	t := m.ctx.Theme
 	bindings := m.contextualShortHelp()
@@ -213,11 +480,8 @@ func (m *Model) renderTreeFooter() string {
 		m.ctx.Keys.Filter.Help().Key:  true,
 		m.ctx.Keys.Help.Help().Key:    true,
 		m.ctx.Keys.Quit.Help().Key:    true,
-		m.ctx.Keys.Enter.Help().Key:   true, // shows up alone on the cluster picker
+		m.ctx.Keys.Enter.Help().Key:   true,
 	}
-	// Both halves of a chrome entry render in the same dim grey — the
-	// contrast with HelpKey blue-bold is what the eye reads, not internal
-	// key/desc styling within the chrome chunk.
 	dim := lipgloss.NewStyle().Foreground(t.P.Dim)
 	parts := make([]string, 0, len(bindings))
 	for _, b := range bindings {
@@ -232,10 +496,7 @@ func (m *Model) renderTreeFooter() string {
 	return strings.Join(parts, sep)
 }
 
-// renderChatFooter mirrors contextualShortHelp's role for chat: a one-glance
-// "what can I do here". We hand-roll it instead of going through bubbles/help
-// because the chat keymap is tiny and four of the five entries are control
-// chords that don't fit the help.Model's Binding model cleanly.
+// renderChatFooter mirrors contextualShortHelp's role for chat.
 func (m *Model) renderChatFooter() string {
 	t := m.ctx.Theme
 	pair := func(k, d string) string {
@@ -252,74 +513,81 @@ func (m *Model) renderChatFooter() string {
 		pair("tab", "tree"),
 		pair("⌃l", "clear"),
 		pair("⌃n", "new"),
-		pair("?", "help"),
 	}
 	return strings.Join(parts, sep)
 }
 
 // contextualShortHelp builds the footer keymap from the current tree row.
 //
-// Three principles keep the footer scannable instead of overwhelming:
+// Convention:
 //
 //  1. Universal nav (↑/↓/↵/esc) is never restated — Jakob's rule.
-//  2. Action verbs follow a single ordering — inspect verbs first
-//     (d/l/e/v/S in that order), then change verbs (x/s/r/E). Operators
-//     learn one column once and find what they need by position, not by
-//     hunting the alphabet.
-//  3. Tail chrome is trimmed to row-relevant keys plus help/quit. F
-//     (next-fail) and i (ask — Tab is the discoverable alias) live in
-//     the `?` modal; they don't need to repeat on every redraw.
+//  2. Reads (lowercase) come first, mutators (uppercase / ctrl-chord)
+//     come after. Within each half, alphabetical by source-of-truth
+//     definition order.
+//  3. Tail chrome (refresh, filter, help, quit) sits at the right, dim,
+//     so global affordances read as a separate visual register.
 func (m *Model) contextualShortHelp() []key.Binding {
 	k := m.ctx.Keys
-
-	// Always-on chrome keys. Refresh only matters inside a cluster, so we
-	// drop it at the context-list level.
 	tail := []key.Binding{k.Filter, k.Help, k.Quit}
 	if m.tree.Focus().Kind != k8s.KindContextList {
 		tail = append([]key.Binding{k.Refresh}, tail...)
 	}
 
 	ref := m.tree.SelectedRef()
-	head := []key.Binding{}
+	reads := []key.Binding{}
+	mutators := []key.Binding{}
 	switch ref.Kind {
 	case k8s.KindContext:
-		// At the cluster picker, ↵ to drill in is the only thing to teach.
 		return append([]key.Binding{k.Enter}, tail...)
 	case k8s.KindApp:
-		head = append(head, k.Describe, k.Logs, k.Events)
-		// Restart is only wired for Deployment/StatefulSet/DaemonSet;
-		// CronJob/Job don't accept a rolling-restart, so we drop the
-		// hint there rather than tease a verb that's a no-op.
+		reads = append(reads, k.Describe, k.Logs, k.Events)
+		if ref.SubKind == k8s.AppKindDeployment || ref.SubKind == k8s.AppKindStatefulSet {
+			mutators = append(mutators, k.Scale)
+		}
+		if ref.SubKind == k8s.AppKindDeployment {
+			mutators = append(mutators, k.Rollback)
+		}
 		if ref.SubKind == k8s.AppKindDeployment ||
 			ref.SubKind == k8s.AppKindStatefulSet ||
 			ref.SubKind == k8s.AppKindDaemonSet {
-			head = append(head, k.Restart)
-		}
-		if ref.SubKind == k8s.AppKindDeployment || ref.SubKind == k8s.AppKindStatefulSet {
-			head = append(head, k.Scale)
-		}
-		if ref.SubKind == k8s.AppKindDeployment {
-			head = append(head, k.Rollback)
+			mutators = append(mutators, k.Restart)
 		}
 	case k8s.KindPod:
-		head = append(head, k.Describe, k.Logs, k.Events, k.Shell, k.Restart)
+		reads = append(reads, k.Describe, k.Logs, k.Events, k.Shell, k.PortForward)
+		mutators = append(mutators, k.Restart)
 	case k8s.KindContainer:
-		head = append(head, k.Describe, k.Logs, k.Shell)
-	case k8s.KindNode, k8s.KindNamespace:
-		head = append(head, k.Describe, k.Events)
+		reads = append(reads, k.Describe, k.Logs, k.Events, k.Shell)
+	case k8s.KindNode:
+		reads = append(reads, k.Describe, k.Events)
+		cordonVerb := k.Cordon
+		if info, ok := m.tree.SelectedNodeInfo(); ok && !info.Schedulable {
+			cordonVerb = key.NewBinding(
+				key.WithKeys(k.Cordon.Help().Key),
+				key.WithHelp(k.Cordon.Help().Key, "uncordon"),
+			)
+		}
+		mutators = append(mutators, cordonVerb, k.Drain)
+	case k8s.KindNamespace, k8s.KindNamespaceFolder:
+		reads = append(reads, k.Describe, k.Events)
 	case k8s.KindConfigMap:
-		head = append(head, k.Describe)
+		reads = append(reads, k.Describe)
 	case k8s.KindSecret:
-		head = append(head, k.Describe, k.Reveal)
-	case k8s.KindService, k8s.KindPVC:
-		head = append(head, k.Describe, k.Events)
+		reads = append(reads, k.Describe, k.Reveal)
+	case k8s.KindService:
+		reads = append(reads, k.Describe, k.Events, k.PortForward)
+	case k8s.KindPVC:
+		reads = append(reads, k.Describe, k.Events)
 	case k8s.KindIngress, k8s.KindPV:
-		head = append(head, k.Describe)
+		reads = append(reads, k.Describe)
 	}
 	if editKindFor(ref) != "" {
-		head = append(head, k.Edit)
+		mutators = append(mutators, k.Edit)
 	}
-	return append(head, tail...)
+	if deletableKind(ref) {
+		mutators = append(mutators, k.Delete)
+	}
+	return append(append(reads, mutators...), tail...)
 }
 
 // ── modals ────────────────────────────────────────────────────────────
@@ -335,11 +603,51 @@ func (m *Model) modalBackdrop() []lipgloss.WhitespaceOption {
 func (m *Model) renderScaleModal() string {
 	t := m.ctx.Theme
 	deploy := m.deployName()
-	content := lipgloss.JoinVertical(lipgloss.Left,
-		t.BlueBold.Render("scale "+deploy),
+	subtitle := ""
+	if app, ok := m.tree.SelectedAppInfo(); ok {
+		if cur := currentDesiredReplicas(app); cur >= 0 {
+			subtitle = fmt.Sprintf("now: %d replicas", cur)
+		}
+	}
+	parts := []string{t.BlueBold.Render("scale " + deploy)}
+	if subtitle != "" {
+		parts = append(parts, t.DimTxt.Render(subtitle))
+	}
+	parts = append(parts,
 		"",
 		m.scaleInput.View(),
 		"",
+		t.DimTxt.Italic(true).Render("Enter confirm  Esc cancel"),
+	)
+	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
+	return lipgloss.Place(m.ctx.Width, m.ctx.Height, lipgloss.Center, lipgloss.Center,
+		t.Modal.Render(content), m.modalBackdrop()...)
+}
+
+func currentDesiredReplicas(app k8s.AppInfo) int {
+	parts := strings.SplitN(app.Ready, "/", 2)
+	if len(parts) != 2 {
+		return -1
+	}
+	n := 0
+	for _, r := range parts[1] {
+		if r < '0' || r > '9' {
+			return -1
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n
+}
+
+func (m *Model) renderPortForwardModal() string {
+	t := m.ctx.Theme
+	subject := strings.ToLower(m.pfTarget.Kind) + " " + m.pfTarget.Name
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		t.BlueBold.Render("port-forward "+subject),
+		"",
+		m.pfInput.View(),
+		"",
+		t.DimTxt.Italic(true).Render("L:R or single port (same on both sides)"),
 		t.DimTxt.Italic(true).Render("Enter confirm  Esc cancel"),
 	)
 	return lipgloss.Place(m.ctx.Width, m.ctx.Height, lipgloss.Center, lipgloss.Center,
@@ -356,10 +664,6 @@ func (m *Model) renderEditConfirmModal() string {
 		added, removed := m.edit.LineDiffStat()
 		subject = "apply edits to " + m.edit.Kind
 		resource = m.edit.Namespace + "/" + m.edit.Name
-		// Plus is green, minus is red — matches the diff convention every
-		// engineer already has muscle memory for. Stat sits above the
-		// full unified diff as a one-line headline; the diff itself
-		// answers "what specifically am I changing" with proper color.
 		stat = lipgloss.NewStyle().Foreground(t.P.Green).Render(fmt.Sprintf("+%d", added)) +
 			"  " +
 			lipgloss.NewStyle().Foreground(t.P.Red).Render(fmt.Sprintf("−%d", removed)) +
@@ -413,8 +717,9 @@ func (m *Model) renderHelpModal() string {
 		cols = append(cols, c)
 	}
 	body := lipgloss.JoinHorizontal(lipgloss.Top, cols...)
+	bodyW := lipgloss.Width(body)
 	content := lipgloss.JoinVertical(lipgloss.Left,
-		t.CyanBold.Render("◆ keybindings"),
+		t.Divider("keybindings", bodyW),
 		"",
 		body,
 		"",
@@ -424,11 +729,8 @@ func (m *Model) renderHelpModal() string {
 		t.Modal.Padding(1, 2).Render(content), m.modalBackdrop()...)
 }
 
-// renderHelpGroup formats a single column of the help modal: a dim title,
-// a thin separator, then `key  desc` rows. Key glyph is fixed-width so the
-// descriptions line up; widest single-glyph in the keymap is "esc" (3 cells).
 func renderHelpGroup(t *theme.Theme, g keys.Group) string {
-	const keyW = 4
+	keyW := widestKey(g)
 	lines := []string{
 		t.CyanBold.Render(g.Title),
 		t.DimTxt.Render(strings.Repeat("─", 8)),
@@ -441,6 +743,22 @@ func renderHelpGroup(t *theme.Theme, g keys.Group) string {
 		lines = append(lines, helpRow(t, keyW, h.Key, h.Desc))
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)
+}
+
+func widestKey(g keys.Group) int {
+	w := 4
+	measure := func(s string) {
+		if n := lipgloss.Width(s); n > w {
+			w = n
+		}
+	}
+	for _, p := range g.Pairs {
+		measure(p.Key)
+	}
+	for _, b := range g.Bindings {
+		measure(b.Help().Key)
+	}
+	return w
 }
 
 func helpRow(t *theme.Theme, keyW int, k, desc string) string {

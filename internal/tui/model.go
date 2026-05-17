@@ -29,6 +29,13 @@ type state int
 
 const (
 	stateMain state = iota
+	// stateLogView / stateEventsView / stateDescribeView / stateHotView /
+	// stateForwardsList / stateDrainProgress are kept as drivers of *which*
+	// workspace tab is active. In the cosmic-horizon redesign these are no
+	// longer full-screen modals — they render as tabs inside the workspace
+	// pane while the tree stays visible. Update paths still flip state to
+	// drive the tab activation; renderMain consults the state and selects
+	// the matching WorkspaceTab.
 	stateLogView
 	stateEventsView
 	stateDescribeView
@@ -37,9 +44,33 @@ const (
 	stateDeleteConfirm
 	stateRollbackConfirm
 	stateRestartConfirm
+	// stateRestartPodConfirm is the y/n gate when the user pressed R on a
+	// Pod row. Mechanically a delete (the parent controller recreates the
+	// pod), but the modal title + success banner read "restart" — same verb
+	// the keymap and footer taught.
+	stateRestartPodConfirm
 	stateShellView
 	stateEditConfirm
 	statePalette
+	statePortForwardInput
+	stateForwardsList
+	stateCordonConfirm
+	stateDrainConfirm
+	stateDrainProgress
+	// stateHotView is the noisy-neighbours view: top-N pods cluster-wide by
+	// CPU usage. Renders as a pinned workspace tab while active.
+	stateHotView
+	// stateBrowser is the Resource Browser modal — toggles tree folds.
+	stateBrowser
+	// stateClusters is the Ctrl+K cluster-switcher overlay. Memory rule:
+	// no auto-default at startup; mid-session switching is opt-in via
+	// this overlay (jumps to the same load path the tree's root drill uses).
+	stateClusters
+	// stateChatView is the workspace's Chat tab being active. The chat
+	// textarea captures keystrokes while we're in this state; pressing Esc
+	// (or `1`) switches back to the Inspector tab — same affordance as
+	// closing any other immersive tab.
+	stateChatView
 )
 
 // editSession holds the in-flight YAML-edit lifecycle: the original bytes,
@@ -89,13 +120,31 @@ func (s *editSession) LineDiffStat() (added, removed int) {
 type Model struct {
 	ctx *tuictx.Ctx
 
-	tree     sections.Tree
-	chat     sections.Chat
-	logs     sections.Logs
-	events   sections.Events
-	describe sections.Describe
-	shell    sections.Shell
-	palette  sections.Palette
+	tree      sections.Tree
+	chat      sections.Chat
+	logs      sections.Logs
+	events    sections.Events
+	describe  sections.Describe
+	shell     sections.Shell
+	palette   sections.Palette
+	browser   sections.Browser
+	forwards  sections.Forwards
+	drain     sections.Drain
+	inspector sections.Inspector
+	activity  sections.Activity
+	connected sections.Connected
+	hot       sections.Hot
+	clusters  sections.ClusterSwitcher
+
+	// allContexts caches the kube-context list for the Ctrl+K switcher.
+	// Seeded by SetContexts at startup.
+	allContexts []config.ContextInfo
+
+	// discoveryByContext caches whether ListAvailableResources has
+	// already populated the tree's discovery cache for a given context.
+	// Reset on every NewModel; entries cleared on cluster switch in the
+	// TreeFocusChangedMsg handler so the next entry refetches.
+	discoveryByContext map[string]bool
 
 	// claudeSvc is the long-lived bridge to the user's `claude` CLI. One
 	// per safina process; subsequent turns resume the same conversation.
@@ -109,6 +158,32 @@ type Model struct {
 
 	help       help.Model
 	scaleInput textinput.Model
+	// pfInput collects the "L:R" pair for a new port-forward. Reused across
+	// every start; cleared on each open.
+	pfInput textinput.Model
+	// pfTarget remembers the (kind, ns, name) the user pressed `f` on so the
+	// confirm-enter path doesn't re-query the tree (the tree cursor may have
+	// moved before the user finishes typing).
+	pfTarget struct {
+		Kind, Namespace, Name string
+	}
+
+	// nodeTarget pins the node the user pressed C/D on, so the confirm
+	// flow doesn't have to re-read the tree cursor (which may have moved
+	// while the operator hesitated over the y/n prompt).
+	nodeTarget struct {
+		Name        string
+		Schedulable bool // captured at keypress; drives the C-toggle's verb
+	}
+
+	// drainConfirmPods is the pod count shown in the drain confirm modal
+	// ("will evict N pods"). -1 means "still loading"; 0+ means landed.
+	drainConfirmPods int
+
+	// drainCh holds the running drain's event channel between
+	// DrainStartedMsg and the final Done event so successive
+	// NextDrainEvent reads target the same chan.
+	drainCh sections.DrainStream
 
 	// banner is the transient one-line message rendered above the main
 	// split — errors in red, action confirmations in green. Both share the
@@ -138,6 +213,21 @@ type Model struct {
 	// can tell at a glance whether the data on screen is live or stale.
 	// Zero-value while at the picker or before the first load lands.
 	lastRefresh time.Time
+
+	// clusterHealth is the most recent snapshot rendered into the topbar
+	// pill. Updated by clusterHealthMsg on a slower cadence than the tree
+	// refresh (the data sources are cluster-scoped list calls, not per-row
+	// reads). HasData() returns false until the first successful load lands.
+	clusterHealth k8s.ClusterHealth
+	// clusterHealthAt is when clusterHealth was last successfully refreshed —
+	// used to throttle the next fetch, and to drop the snapshot when the
+	// user switches clusters so a stale value from cluster A doesn't render
+	// over cluster B.
+	clusterHealthAt time.Time
+	// clusterHealthCtx is the context name clusterHealth was loaded against;
+	// reset to "" on context switch so the pill blanks until the new
+	// cluster's first fetch lands.
+	clusterHealthCtx string
 
 	// title is the terminal-tab title rendered declaratively via tea.View.
 	// Updated whenever the active cluster changes so on-callers running
@@ -182,6 +272,19 @@ func NewModel(mgr *k8s.Manager, cfg *config.AppConfig) Model {
 	scaleStyles.Blurred.Placeholder = t.DimTxt
 	scale.SetStyles(scaleStyles)
 
+	pf := textinput.New()
+	pf.Placeholder = "8080:80"
+	pf.CharLimit = 12
+	pf.Prompt = "› "
+	pfStyles := pf.Styles()
+	pfStyles.Focused.Prompt = prompt
+	pfStyles.Focused.Text = text
+	pfStyles.Focused.Placeholder = t.DimTxt
+	pfStyles.Blurred.Prompt = prompt
+	pfStyles.Blurred.Text = text
+	pfStyles.Blurred.Placeholder = t.DimTxt
+	pf.SetStyles(pfStyles)
+
 	hp := help.New()
 	hp.Styles.ShortKey = t.HelpKey
 	hp.Styles.ShortDesc = t.HelpDesc
@@ -196,29 +299,43 @@ func NewModel(mgr *k8s.Manager, cfg *config.AppConfig) Model {
 	svc := claude.NewService()
 
 	m := Model{
-		ctx:        c,
-		tree:       sections.NewTree(c),
-		chat:       sections.NewChat(c, svc),
-		logs:       sections.NewLogs(c),
-		events:     sections.NewEvents(c),
-		describe:   sections.NewDescribe(c),
-		shell:      sections.NewShell(c),
-		palette:    sections.NewPalette(),
-		claudeSvc:  svc,
-		state:      stateMain,
-		help:       hp,
-		scaleInput: scale,
-		now:        time.Now(),
-		title:      "safina",
+		ctx:                c,
+		tree:               sections.NewTree(c),
+		chat:               sections.NewChat(c, svc),
+		logs:               sections.NewLogs(c),
+		events:             sections.NewEvents(c),
+		describe:           sections.NewDescribe(c),
+		shell:              sections.NewShell(c),
+		palette:            sections.NewPalette(),
+		browser:            sections.NewBrowser(),
+		forwards:           sections.NewForwards(c),
+		drain:              sections.NewDrain(c),
+		inspector:          sections.NewInspector(),
+		activity:           sections.NewActivity(),
+		connected:          sections.NewConnected(),
+		hot:                sections.NewHot(),
+		clusters:           sections.NewClusterSwitcher(),
+		claudeSvc:          svc,
+		state:              stateMain,
+		help:               hp,
+		scaleInput:         scale,
+		pfInput:            pf,
+		now:                time.Now(),
+		title:              "safina",
+		discoveryByContext: make(map[string]bool),
 	}
 	m.tree.Focused = true
+	if cfg != nil {
+		m.tree.SetEnabledResources(cfg.EnabledResources)
+	}
 	return m
 }
 
 // syncChatContext pushes the latest tree selection into the chat panel so
 // the strip + chips reflect "now". Cheap to call on every key press —
 // rendering the strip is O(path-length) and we don't rebuild the prompt
-// payload until the user actually sends.
+// payload until the user actually sends. Does NOT touch the right-stack
+// tiles; callers that need those should use syncSelection.
 func (m *Model) syncChatContext() {
 	snap := sections.BuildContextSnapshot(&m.tree, m.ctx.ActiveContext)
 	suggested := []string{}
@@ -229,12 +346,72 @@ func (m *Model) syncChatContext() {
 	m.chat.SetCrumbs(snap.Crumbs, suggested)
 }
 
+// syncSelection refreshes everything that tracks the tree cursor: chat
+// context strip, Inspector (with optional deep-fetch), Activity (with
+// optional events fetch). Returns a batched Cmd the caller plumbs into
+// the outer Update return; nil when there's nothing to load.
+func (m *Model) syncSelection() tea.Cmd {
+	m.syncChatContext()
+	// Inspector rebuilds its base snapshot synchronously and may
+	// request a kind-specific detail fetch when the selection changed.
+	inspectCmd := m.inspector.SetSelection(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext, &m.tree)
+	connCmd := m.connected.SetSelection(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext, &m.tree)
+
+	if m.ctx.ActiveContext == "" || m.ctx.Manager == nil {
+		return tea.Batch(inspectCmd, connCmd)
+	}
+	ref := m.tree.SelectedRef()
+	kind, ns, name := activityTarget(ref, &m.tree)
+	if kind == "" {
+		m.activity.Clear()
+		return tea.Batch(inspectCmd, connCmd)
+	}
+	actCmd := m.activity.SetSelection(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext, kind, name, ns)
+	return tea.Batch(inspectCmd, actCmd, connCmd)
+}
+
+// activityTarget maps a tree NodeRef to the involvedObject triple the
+// Events API expects, or returns kind == "" for non-eventable rows
+// (folds, contexts, sentinels). For containers we route through the
+// parent pod, mirroring the events-modal behaviour.
+func activityTarget(ref sections.NodeRef, tr *sections.Tree) (kind, ns, name string) {
+	switch ref.Kind {
+	case k8s.KindApp:
+		return ref.SubKind, ref.Namespace, ref.Name
+	case k8s.KindPod:
+		return "Pod", ref.Namespace, ref.Name
+	case k8s.KindContainer:
+		pod := tr.Focus()
+		return "Pod", pod.Namespace, pod.Name
+	case k8s.KindNode:
+		return "Node", "", ref.Name
+	case k8s.KindNamespace, k8s.KindNamespaceFolder:
+		return "Namespace", "", ref.Name
+	case k8s.KindService:
+		return "Service", ref.Namespace, ref.Name
+	case k8s.KindIngress:
+		return "Ingress", ref.Namespace, ref.Name
+	case k8s.KindPVC:
+		return "PersistentVolumeClaim", ref.Namespace, ref.Name
+	case k8s.KindPV:
+		return "PersistentVolume", "", ref.Name
+	case k8s.KindConfigMap:
+		return "ConfigMap", ref.Namespace, ref.Name
+	case k8s.KindSecret:
+		return "Secret", ref.Namespace, ref.Name
+	}
+	return "", "", ""
+}
+
 // SetContexts seeds the tree's root level with the kube contexts list. The
 // app always starts at the picker on row 0 — every launch is an explicit
 // "which cluster am I working on right now?" with no defaults, no last-used
-// hints, and no muscle-memory shortcuts.
+// hints, and no muscle-memory shortcuts. We also cache the list on the model
+// so the Ctrl+K cluster-switcher overlay can read it without going through
+// the tree.
 func (m *Model) SetContexts(items []config.ContextInfo) {
 	m.tree.SeedContexts(items)
+	m.allContexts = items
 }
 
 // SetActiveContext is the CLI hook (--context). It just sets the active
@@ -256,11 +433,23 @@ func (m *Model) SetStartupBanner(msg string) {
 }
 
 func (m *Model) saveConfig() {
-	cfg := &config.AppConfig{
-		LastCluster:   m.ctx.ActiveContext,
-		LastNamespace: m.ctx.ActiveNamespace,
+	// Preserve the rest of the config (EnabledResources, namespace
+	// overrides) — saveConfig is called from every quit path, so a
+	// fresh struct here would silently wipe user customisation.
+	cfg := m.ctx.AppCfg
+	if cfg == nil {
+		cfg = &config.AppConfig{}
 	}
+	cfg.LastCluster = m.ctx.ActiveContext
+	cfg.LastNamespace = m.ctx.ActiveNamespace
 	_ = config.Save(cfg)
+	// Forwards live in user space (a local TCP listener); they don't survive
+	// the process anyway, but we close them explicitly so the topbar pill
+	// can't lie about active count if anything else inspects the manager
+	// between Quit and exit.
+	if m.ctx.Manager != nil && m.ctx.Manager.Forwards != nil {
+		m.ctx.Manager.Forwards.StopAll()
+	}
 }
 
 // Init satisfies tea.Model. Kicks off the auto-refresh tick, the wall-clock
@@ -324,10 +513,46 @@ func (m *Model) loadTreeFocus() tea.Cmd {
 	return sections.LoadTreeChildren(cctx, m.ctx.Manager, m.ctx.ActiveContext, m.tree.Path(), userNS, sysNS)
 }
 
+// clusterHealthRefreshInterval is the throttle between cluster-health
+// fetches. The pill data is cluster-scoped (lists every node and every
+// pod) — heavier than per-row reads, so we refresh on a less aggressive
+// cadence than the 5s tree tick. 15s mirrors the activity tile's own
+// throttle and is fast enough to feel "live" without hammering the API
+// when the operator is just sitting on a screen.
+const clusterHealthRefreshInterval = 15 * time.Second
+
+// loadClusterHealth issues a cluster-health fetch for the active context.
+// The returned command's result is consumed by clusterHealthMsg in the
+// update loop. Cancellation rides on m.ctx.Background — a context switch
+// cancels in-flight loads so a slow API call from a previous cluster
+// can't clobber the new cluster's pill.
+func (m *Model) loadClusterHealth() tea.Cmd {
+	if m.ctx.Manager == nil || m.ctx.ActiveContext == "" {
+		return nil
+	}
+	client, ok := m.ctx.Manager.GetClient(m.ctx.ActiveContext)
+	if !ok || client == nil || client.Clientset == nil {
+		return nil
+	}
+	cs := client.Clientset
+	bg := m.ctx.Background
+	active := m.ctx.ActiveContext
+	return func() tea.Msg {
+		h, err := k8s.LoadClusterHealth(bg, cs)
+		return clusterHealthMsg{Context: active, Health: h, Err: err}
+	}
+}
+
 // windowTitleFor returns the OS-level terminal window title for the current
 // tree path. Operators with several terminal tabs read the title bar to
 // identify which cluster (and which resource within it) a tab is pointed at.
 // Cluster, then drilled segments — capped so window-list flyouts stay legible.
+//
+// Truncation strategy: when the full string exceeds max, keep the first
+// crumb (cluster — answers "where am I") and the last crumb (leaf —
+// answers "looking at what") and ellipsise the middle. A trailing-cut
+// would drop the leaf, which is the most specific identifier and the one
+// users disambiguate tabs by.
 func windowTitleFor(crumbs []components.Crumb) string {
 	if len(crumbs) <= 1 {
 		// At the cluster picker (or before any drill) there's no useful detail
@@ -341,12 +566,29 @@ func windowTitleFor(crumbs []components.Crumb) string {
 			parts = append(parts, c.Label)
 		}
 	}
-	t := "safina · " + strings.Join(parts, " · ")
-	if len(t) > max {
-		// Account for the 3-byte UTF-8 ellipsis character.
-		t = t[:max-3] + "…"
+	full := "safina · " + strings.Join(parts, " · ")
+	if len(full) <= max {
+		return full
 	}
-	return t
+	// Two-or-fewer crumbs already cooperate with a trailing cut.
+	if len(parts) <= 2 {
+		return full[:max-3] + "…"
+	}
+	first, last := parts[0], parts[len(parts)-1]
+	short := "safina · " + first + " · … · " + last
+	if len(short) <= max {
+		return short
+	}
+	// Leaf alone is more useful than cluster alone when even the short
+	// form overflows (deep cluster names + deep leaf names). Keep the
+	// leaf, drop the cluster.
+	short = "safina · … · " + last
+	if len(short) <= max {
+		return short
+	}
+	// Final fallback: cut the leaf itself. We've done our best to keep
+	// something readable.
+	return short[:max-3] + "…"
 }
 
 // clockTick emits one clockMsg per second.
@@ -354,12 +596,14 @@ func (m *Model) clockTick() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return clockMsg(t) })
 }
 
-// Banner TTLs. Errors stay up longer because operators usually want to read
-// the message; success confirmations are deliberately brief — they're just a
-// breadcrumb that the action took, not something to study.
+// Banner TTLs follow a φ progression so dwell time scales with severity in
+// a perceptually-natural way. A confirmation is a breadcrumb (read in
+// peripheral vision); a warning needs a glance; an error needs reading.
+// Ratios 1 : φ : φ² ≈ 1 : 1.618 : 2.618 anchored at 1.5s.
 const (
-	bannerErrorTTL  = 6 * time.Second
-	bannerStatusTTL = 3500 * time.Millisecond
+	bannerStatusTTL = 1500 * time.Millisecond
+	bannerWarnTTL   = 2425 * time.Millisecond // 1.5s × φ
+	bannerErrorTTL  = 3925 * time.Millisecond // 1.5s × φ²
 )
 
 // raiseBanner sets a new banner and schedules its dismissal. Bumps the epoch

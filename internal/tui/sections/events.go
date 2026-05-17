@@ -108,6 +108,34 @@ func (s *Events) SetSize(termW, termH int) {
 	s.recomputeViewportSize()
 }
 
+// SetPaneSize sizes the section for inline rendering inside the workspace
+// body area (innerW × innerH). The workspace pane owns the outer border;
+// modalW/H are back-computed so existing chrome math (ModalChrome = 4)
+// resolves the viewport to (innerW, innerH-2). See logs.SetPaneSize.
+func (s *Events) SetPaneSize(innerW, innerH int) {
+	if innerW < 14 {
+		innerW = 14
+	}
+	if innerH < 4 {
+		innerH = 4
+	}
+	s.modalW = innerW + 2
+	s.modalH = innerH + 2
+	s.recomputeViewportSize()
+}
+
+// Body returns unframed content for the workspace tab embedding.
+func (s *Events) Body(c *tuictx.Ctx) string {
+	return lipgloss.JoinVertical(lipgloss.Left,
+		s.renderStatusRow(c),
+		s.viewportBlock(c),
+		s.renderKeysRow(),
+	)
+}
+
+// PaneTitle returns the workspace tab title.
+func (s *Events) PaneTitle() string { return s.Title() }
+
 func (s *Events) recomputeViewportSize() {
 	inner := components.PanelContentWidth(s.modalW)
 	s.vp.SetWidth(inner)
@@ -241,17 +269,6 @@ func (s *Events) handleFilterKey(km tea.KeyPressMsg) (tea.Cmd, bool) {
 	return cmd, false
 }
 
-// View renders the events modal centred over the same dim dot backdrop the
-// other modals use.
-func (s *Events) View(c *tuictx.Ctx, termW, termH int) string {
-	return components.RenderModal(c.Theme, termW, termH, s.modalW, s.modalH,
-		s.Title(),
-		s.renderStatusRow(c),
-		s.viewportBlock(c),
-		s.renderKeysRow(),
-	)
-}
-
 func (s *Events) viewportBlock(c *tuictx.Ctx) string {
 	st := components.BlockState{}
 	switch {
@@ -288,7 +305,7 @@ func (s *Events) renderStatusRow(c *tuictx.Ctx) string {
 func (s *Events) renderKeysRow() string {
 	return components.RenderModalKeysRow(s.theme, []components.KeyDesc{
 		{Key: "/", Desc: "filter"},
-		{Key: "R", Desc: "refresh"},
+		{Key: "r", Desc: "refresh"},
 		{Key: "j/k", Desc: "scroll"},
 		{Key: "ctrl+l", Desc: "clear"},
 		{Key: "esc", Desc: "close"},

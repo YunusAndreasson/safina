@@ -38,6 +38,40 @@ type Map struct {
 	// the diff is gated behind a y/n confirm before any write hits the
 	// cluster. Uppercase E because lowercase e is taken by Events.
 	Edit key.Binding
+	// PortForward opens the port-forward input modal for a Pod or Service.
+	// Lower-case `f` is free.
+	PortForward key.Binding
+	// Forwards opens the active-forwards list from anywhere in the app —
+	// users need a hotkey that works while focused on chat, logs, etc.,
+	// not just on the originating row.
+	Forwards key.Binding
+	// Cordon toggles a node's schedulable state (one verb in the UI,
+	// cordon-or-uncordon under the hood — kubectl's split is leaked
+	// plumbing the on-caller doesn't need).
+	Cordon key.Binding
+	// Drain evicts a node's pods. Uppercase D to keep `d` (Describe) intact.
+	Drain key.Binding
+	// Hot opens the noisy-neighbours modal — top-N pods cluster-wide
+	// sorted by CPU usage. Read-only and cluster-global (not tied to the
+	// tree cursor), so an `H` chord is the right shape: discoverable in
+	// the footer, not a fat-finger risk, distinct from the structural
+	// drill navigation.
+	Hot key.Binding
+	// Configure opens the Resource Browser modal — the user picks which
+	// kubernetes resource kinds appear as folds in the tree. Bound to
+	// `,` (vim-leader convention; single keystroke; not used elsewhere
+	// in the app). Settings, not a verb on a row, so it sits in the
+	// "meta" help group.
+	Configure key.Binding
+	// ClusterSwitch (Ctrl+K) opens the mid-session cluster-switcher
+	// overlay. Memory rule "no default cluster" governs the cold start;
+	// this is the discoverable escape hatch for "I want to look at a
+	// different cluster right now" without popping back to the root.
+	ClusterSwitch key.Binding
+	// Yaml binds to `y` and jumps the workspace to the Yaml tab (alias
+	// for Describe — the cosmic-horizon UI calls the YAML view "Yaml"
+	// rather than "Describe" since the latter is a kubectl-ism).
+	Yaml key.Binding
 }
 
 // Default builds the standard keybindings.
@@ -47,41 +81,74 @@ func Default() Map {
 		// The arrow glyphs already carry the meaning; drop the labels so the
 		// help modal's description column reserves space for keys that aren't
 		// universally known.
-		Up:       key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "")),
-		Down:     key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "")),
-		Enter:    key.NewBinding(key.WithKeys("enter"), key.WithHelp("↵", "")),
-		Back:     key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "")),
-		Quit:     key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
-		Delete:   key.NewBinding(key.WithKeys("ctrl+d"), key.WithHelp("ctrl+d", "delete pod")),
+		Up:    key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "")),
+		Down:  key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "")),
+		Enter: key.NewBinding(key.WithKeys("enter"), key.WithHelp("↵", "")),
+		Back:  key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
+		Quit:  key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
+		// Delete uses K (kill, unix convention) rather than ctrl+d — the
+		// chord collides with EOF muscle memory in every shell/REPL, and a
+		// shifted single letter is faster from the home row anyway. K
+		// shares its "loud verb" feel with the rest of the mutator block.
+		Delete:   key.NewBinding(key.WithKeys("K"), key.WithHelp("K", "kill")),
 		Describe: key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "describe")),
-		Scale:    key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "scale")),
-		Rollback: key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "revert")),
-		Restart:  key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "restart")),
+		// Convention: lowercase = read-only; uppercase = mutates cluster
+		// state. Reading is safe to fat-finger; mutating requires the shift
+		// key. Same hierarchy as vi's d/D. The uppercase letters spell the
+		// English verb: S(cale) U(ndo) R(estart) E(dit) C(ordon) D(rain) K(ill).
+		Scale:    key.NewBinding(key.WithKeys("S"), key.WithHelp("S", "scale")),
+		Rollback: key.NewBinding(key.WithKeys("U"), key.WithHelp("U", "undo")),
+		Restart:  key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "restart")),
 		Logs:     key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "logs")),
 		Events:   key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "events")),
-		Shell:    key.NewBinding(key.WithKeys("S"), key.WithHelp("S", "shell")),
+		Shell:    key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "shell")),
 		Help:     key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
-		Refresh:  key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "refresh")),
+		Refresh:  key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
 		Filter:   key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),
 
-		FirstFail: key.NewBinding(key.WithKeys("F"), key.WithHelp("F", "next fail")),
+		// FirstFail uses `n` to match vim's next-search-match convention.
+		// Read-only navigation jump → lowercase.
+		FirstFail: key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "next fail")),
 		Ask:       key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "ask (tab also)")),
 		Yank:      key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "copy")),
 		Reveal:    key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "reveal secret")),
 		Edit:      key.NewBinding(key.WithKeys("E"), key.WithHelp("E", "edit yaml")),
+
+		PortForward: key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "forward")),
+		Forwards:    key.NewBinding(key.WithKeys("ctrl+f"), key.WithHelp("ctrl+f", "forwards")),
+
+		Cordon: key.NewBinding(key.WithKeys("C"), key.WithHelp("C", "cordon")),
+		Drain:  key.NewBinding(key.WithKeys("D"), key.WithHelp("D", "drain")),
+
+		Hot: key.NewBinding(key.WithKeys("H"), key.WithHelp("H", "hot pods")),
+
+		Configure: key.NewBinding(key.WithKeys(","), key.WithHelp(",", "configure")),
+
+		// Ctrl+K is the de-facto "command palette / quick-switcher" chord
+		// in every modern editor (VS Code, Linear, Notion). We claim it
+		// for the cluster switcher since `:` is already the entry-resource
+		// palette — distinct concept, distinct chord.
+		ClusterSwitch: key.NewBinding(key.WithKeys("ctrl+k"), key.WithHelp("ctrl+k", "switch cluster")),
+		// `y` is a tree-row jump to the Yaml workspace tab. The legacy
+		// "yank" verb (also `y`) is preserved on contexts where it makes
+		// sense (logs / chat / describe focused) — see update.go dispatch.
+		Yaml: key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "yaml")),
 	}
 }
 
 func (k Map) ShortHelp() []key.Binding {
-	return []key.Binding{k.Up, k.Down, k.Enter, k.Back, k.Filter, k.FirstFail, k.Ask, k.Yank, k.Logs, k.Events, k.Help, k.Quit}
+	return []key.Binding{k.Up, k.Down, k.Enter, k.Back, k.Filter, k.FirstFail, k.Ask, k.Yank, k.Logs, k.Events, k.Configure, k.Help, k.Quit}
 }
 
 func (k Map) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.Enter, k.Back},
-		{k.Filter, k.FirstFail, k.Logs, k.Events, k.Describe, k.Reveal, k.Edit, k.Shell},
-		{k.Scale, k.Rollback, k.Restart, k.Delete, k.Refresh},
-		{k.Ask, k.Yank, k.Help, k.Quit},
+		// Row 2: reads (lowercase).
+		{k.Describe, k.Logs, k.Events, k.Shell, k.Reveal, k.PortForward, k.FirstFail, k.Filter},
+		// Row 3: mutators (uppercase / ctrl-chord).
+		{k.Scale, k.Rollback, k.Restart, k.Edit, k.Cordon, k.Drain, k.Delete},
+		// Row 4: chrome / global affordances.
+		{k.Refresh, k.Ask, k.Yank, k.Forwards, k.Configure, k.Help, k.Quit},
 	}
 }
 
@@ -111,21 +178,27 @@ type KeyPair struct {
 func (k Map) Groups() []Group {
 	return []Group{
 		{
+			// All lowercase: read-only verbs. Safe to fat-finger.
 			Title:    "inspect",
-			Bindings: []key.Binding{k.Describe, k.Logs, k.Events, k.Reveal, k.Shell, k.FirstFail},
+			Bindings: []key.Binding{k.Describe, k.Logs, k.Events, k.Shell, k.Reveal, k.PortForward, k.FirstFail},
 		},
 		{
+			// All uppercase (or ctrl-chord): each mutates cluster state.
+			// Ordered roughly safest-to-most-destructive so the eye walks
+			// down with rising stakes.
 			Title:    "change",
-			Bindings: []key.Binding{k.Restart, k.Scale, k.Rollback, k.Edit, k.Delete},
+			Bindings: []key.Binding{k.Scale, k.Rollback, k.Restart, k.Edit, k.Cordon, k.Drain, k.Delete},
 		},
 		{
 			Title: "meta",
 			Pairs: []KeyPair{
 				{Key: "↑↓", Desc: "navigate"},
 				{Key: "↵", Desc: "drill / confirm"},
-				{Key: "esc", Desc: "back / close"},
 			},
-			Bindings: []key.Binding{k.Filter, k.Refresh, k.Ask, k.Yank, k.Help, k.Quit},
+			// k.Back pulls its own "esc → back" label from the binding now,
+			// so we don't carry a hardcoded Pair for it. Anything that renders
+			// Back.Help() elsewhere gets the same description.
+			Bindings: []key.Binding{k.Back, k.Filter, k.Refresh, k.Ask, k.Yank, k.Hot, k.Forwards, k.Configure, k.ClusterSwitch, k.Help, k.Quit},
 		},
 	}
 }

@@ -26,12 +26,22 @@ const (
 
 // Header renders a column header row with alignment per column. The header
 // includes the same edge padding as Row so it aligns with the data rows.
+//
+// One width-aware tweak: a header label of ≤ 2 cells (single glyphs like
+// `↻`, `▾`, status icons) reads as an *icon* not a text label, so we
+// override AlignRight with center alignment — a single right-aligned
+// glyph floats lonely against the column edge and breaks the visual
+// rhythm of the row above the data. Same idea gh-dash uses.
 func Header(t *theme.Theme, labels []string, widths []int, aligns []Align) string {
 	cells := make([]string, len(labels))
 	for i, l := range labels {
 		style := t.ColHeader.Width(widths[i])
 		if i < len(aligns) && aligns[i] == AlignRight {
-			style = style.AlignHorizontal(lipgloss.Right)
+			if lipgloss.Width(strings.TrimSpace(l)) <= 2 {
+				style = style.AlignHorizontal(lipgloss.Center)
+			} else {
+				style = style.AlignHorizontal(lipgloss.Right)
+			}
 		}
 		cells[i] = style.Render(l)
 	}

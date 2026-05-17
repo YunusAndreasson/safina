@@ -8,12 +8,14 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/yunus/safina/internal/config"
 	"github.com/yunus/safina/internal/debug"
 	"github.com/yunus/safina/internal/k8s"
 	"github.com/yunus/safina/internal/tui/sections"
@@ -65,26 +67,59 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ctx.ActiveContext = focus.Name
 			m.ctx.ResetBackground()
 			m.tree.ResetForContextSwitch()
+			m.activity.Clear()          // events from the prior cluster are stale on cluster switch
+			m.connected.Clear()         // cross-cluster connection refs aren't valid
 			m.lastRefresh = time.Time{} // reset staleness clock for the new cluster
+			// Blank the cluster-health pill on cluster switch so the topbar
+			// doesn't render cluster A's stats over cluster B while the
+			// first fetch is in flight.
+			m.clusterHealth = k8s.ClusterHealth{}
+			m.clusterHealthAt = time.Time{}
+			m.clusterHealthCtx = ""
+			// Discovery is cluster-scoped — drop the cache so the new
+			// cluster's GVR set replaces the previous one on first open
+			// of the Resource Browser.
+			m.discoveryByContext = make(map[string]bool)
+			m.tree.SetDiscoveredKinds(nil)
 			m.saveConfig()
 		}
 		if focus.Kind == k8s.KindContextList {
 			// Popped back to the picker — there's no "data" to be stale,
 			// so hide the refresh indicator until the user picks again.
 			m.lastRefresh = time.Time{}
+			// Right-stack tiles target a resource; at the picker there is
+			// no selection so all three go quiet rather than render ghosts.
+			m.activity.Clear()
+			m.inspector.Clear()
+			m.connected.Clear()
+			// Same logic as a context switch: there's no cluster, so the
+			// pill should disappear instead of showing the previous one.
+			m.clusterHealth = k8s.ClusterHealth{}
+			m.clusterHealthAt = time.Time{}
+			m.clusterHealthCtx = ""
 		}
 		// Restamp the window title from the current path so terminal tabs
 		// stay accurate as the operator drills in or pops back out.
 		m.title = windowTitleFor(m.tree.BreadcrumbCrumbs())
-		m.syncChatContext()
+		actCmd := m.syncSelection()
+		// Kick off discovery on first entry to a cluster so the next
+		// fold render uses the real Kind names from the API server
+		// (instead of falling back to title-cased plurals).
+		var discoCmd tea.Cmd
+		if focus.Kind == k8s.KindContext && m.ctx.ActiveContext != "" &&
+			!m.discoveryByContext[m.ctx.ActiveContext] {
+			m.discoveryByContext[m.ctx.ActiveContext] = true
+			discoCmd = sections.LoadDiscovery(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext)
+		}
 		if m.tree.Children() == nil {
 			m.tree.Loading = true
-			return m, m.loadTreeFocus()
+			return m, tea.Batch(m.loadTreeFocus(), actCmd, discoCmd)
 		}
-		return m, nil
+		return m, tea.Batch(actCmd, discoCmd)
 
 	case sections.TreeChildrenLoadedMsg:
 		m.tree.Loading = false
+		m.tree.Refreshing = false
 		focus := msg.Path[len(msg.Path)-1]
 		if msg.Err != nil {
 			if isCtxDone(msg.Err) {
@@ -102,11 +137,37 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.tree.SetChildren(msg.Path, msg.Children)
 		m.lastRefresh = time.Now()
-		m.syncChatContext()
+		actCmd := m.syncSelection()
 		debug.Log("tree.loaded",
 			"kind", string(focus.Kind),
 			"name", focus.Name,
 			"children", childCount(msg.Children))
+		return m, actCmd
+
+	case sections.ActivityLoadedMsg:
+		// Right-stack Activity tile got its events back. Apply drops the
+		// result silently when the selection has changed since the fetch
+		// was issued — no need for the model to gate again here.
+		m.activity.Apply(msg)
+		return m, nil
+
+	case sections.InspectorDetailMsg:
+		// Inspector detail fetch landed. Apply caches under the
+		// (kind, ns, name) key and re-renders if the result is still
+		// for the current selection. Stale results don't disturb
+		// the live render, but stay cached so a future cursor visit
+		// is instant.
+		m.inspector.Apply(msg, &m.tree)
+		return m, nil
+
+	case sections.ConnectedMsg:
+		// Connected-tile fetch landed. Same shape as InspectorDetailMsg:
+		// stale results are kept in the cache for future visits but don't
+		// disturb the live render.
+		if msg.Err != nil && isCtxDone(msg.Err) {
+			return m, nil
+		}
+		m.connected.Apply(msg)
 		return m, nil
 
 	case sections.PodSelectedMsg:
@@ -141,6 +202,75 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// when the new payload arrives.
 		m.tree.InvalidateFocus()
 		return m, tea.Batch(statusCmd, m.loadTreeFocus())
+
+	case sections.PortForwardStartedMsg:
+		if msg.Err != nil {
+			debug.Errf("portforward.failed", "err", msg.Err.Error())
+			return m, m.raiseError("forward: " + msg.Err.Error())
+		}
+		pf := msg.Forward
+		// Compose the success banner. When we substituted a free port for
+		// the user's requested one, call it out — silent substitution is
+		// the kind of surprise that wastes ten minutes of debugging later.
+		base := fmt.Sprintf("forwarded · %s/%s %d→%d", strings.ToLower(pf.TargetKind), pf.TargetName, pf.LocalPort, pf.RemotePort)
+		if msg.Requested > 0 && msg.Requested != pf.LocalPort {
+			base += fmt.Sprintf(" (requested :%d was in use)", msg.Requested)
+		}
+		// If the user has the list modal open (rare race), refresh it so the
+		// new row shows up immediately.
+		if m.state == stateForwardsList {
+			m.forwards.Refresh(m.ctx.Manager.Forwards.List())
+		}
+		return m, m.raiseStatus(base)
+
+	case sections.PortForwardStoppedMsg:
+		if msg.Err != nil {
+			return m, m.raiseError("stop forward: " + msg.Err.Error())
+		}
+		// Stay in the list modal — refresh so the dropped row disappears
+		// and the cursor relocates onto whatever's left (or empty state).
+		if m.state == stateForwardsList {
+			m.forwards.Refresh(m.ctx.Manager.Forwards.List())
+		}
+		return m, m.raiseStatus("forward stopped")
+
+	case sections.PodsOnNodeMsg:
+		if msg.Err != nil {
+			// Surface but don't bail — the user can still confirm with an
+			// unknown count if they really mean to drain.
+			m.drainConfirmPods = 0
+			return m, m.raiseError("count pods: " + msg.Err.Error())
+		}
+		m.drainConfirmPods = msg.Count
+		return m, nil
+
+	case sections.DrainStartedMsg:
+		// Swap in the real cancel func now that DrainNode has captured the
+		// context, and start reading events. The progress modal re-renders
+		// on every event we receive.
+		m.drain.Reset(msg.Node, msg.Cancel)
+		m.drainCh = msg.Channel
+		return m, sections.NextDrainEvent(msg.Channel)
+
+	case sections.DrainProgressMsg:
+		done := m.drain.Apply(msg.Event)
+		if done {
+			// Drain finished — banner success/error, return to tree, and
+			// refresh the focus so the node row reflects its new state.
+			m.state = stateMain
+			if msg.Event.Err != nil {
+				return m, m.raiseError("drain: " + msg.Event.Err.Error())
+			}
+			m.tree.InvalidateFocus()
+			return m, tea.Batch(m.raiseStatus("drained · "+m.nodeTarget.Name), m.loadTreeFocus())
+		}
+		// Still going — request the next event. The DrainStartedMsg case
+		// kicked off the first read; we keep the chain going from here.
+		// Channel is stored in the goroutine's closure; we don't keep a
+		// reference on the model because the only consumer is this very
+		// loop, and DrainStartedMsg fed it forward.
+		// To support that, we need to keep the channel — store it on the model.
+		return m, sections.NextDrainEvent(m.drainCh)
 
 	case sections.LogStreamStartedMsg:
 		m.logCh = msg.Ch
@@ -235,12 +365,73 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// SetChildren, which avoids a 5s loading-flicker on every tick.
 		// Cache also stays self-consistent because SetChildren writes both
 		// the live children pointer and the cache slot.
+		//
+		// We do flip Refreshing=true: that drives a small spinner in the
+		// panel title (without disturbing the body), giving the operator a
+		// quiet "data is updating" cue. Cleared on TreeChildrenLoadedMsg.
+		var actCmd tea.Cmd
+		var healthCmd tea.Cmd
 		if m.state == stateMain && m.ctx.ActiveContext != "" &&
 			m.tree.Focus().Kind != k8s.KindContextList {
+			m.tree.Refreshing = true
 			cmd = m.loadTreeFocus()
 			debug.Log("refresh.tick", "context", m.ctx.ActiveContext, "focus", string(m.tree.Focus().Kind))
+			// Piggyback the activity-tile re-fetch on the same tick when
+			// its own throttle has elapsed. Events change less often than
+			// the tree's row data, so the tile's NeedsRefresh check (15s)
+			// stops us hammering the API every 5s.
+			if m.activity.NeedsRefresh(m.now) {
+				actCmd = m.activity.Refresh(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext)
+			}
+			// Cluster-health pill follows the same piggyback pattern: list
+			// the whole cluster on its own throttle so the topbar reflects
+			// the cluster's state even when the user is parked on a
+			// namespace view.
+			if m.clusterHealthCtx != m.ctx.ActiveContext ||
+				m.clusterHealthAt.IsZero() ||
+				m.now.Sub(m.clusterHealthAt) >= clusterHealthRefreshInterval {
+				healthCmd = m.loadClusterHealth()
+			}
 		}
-		return m, tea.Batch(m.autoRefreshTick(), cmd)
+		return m, tea.Batch(m.autoRefreshTick(), cmd, actCmd, healthCmd)
+
+	case clusterHealthMsg:
+		// Drop snapshots that came back after a context switch; they refer
+		// to a cluster the user is no longer looking at.
+		if msg.Context != m.ctx.ActiveContext {
+			return m, nil
+		}
+		if msg.Err != nil {
+			// Preserve the previous snapshot — a single API hiccup shouldn't
+			// blank the pill. The refresh tick will retry on the next cycle.
+			debug.Log("cluster_health.error", "context", msg.Context, "err", msg.Err.Error())
+			return m, nil
+		}
+		m.clusterHealth = msg.Health
+		m.clusterHealthAt = m.now
+		m.clusterHealthCtx = msg.Context
+		return m, nil
+
+	case sections.HotLoadedMsg:
+		m.hot.SetItems(msg.Pods, msg.Err)
+		return m, nil
+
+	case sections.DiscoveryLoadedMsg:
+		if msg.Err != nil && !isCtxDone(msg.Err) {
+			// Discovery only feeds the Resource Browser corpus + the
+			// custom-fold label resolution. A failure here doesn't break
+			// the tree; banner it once so the operator knows the modal
+			// will be smaller than expected and move on.
+			debug.Errf("k8s.discovery_failed", "err", msg.Err.Error())
+			return m, m.raiseError("discovery: " + msg.Err.Error())
+		}
+		m.tree.SetDiscoveredKinds(msg.Kinds)
+		if m.state == stateBrowser {
+			// The browser opened before discovery landed; reopen with the
+			// fuller corpus now so the user sees everything.
+			m.browser.Open(m.tree.DiscoveredKinds(), m.tree.EnabledResources())
+		}
+		return m, nil
 
 	case errorMsg:
 		return m, m.raiseError(msg.err.Error())
@@ -296,11 +487,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.PasteMsg:
 		// Bracketed paste only matters where there's a text input. Today
-		// that's the chat textarea; the scale modal's input is short
-		// enough that v1 fragmented-keystroke behaviour is fine. Modal
-		// states (logs/events/describe/shell/help/confirm) don't accept
-		// paste, so we drop it there.
-		if m.state == stateMain && m.chat.Focused {
+		// that's the chat textarea (the Chat workspace tab); the scale
+		// modal's input is short enough that v1 fragmented-keystroke
+		// behaviour is fine. Other modals don't accept paste.
+		if m.state == stateChatView {
 			cmd, _, _ := m.chat.Update(msg, m.ctx)
 			return m, cmd
 		}
@@ -312,6 +502,47 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // handleKey is the top-level key dispatcher. Modal states (logs, events,
 // scale, confirm, help) consume keys before the main view sees them.
+// sectionHasFilterFocus returns true when the active workspace section
+// has its filter input focused (any printable key the operator types is
+// going into a search query, not a global hotkey). Used to gate global
+// shortcuts like the `1` tab-switch.
+func (m *Model) sectionHasFilterFocus() bool {
+	switch m.state {
+	case stateLogView:
+		return m.logs.FilterActive()
+	case stateEventsView:
+		return m.events.FilterActive()
+	case stateDescribeView:
+		return m.describe.FilterActive()
+	case stateChatView:
+		// Chat is always "filter active" — every key is a textarea char.
+		return true
+	}
+	return false
+}
+
+// returnToMain closes whatever immersive workspace tab is active and
+// returns focus to the tree. Same cleanup the individual section-Esc
+// handlers do, lifted here so the global `1` tab-switch can call it
+// without duplicating per-state teardown.
+func (m *Model) returnToMain() {
+	switch m.state {
+	case stateLogView:
+		m.ctx.ResetBackground()
+		if ch := m.logCh; ch != nil {
+			go func() {
+				for range ch {
+				}
+			}()
+		}
+		m.logCh = nil
+	case stateChatView:
+		m.chat.SetFocus(false)
+		m.tree.Focused = true
+	}
+	m.state = stateMain
+}
+
 func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Yank (`y`) is intercepted before the per-state dispatch in every state
 	// where it makes sense — the section exposes its payload via YankPayload
@@ -319,6 +550,19 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// the filter prompt. Shell forwards `y` to the pod, so it's excluded.
 	if cmd, yanked := m.tryYank(msg); yanked {
 		return m, cmd
+	}
+
+	// Workspace tab quick-switch: when the workspace owns focus (any
+	// immersive tab is active), `1` jumps to Inspector. The Yaml tab is
+	// reached by Esc-then-y from immersive tabs since `y` is yank inside
+	// those sections; the cluster picker's `i` (Chat) is also reachable
+	// only from stateMain since most immersive sections consume `i` as
+	// a literal character in their filters / inputs.
+	if m.workspaceOwnsFocus() && !m.sectionHasFilterFocus() {
+		if msg.String() == "1" {
+			m.returnToMain()
+			return m, nil
+		}
 	}
 
 	switch m.state {
@@ -373,8 +617,18 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case stateScaleInput:
 		return m.handleScaleInput(msg)
 
-	case stateDeleteConfirm, stateRollbackConfirm, stateRestartConfirm, stateEditConfirm:
+	case statePortForwardInput:
+		return m.handlePortForwardInput(msg)
+
+	case stateForwardsList:
+		return m.handleForwardsList(msg)
+
+	case stateDeleteConfirm, stateRollbackConfirm, stateRestartConfirm, stateRestartPodConfirm,
+		stateEditConfirm, stateCordonConfirm, stateDrainConfirm:
 		return m, m.handleConfirm(msg)
+
+	case stateDrainProgress:
+		return m.handleDrainProgress(msg)
 
 	case stateHelp:
 		if key.Matches(msg, m.ctx.Keys.Back) || key.Matches(msg, m.ctx.Keys.Help) || msg.String() == "q" {
@@ -382,20 +636,38 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case stateHotView:
+		switch {
+		case key.Matches(msg, m.ctx.Keys.Back), msg.String() == "q":
+			m.state = stateMain
+			return m, nil
+		case key.Matches(msg, m.ctx.Keys.Refresh):
+			m.hot.Reset()
+			return m, sections.LoadHot(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext)
+		case key.Matches(msg, m.ctx.Keys.Up):
+			m.hot.CursorUp()
+			return m, nil
+		case key.Matches(msg, m.ctx.Keys.Down):
+			m.hot.CursorDown()
+			return m, nil
+		}
+		return m, nil
+
 	case statePalette:
 		return m.handlePalette(msg)
+
+	case stateClusters:
+		return m.handleClusterSwitch(msg)
+
+	case stateBrowser:
+		return m.handleBrowser(msg)
 	}
 
-	// Main state — global keys first, then chat (when focused), then tree.
-
-	// Chat-focused: chat owns the keystream. Letter keybindings the tree
-	// uses (q/?/l/e/d/s/r/x/S/F/i/R) must reach the textarea as literal
-	// characters when the user is typing a question — otherwise pressing
-	// `?` mid-sentence opens the help modal and "scale" becomes "cale".
-	// Only Ctrl+C survives as a universal panic-exit; everything else
-	// flows into the chat handler. Tab/Esc inside the chat return
-	// leave=true to hand focus back to the tree.
-	if m.chat.Focused {
+	// Chat tab keystroke routing. When the Chat tab is the active workspace
+	// surface, the textarea consumes keystrokes; pressing Esc / Tab returns
+	// to the Inspector tab (closes the chat surface) — same affordance as
+	// closing any other immersive tab.
+	if m.state == stateChatView {
 		if msg.String() == "ctrl+c" {
 			m.saveConfig()
 			m.ctx.Cancel()
@@ -405,10 +677,10 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if leave {
 			m.chat.SetFocus(false)
 			m.tree.Focused = true
+			m.state = stateMain
 			return m, cmd
 		}
 		if submit != nil {
-			// Chat already appended a placeholder turn; start the stream.
 			snap := sections.BuildContextSnapshot(&m.tree, m.ctx.ActiveContext)
 			full := submit.Prompt
 			if snap.Block != "" {
@@ -418,6 +690,10 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 	}
+
+	// Main state — global keys first, then tree. Chat drawer focus is
+	// handled above (the drawer captures keystrokes when open + focused);
+	// here the operator is interacting with the tree / workspace.
 
 	switch {
 	case key.Matches(msg, m.ctx.Keys.Quit):
@@ -437,24 +713,64 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.state = stateHelp
 		return m, nil
 
+	case key.Matches(msg, m.ctx.Keys.Forwards):
+		// Forwards list is process-global — accessible from main state
+		// regardless of which row the tree cursor is on. Drops you into
+		// the modal even when there are zero forwards (empty-state copy
+		// teaches the verb).
+		m.forwards.Refresh(m.ctx.Manager.Forwards.List())
+		m.state = stateForwardsList
+		return m, nil
+
+	case key.Matches(msg, m.ctx.Keys.Hot) && !m.tree.FilterActive():
+		// Hot pods modal is process-global, like Forwards — opens
+		// regardless of the tree cursor. Gated on FilterActive so the
+		// user can type a literal `H` into the filter input.
+		if m.ctx.ActiveContext == "" {
+			return m, nil
+		}
+		m.hot.Reset()
+		m.state = stateHotView
+		return m, sections.LoadHot(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext)
+
+	case key.Matches(msg, m.ctx.Keys.Configure) && !m.tree.FilterActive():
+		// Resource Browser — opens from anywhere inside a cluster. At
+		// the cluster picker there's no discovery yet, so we no-op
+		// rather than launch an empty modal. Gated on FilterActive so
+		// the user can type a literal `,` into the filter input.
+		if m.ctx.ActiveContext == "" {
+			return m, nil
+		}
+		return m.openBrowser()
+
 	case key.Matches(msg, m.ctx.Keys.Refresh):
 		if m.ctx.ActiveContext != "" && m.tree.Focus().Kind != k8s.KindContextList {
 			m.tree.InvalidateFocus()
 			m.tree.Loading = true
+			m.tree.Refreshing = true
 			return m, m.loadTreeFocus()
 		}
 		return m, nil
 
 	case msg.String() == "tab",
 		key.Matches(msg, m.ctx.Keys.Ask) && !m.tree.FilterActive():
-		// Tree → chat. Tab is the universal "switch panel" key; `i`
-		// (Ask) is the vim-discoverable alias surfaced in the footer.
-		// Both jump straight into typing in the chat. We gate Ask on
-		// FilterActive so the user can still type a literal `i` into the
-		// filter prompt without jumping to chat.
+		// Open the Chat tab. The chat is just another workspace tab — Esc
+		// (or `1` for Inspector) closes it. Tab is the universal toggle;
+		// `i` (Ask) is the vim-discoverable alias surfaced in the footer.
+		// FilterActive gate lets the user type a literal `i` into the
+		// filter prompt without flipping to chat.
 		m.tree.Focused = false
 		m.chat.SetFocus(true)
 		m.syncChatContext()
+		m.state = stateChatView
+		return m, nil
+
+	case key.Matches(msg, m.ctx.Keys.ClusterSwitch) && !m.tree.FilterActive():
+		// Ctrl+K cluster-switcher overlay. Pre-populate with the list we
+		// cached at startup; the overlay positions its cursor on the active
+		// context so "you are here" is the default.
+		m.clusters.Open(m.allContexts, m.ctx.ActiveContext)
+		m.state = stateClusters
 		return m, nil
 	}
 
@@ -465,9 +781,10 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	// Fall through to the tree itself for navigation / drill / filter.
 	cmd := m.tree.Update(msg, m.ctx)
-	// Tree state may have moved — refresh chat's context strip + chips.
-	m.syncChatContext()
-	return m, cmd
+	// Tree state may have moved — refresh chat's context strip + chips,
+	// and the right-stack tiles (Inspector / Activity).
+	actCmd := m.syncSelection()
+	return m, tea.Batch(cmd, actCmd)
 }
 
 // handlePalette dispatches keys while the `:` command palette is open.
@@ -534,6 +851,133 @@ func (m *Model) handlePalette(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// openBrowser opens the Resource Browser modal and kicks off a discovery
+// fetch if one hasn't landed yet for the current cluster. The modal
+// renders immediately with whatever discovery cache the tree already
+// has; when the fetch completes the modal re-seeds via the
+// DiscoveryLoadedMsg handler.
+// handleClusterSwitch dispatches keys while the Ctrl+K cluster-switcher
+// overlay is open. Selecting a cluster fires the same drill the tree's
+// root pick would (PushContext), so the path that lands on a new context
+// is identical to the cold-start flow.
+func (m *Model) handleClusterSwitch(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.ctx.Keys.Back):
+		m.state = stateMain
+		return m, nil
+	case key.Matches(msg, m.ctx.Keys.Up):
+		m.clusters.CursorUp()
+		return m, nil
+	case key.Matches(msg, m.ctx.Keys.Down):
+		m.clusters.CursorDown()
+		return m, nil
+	case key.Matches(msg, m.ctx.Keys.Enter):
+		it, ok := m.clusters.Selected()
+		if !ok {
+			return m, nil
+		}
+		m.state = stateMain
+		// Pop the tree back to root so the breadcrumb starts clean, then
+		// push into the chosen context — same flow as the startup picker.
+		// If the user picked the already-active context, do nothing (avoids
+		// dropping caches for a no-op switch).
+		if it.Name == m.ctx.ActiveContext {
+			return m, nil
+		}
+		// Reset the tree to root so the new context drill behaves like a
+		// cold start (per the "no auto-drill" memory rule, the operator
+		// lands at the cluster level — not on a deep saved cursor).
+		for m.tree.Focus().Kind != k8s.KindContextList {
+			cmd := m.tree.Pop()
+			if cmd == nil {
+				break
+			}
+		}
+		return m, m.tree.PushContext(it.Name)
+	}
+
+	s := msg.String()
+	if s == "backspace" {
+		q := m.clusters.Query()
+		if len(q) > 0 {
+			m.clusters.SetQuery(q[:len(q)-1])
+		}
+		return m, nil
+	}
+	if len(s) == 1 && s >= " " && s <= "~" {
+		m.clusters.SetQuery(m.clusters.Query() + s)
+	}
+	return m, nil
+}
+
+func (m *Model) openBrowser() (tea.Model, tea.Cmd) {
+	m.browser.Open(m.tree.DiscoveredKinds(), m.tree.EnabledResources())
+	m.state = stateBrowser
+	if m.ctx.ActiveContext == "" || m.discoveryByContext[m.ctx.ActiveContext] {
+		return m, nil
+	}
+	m.discoveryByContext[m.ctx.ActiveContext] = true
+	return m, sections.LoadDiscovery(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext)
+}
+
+// handleBrowser dispatches keys while the Resource Browser modal is
+// open. Single-purpose: the user toggles which resource kinds should
+// appear as folds in the tree, then saves. Space toggles, Enter saves
+// the selection to ~/.safina/config.yaml and refreshes the tree, Esc
+// cancels. Everything else edits the fuzzy query.
+func (m *Model) handleBrowser(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.ctx.Keys.Back):
+		m.browser.Close()
+		m.state = stateMain
+		return m, nil
+	case key.Matches(msg, m.ctx.Keys.Up):
+		m.browser.CursorUp()
+		return m, nil
+	case key.Matches(msg, m.ctx.Keys.Down):
+		m.browser.CursorDown()
+		return m, nil
+	case key.Matches(msg, m.ctx.Keys.Enter):
+		refs := m.browser.Confirm()
+		m.state = stateMain
+		m.tree.SetEnabledResources(refs)
+		// AppCfg is set by NewModel; guard nil defensively so a future
+		// caller that forgets to seed it can't silently swallow the
+		// user's choice. The pick MUST hit disk — that's the entire
+		// promise of the modal.
+		if m.ctx.AppCfg == nil {
+			m.ctx.AppCfg = &config.AppConfig{}
+		}
+		m.ctx.AppCfg.EnabledResources = refs
+		if err := config.Save(m.ctx.AppCfg); err != nil {
+			debug.Errf("config.save_failed", "err", err.Error())
+			return m, m.raiseError("save: " + err.Error())
+		}
+		// Folds at the namespace level changed shape — invalidate the
+		// current focus so the tree re-derives visibleRows and the new
+		// fold set lands on screen.
+		m.tree.InvalidateFocus()
+		return m, tea.Batch(m.loadTreeFocus(), m.raiseStatus("resources saved"))
+	}
+
+	s := msg.String()
+	if s == "space" || s == " " {
+		m.browser.Toggle()
+		return m, nil
+	}
+	if s == "backspace" {
+		q := m.browser.Query()
+		if len(q) > 0 {
+			m.browser.SetQuery(q[:len(q)-1])
+		}
+		return m, nil
+	}
+	if len(s) == 1 && s >= " " && s <= "~" {
+		m.browser.SetQuery(m.browser.Query() + s)
+	}
+	return m, nil
+}
+
 // drillToPaletteEntry navigates the tree to the entry's path and places
 // the cursor on the matching row. Returns a tea.Cmd that triggers the
 // child-load if the destination level isn't already cached.
@@ -546,8 +990,8 @@ func (m *Model) drillToPaletteEntry(e sections.PaletteEntry) (tea.Model, tea.Cmd
 	parent := e.Path[:len(e.Path)-1]
 	cmd := m.tree.NavigateTo(parent)
 	m.tree.SetCursorByRef(e.Kind, e.Namespace, e.Name)
-	m.syncChatContext()
-	return m, cmd
+	actCmd := m.syncSelection()
+	return m, tea.Batch(cmd, actCmd)
 }
 
 // dispatchPaletteVerb fires an action against the palette entry without
@@ -644,7 +1088,18 @@ func (m *Model) handleTreeAction(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	case key.Matches(msg, m.ctx.Keys.Scale):
 		if ref.Kind == k8s.KindApp && (ref.SubKind == k8s.AppKindDeployment || ref.SubKind == k8s.AppKindStatefulSet) {
 			m.state = stateScaleInput
-			m.scaleInput.SetValue("")
+			// Pre-fill with the current desired count so the input acts as
+			// a nudgeable delta (operator usually adjusts by ±1 or ±a few,
+			// not a fresh absolute). Falls back to blank when we can't read
+			// the count off the row.
+			prefill := ""
+			if app, ok := m.tree.SelectedAppInfo(); ok {
+				if cur := currentDesiredReplicas(app); cur >= 0 {
+					prefill = strconv.Itoa(cur)
+				}
+			}
+			m.scaleInput.SetValue(prefill)
+			m.scaleInput.CursorEnd()
 			m.scaleInput.Focus()
 			return nil, true
 		}
@@ -661,14 +1116,63 @@ func (m *Model) handleTreeAction(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 				return nil, true
 			}
 		case k8s.KindPod:
-			m.state = stateDeleteConfirm
+			// Restart-a-pod is delete-and-let-the-controller-recreate at the
+			// API level, but the keymap promised "restart" — keep the verb
+			// honest in the modal and banner by routing through a separate
+			// confirm state.
+			m.state = stateRestartPodConfirm
 			return nil, true
 		}
 	case key.Matches(msg, m.ctx.Keys.Delete):
-		if ref.Kind == k8s.KindPod {
+		if deletableKind(ref) {
 			m.state = stateDeleteConfirm
 			return nil, true
 		}
+	case key.Matches(msg, m.ctx.Keys.PortForward):
+		var kind string
+		switch ref.Kind {
+		case k8s.KindPod:
+			kind = k8s.PortForwardTargetPod
+		case k8s.KindService:
+			kind = k8s.PortForwardTargetService
+		default:
+			return nil, false
+		}
+		m.pfTarget.Kind = kind
+		m.pfTarget.Namespace = ref.Namespace
+		m.pfTarget.Name = ref.Name
+		m.pfInput.SetValue("")
+		m.pfInput.Focus()
+		m.state = statePortForwardInput
+		return nil, true
+	case key.Matches(msg, m.ctx.Keys.Cordon):
+		if ref.Kind != k8s.KindNode {
+			return nil, false
+		}
+		info, ok := m.tree.SelectedNodeInfo()
+		if !ok {
+			return nil, false
+		}
+		m.nodeTarget.Name = info.Name
+		m.nodeTarget.Schedulable = info.Schedulable
+		m.state = stateCordonConfirm
+		return nil, true
+	case key.Matches(msg, m.ctx.Keys.Drain):
+		if ref.Kind != k8s.KindNode {
+			return nil, false
+		}
+		info, ok := m.tree.SelectedNodeInfo()
+		if !ok {
+			return nil, false
+		}
+		m.nodeTarget.Name = info.Name
+		m.nodeTarget.Schedulable = info.Schedulable
+		m.drainConfirmPods = -1
+		m.state = stateDrainConfirm
+		// Fetch the pod count async; the confirm modal renders "?"
+		// while we wait. Fast on most clusters but we don't want to
+		// block the keypress on the API.
+		return sections.CountPodsOnNode(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext, info.Name), true
 	case key.Matches(msg, m.ctx.Keys.Logs):
 		switch ref.Kind {
 		case k8s.KindPod:
@@ -915,6 +1419,36 @@ func (m *Model) cleanupEdit() {
 // "PersistentVolumeClaim", not the friendlier "PVC" we use in the tree).
 // That matches what kubectl prints and what events.involvedObject.kind
 // expects on the field selector.
+// deletableKind reports whether K (kill) is meaningful on this row. We
+// allow the same set of kinds DeleteResource knows how to dispatch on, with
+// two intentional omissions: Node (use cordon/drain instead — deleting a
+// node from the API doesn't terminate the underlying machine) and Namespace
+// (a foot-gun in a prod-only tool; users who need this still have kubectl).
+func deletableKind(ref sections.NodeRef) bool {
+	switch ref.Kind {
+	case k8s.KindPod, k8s.KindConfigMap, k8s.KindSecret,
+		k8s.KindService, k8s.KindIngress, k8s.KindPVC:
+		return true
+	case k8s.KindApp:
+		switch ref.SubKind {
+		case k8s.AppKindDeployment, k8s.AppKindStatefulSet, k8s.AppKindDaemonSet,
+			k8s.AppKindJob, k8s.AppKindCronJob:
+			return true
+		}
+	}
+	return false
+}
+
+// deleteTarget mirrors actionTarget but skips kinds we refuse to delete
+// (Node, Namespace). Returns ("", "", "") when the focus row isn't a
+// deletable resource so the confirm handler can no-op safely.
+func deleteTarget(ref sections.NodeRef) (kind, namespace, name string) {
+	if !deletableKind(ref) {
+		return "", "", ""
+	}
+	return actionTarget(ref)
+}
+
 func actionTarget(ref sections.NodeRef) (kind, namespace, name string) {
 	switch ref.Kind {
 	case k8s.KindApp:
@@ -923,7 +1457,7 @@ func actionTarget(ref sections.NodeRef) (kind, namespace, name string) {
 		return "Pod", ref.Namespace, ref.Name
 	case k8s.KindNode:
 		return "Node", "", ref.Name
-	case k8s.KindNamespace:
+	case k8s.KindNamespace, k8s.KindNamespaceFolder:
 		return "Namespace", "", ref.Name
 	case k8s.KindConfigMap:
 		return "ConfigMap", ref.Namespace, ref.Name
@@ -973,15 +1507,87 @@ func (m *Model) handleScaleInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// handlePortForwardInput accepts "L:R" or "R" and kicks off StartPortForward.
+// Parse failures keep the modal open (banner explains why); a successful
+// parse closes the modal immediately — the start is async and the success/
+// failure banner arrives later via PortForwardStartedMsg.
+func (m *Model) handlePortForwardInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		val := m.pfInput.Value()
+		local, remote, err := k8s.ParsePortPair(val)
+		if err != nil {
+			return m, m.raiseError("invalid port pair: " + err.Error())
+		}
+		m.state = stateMain
+		m.pfInput.Blur()
+		return m, sections.StartPortForward(
+			m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext,
+			m.pfTarget.Namespace, m.pfTarget.Kind, m.pfTarget.Name,
+			local, remote,
+		)
+	case "esc":
+		m.state = stateMain
+		m.pfInput.Blur()
+		return m, nil
+	}
+	// Allow digits, colon, and backspace; anything else (letters, punctuation)
+	// is silently dropped so a stray keypress doesn't garble the pair.
+	s := msg.String()
+	if len(s) == 1 && (s < "0" || s > "9") && s != ":" && s != "backspace" {
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.pfInput, cmd = m.pfInput.Update(msg)
+	return m, cmd
+}
+
+// handleDrainProgress consumes keys while the drain-progress modal is open.
+// Only ctrl+c does anything (cancels) — esc is intentionally a no-op so the
+// user can't half-drain a node by accident. The cancel handler relies on
+// DrainNode's deferred uncordon, so a cancelled drain leaves the node
+// uncordoned (the recoverable state) rather than cordoned-with-half-evicted.
+func (m *Model) handleDrainProgress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if msg.String() == "ctrl+c" {
+		m.drain.Cancel()
+		return m, nil
+	}
+	return m, nil
+}
+
+// handleForwardsList routes keys while the active-forwards modal is open.
+// `K` (kill) removes the cursor row; ↑/↓ moves the cursor; esc/enter closes.
+func (m *Model) handleForwardsList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.ctx.Keys.Back), msg.String() == "enter":
+		m.state = stateMain
+		return m, nil
+	case key.Matches(msg, m.ctx.Keys.Up):
+		m.forwards.MoveCursor(-1)
+		return m, nil
+	case key.Matches(msg, m.ctx.Keys.Down):
+		m.forwards.MoveCursor(1)
+		return m, nil
+	case key.Matches(msg, m.ctx.Keys.Delete):
+		id := m.forwards.CursorRowID()
+		if id == "" {
+			return m, nil
+		}
+		return m, sections.StopPortForward(m.ctx.Manager, id)
+	}
+	return m, nil
+}
+
 func (m *Model) handleConfirm(msg tea.KeyPressMsg) tea.Cmd {
 	switch msg.String() {
 	case "y", "Y":
 		ref := m.tree.SelectedRef()
 		switch m.state {
 		case stateDeleteConfirm:
-			if ref.Kind == k8s.KindPod {
+			kind, ns, name := deleteTarget(ref)
+			if kind != "" {
 				m.state = stateMain
-				return sections.DeletePod(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext, ref.Namespace, ref.Name)
+				return sections.DeleteResource(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext, kind, ns, name)
 			}
 		case stateRollbackConfirm:
 			if ref.Kind == k8s.KindApp {
@@ -992,6 +1598,11 @@ func (m *Model) handleConfirm(msg tea.KeyPressMsg) tea.Cmd {
 			if ref.Kind == k8s.KindApp {
 				m.state = stateMain
 				return sections.RestartApp(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext, ref.Namespace, ref.SubKind, ref.Name)
+			}
+		case stateRestartPodConfirm:
+			if ref.Kind == k8s.KindPod {
+				m.state = stateMain
+				return sections.RestartPod(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext, ref.Namespace, ref.Name)
 			}
 		case stateEditConfirm:
 			if m.edit == nil {
@@ -1007,6 +1618,26 @@ func (m *Model) handleConfirm(msg tea.KeyPressMsg) tea.Cmd {
 				_ = os.Remove(ed.TempPath)
 			}
 			return cmd
+		case stateCordonConfirm:
+			if m.nodeTarget.Name == "" {
+				m.state = stateMain
+				return nil
+			}
+			// Schedulable=true means "currently accepts pods, so user
+			// pressed C to cordon" — and vice versa. Pass the *desired*
+			// next state to the helper.
+			desired := !m.nodeTarget.Schedulable // flip
+			m.state = stateMain
+			return sections.CordonNode(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext, m.nodeTarget.Name, desired)
+		case stateDrainConfirm:
+			if m.nodeTarget.Name == "" {
+				m.state = stateMain
+				return nil
+			}
+			node := m.nodeTarget.Name
+			m.drain.Reset(node, func() {}) // real cancel arrives via DrainStartedMsg
+			m.state = stateDrainProgress
+			return sections.StartDrain(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext, node)
 		}
 		m.state = stateMain
 		return nil
@@ -1181,6 +1812,8 @@ func childCount(c *sections.Children) int {
 		return len(c.Nodes)
 	case k8s.KindNamespace:
 		return len(c.Namespaces)
+	case k8s.KindNamespaceFolder:
+		return len(c.UserNS)
 	}
 	return 0
 }

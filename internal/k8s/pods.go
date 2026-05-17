@@ -3,6 +3,7 @@ package k8s
 import (
 	"context"
 	"io"
+	"sort"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -76,8 +77,70 @@ func podToInfo(p corev1.Pod) PodInfo {
 	}
 }
 
+// DeletePod is retained as a thin shim so existing tests stay green; new
+// callers should use DeleteResource which dispatches across every kind the
+// tree surfaces.
 func DeletePod(ctx context.Context, cs kubernetes.Interface, namespace, name string) error {
-	return cs.CoreV1().Pods(namespace).Delete(ctx, name, metav1.DeleteOptions{})
+	return DeleteResource(ctx, cs, "Pod", namespace, name)
+}
+
+// ListHotPodsByCPU returns the top `limit` pods cluster-wide sorted by
+// current CPU usage descending. Pods without metrics-server data are
+// excluded — the hot list is a "what's noisy right now" view, and a pod
+// with no metrics has no claim to a spot at the top.
+//
+// The two list calls (pods + pod metrics, both cluster-scoped) are issued
+// in parallel; metrics failure (404, RBAC) yields an empty list rather than
+// an error, mirroring the silent-degrade contract of the rest of the
+// metrics-server callers — the hot view simply has nothing to show.
+func ListHotPodsByCPU(ctx context.Context, cs kubernetes.Interface, limit int) ([]PodInfo, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+
+	pods, err := cs.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+	metrics, _ := ListPodMetrics(ctx, cs, "")
+	if len(metrics) == 0 {
+		// No metrics → nothing to sort by. Surface an empty list cleanly
+		// so the modal can render its "metrics-server unavailable" hint.
+		return nil, nil
+	}
+
+	out := make([]PodInfo, 0, len(pods.Items))
+	for _, p := range pods.Items {
+		u, ok := metrics[p.Namespace+"/"+p.Name]
+		if !ok {
+			continue
+		}
+		info := podToInfo(p)
+		info.CPU = u.CPU
+		info.Memory = u.Memory
+		out = append(out, info)
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CPU != out[j].CPU {
+			return out[i].CPU > out[j].CPU
+		}
+		// Stable tiebreak: memory descending, then namespace/name ascending.
+		// Without this, ties between two near-idle pods would flicker
+		// position between refreshes.
+		if out[i].Memory != out[j].Memory {
+			return out[i].Memory > out[j].Memory
+		}
+		if out[i].Namespace != out[j].Namespace {
+			return out[i].Namespace < out[j].Namespace
+		}
+		return out[i].Name < out[j].Name
+	})
+
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 type PodLogEvent struct {

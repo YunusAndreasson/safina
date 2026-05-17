@@ -19,6 +19,47 @@ type AppConfig struct {
 	// SystemNamespaces takes precedence over the prefix list when set.
 	UserNamespaces   []string `json:"userNamespaces,omitempty"`
 	SystemNamespaces []string `json:"systemNamespaces,omitempty"`
+
+	// EnabledResources is the source of truth for which resource kinds the
+	// tree renders as folds at the namespace/All level. Order is preserved
+	// — the tree renders folds in the order they appear here. nil (absent
+	// from yaml) means "fresh install" and the loader seeds the default
+	// set so existing users see no change. An explicit empty slice is
+	// respected: the user has opted out of every fold.
+	EnabledResources []ResourceRef `json:"enabledResources"`
+}
+
+// ResourceRef identifies one Kubernetes resource by GVR. Group is empty for
+// core ("" maps to the core API group in client-go). Resource is the
+// lowercase plural name as the API server reports it (e.g. "configmaps",
+// "ingresses"). The Synthetic field is non-empty for the special
+// "Workloads" fold which unions five workload GVRs into one row.
+type ResourceRef struct {
+	Group     string `json:"group,omitempty"`
+	Version   string `json:"version,omitempty"`
+	Resource  string `json:"resource,omitempty"`
+	Synthetic string `json:"synthetic,omitempty"`
+}
+
+// DefaultEnabledResources returns the seed list used when the user has not
+// configured EnabledResources. Matches the six folds the tree historically
+// rendered at the namespace level so existing users see no change after
+// upgrading. Order matches the previous hard-coded visibleRows() order.
+func DefaultEnabledResources() []ResourceRef {
+	return []ResourceRef{
+		{Synthetic: "Workloads"},
+		{Group: "", Version: "v1", Resource: "configmaps"},
+		{Group: "", Version: "v1", Resource: "secrets"},
+		{Group: "", Version: "v1", Resource: "services"},
+		{Group: "networking.k8s.io", Version: "v1", Resource: "ingresses"},
+		{Group: "", Version: "v1", Resource: "persistentvolumeclaims"},
+	}
+}
+
+// Equal reports whether two ResourceRefs identify the same resource.
+func (r ResourceRef) Equal(o ResourceRef) bool {
+	return r.Group == o.Group && r.Version == o.Version &&
+		r.Resource == o.Resource && r.Synthetic == o.Synthetic
 }
 
 func ConfigDir() (string, error) {
@@ -41,16 +82,30 @@ func Load() (*AppConfig, error) {
 	cfg := &AppConfig{}
 	path, err := ConfigPath()
 	if err != nil {
+		seedDefaults(cfg)
 		return cfg, nil //nolint:nilerr // return empty config when home dir unavailable
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
+		seedDefaults(cfg)
 		return cfg, nil //nolint:nilerr // return empty config when file missing
 	}
 	if err := yaml.Unmarshal(data, cfg); err != nil {
+		seedDefaults(cfg)
 		return cfg, nil //nolint:nilerr // return empty config when YAML corrupt
 	}
+	seedDefaults(cfg)
 	return cfg, nil
+}
+
+// seedDefaults populates fields that the user has not yet customised. Only
+// EnabledResources is seeded today; we treat a nil slice as "fresh install,
+// the user has never picked" and inject the historical default set. An
+// explicit empty slice means "the user picked nothing" and is left intact.
+func seedDefaults(cfg *AppConfig) {
+	if cfg.EnabledResources == nil {
+		cfg.EnabledResources = DefaultEnabledResources()
+	}
 }
 
 func Save(cfg *AppConfig) error {

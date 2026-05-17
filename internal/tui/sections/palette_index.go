@@ -73,6 +73,14 @@ func BuildPaletteIndex(cache map[string]*Children) []PaletteEntry {
 				Hint: "ns",
 			})
 		}
+		for _, ns := range ch.UserNS {
+			add(&out, seen, PaletteEntry{
+				Kind: k8s.KindNamespaceFolder,
+				Name: ns.Name,
+				Path: composeChild(parentPath, NodeRef{Kind: k8s.KindNamespaceFolder, Namespace: ns.Name, Name: ns.Name, Display: ns.Name}),
+				Hint: "ns",
+			})
+		}
 		for _, a := range ch.Apps {
 			ref := NodeRef{Kind: k8s.KindApp, SubKind: a.Kind, Namespace: a.Namespace, Name: a.Name, Display: a.Name, UID: a.UID}
 			add(&out, seen, PaletteEntry{

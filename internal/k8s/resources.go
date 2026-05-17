@@ -9,6 +9,8 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+
+	"github.com/yunus/safina/internal/debug"
 )
 
 // ListConfigMapsAcrossNamespaces lists ConfigMaps across the given
@@ -28,6 +30,10 @@ func ListConfigMapsAcrossNamespaces(ctx context.Context, cs kubernetes.Interface
 			defer wg.Done()
 			list, err := cs.CoreV1().ConfigMaps(ns).List(ctx, metav1.ListOptions{})
 			if err != nil {
+				// Don't fail the whole fan-out for one denied namespace —
+				// the UI surfaces partials in Phase 1. For now, the debug
+				// log is the only way an SRE notices a silent RBAC gap.
+				debug.Errf("k8s.list_partial", "kind", "ConfigMap", "namespace", ns, "err", err.Error())
 				return
 			}
 			rows := make([]ConfigMapInfo, 0, len(list.Items))
@@ -71,6 +77,7 @@ func ListServicesAcrossNamespaces(ctx context.Context, cs kubernetes.Interface, 
 			defer wg.Done()
 			list, err := cs.CoreV1().Services(ns).List(ctx, metav1.ListOptions{})
 			if err != nil {
+				debug.Errf("k8s.list_partial", "kind", "Service", "namespace", ns, "err", err.Error())
 				return
 			}
 			rows := make([]ServiceInfo, 0, len(list.Items))
@@ -120,6 +127,7 @@ func ListIngressesAcrossNamespaces(ctx context.Context, cs kubernetes.Interface,
 			defer wg.Done()
 			list, err := cs.NetworkingV1().Ingresses(ns).List(ctx, metav1.ListOptions{})
 			if err != nil {
+				debug.Errf("k8s.list_partial", "kind", "Ingress", "namespace", ns, "err", err.Error())
 				return
 			}
 			rows := make([]IngressInfo, 0, len(list.Items))
@@ -228,6 +236,7 @@ func ListSecretsAcrossNamespaces(ctx context.Context, cs kubernetes.Interface, n
 			defer wg.Done()
 			list, err := cs.CoreV1().Secrets(ns).List(ctx, metav1.ListOptions{})
 			if err != nil {
+				debug.Errf("k8s.list_partial", "kind", "Secret", "namespace", ns, "err", err.Error())
 				return
 			}
 			rows := make([]SecretInfo, 0, len(list.Items))
@@ -272,6 +281,7 @@ func ListPVCsAcrossNamespaces(ctx context.Context, cs kubernetes.Interface, name
 			defer wg.Done()
 			list, err := cs.CoreV1().PersistentVolumeClaims(ns).List(ctx, metav1.ListOptions{})
 			if err != nil {
+				debug.Errf("k8s.list_partial", "kind", "PersistentVolumeClaim", "namespace", ns, "err", err.Error())
 				return
 			}
 			rows := make([]PVCInfo, 0, len(list.Items))

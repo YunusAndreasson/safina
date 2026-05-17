@@ -648,16 +648,32 @@ func (c *Chat) ensureMD() error {
 	return nil
 }
 
-// View renders the entire panel.
+// View renders the entire panel — kept for callers that want a self-framed
+// chat block. The workspace tab path uses Body() instead so the workspace's
+// own panel border isn't doubled.
 func (c *Chat) View(ctx *tuictx.Ctx, w, h int) string {
 	if c.w != w || c.h != h {
 		c.SetSize(w, h)
 	}
 	t := ctx.Theme
-
 	body := c.renderInner(t)
 	return components.PanelWithAccent(t, "Chat", w, h, body, c.Focused, t.P.Cyan, t.P.Cyan)
 }
+
+// Body returns the unframed chat content (viewport + chips + input) sized
+// for embedding as a workspace tab. The workspace pane owns the outer
+// border, so we hand back just the inner stack.
+func (c *Chat) Body(ctx *tuictx.Ctx, w, h int) string {
+	// SetSize subtracts the panel chrome internally; we lie about size by
+	// padding the requested area so the inner widgets size to (w, h).
+	if c.w != w+2 || c.h != h+2 {
+		c.SetSize(w+2, h+2)
+	}
+	return c.renderInner(ctx.Theme)
+}
+
+// PaneTitle returns the workspace tab title for the chat panel.
+func (c *Chat) PaneTitle() string { return "chat" }
 
 func (c *Chat) renderInner(t *theme.Theme) string {
 	parts := []string{c.viewportBlock(t)}
@@ -747,7 +763,7 @@ func (c *Chat) padToHeight(s string) string {
 // a notice card rather than a floating message — same pattern as the
 // rest of safina's empty / error states.
 func (c *Chat) renderInstallCard(t *theme.Theme) string {
-	title := lipgloss.NewStyle().Foreground(t.P.Cyan).Bold(true).Render("◆ install Claude to enable chat")
+	title := t.Divider("install Claude to enable chat", components.PanelContentWidth(c.w))
 	step := lipgloss.NewStyle().Foreground(t.P.FG)
 	cmd := lipgloss.NewStyle().Foreground(t.P.FGFade)
 	dim := lipgloss.NewStyle().Foreground(t.P.Dim)

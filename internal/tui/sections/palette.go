@@ -192,7 +192,7 @@ func (p *Palette) View(c *tuictx.Ctx, termW, termH int) string {
 
 	footer := lipgloss.NewStyle().Foreground(t.P.Dim).Render(
 		t.HelpKey.Render("↵") + t.HelpDesc.Render(" open  ") +
-			t.HelpKey.Render("tab+letter") + t.HelpDesc.Render(" verb  ") +
+			t.HelpKey.Render("letter") + t.HelpDesc.Render(" verb  ") +
 			t.HelpKey.Render("esc") + t.HelpDesc.Render(" close"),
 	)
 
@@ -370,37 +370,50 @@ func renderPaletteVerbs(c *tuictx.Ctx, e PaletteEntry, w int) string {
 		l := lipgloss.NewStyle().Foreground(t.P.FGFade).Render(v.Label)
 		chips = append(chips, k+" "+l)
 	}
-	prefix := lipgloss.NewStyle().Foreground(t.P.Cyan).Render("▌ ") +
-		lipgloss.NewStyle().Foreground(t.P.Dim).Render("tab+ ")
+	prefix := lipgloss.NewStyle().Foreground(t.P.Cyan).Render("▌ ")
 	return prefix + strings.Join(chips, "  ")
 }
 
 // PaletteVerbsFor returns the action verb chips for an entry. Mirrors the
 // tree's contextual-footer verb set so palette + footer teach the same
 // vocabulary; the operator never has to learn two key alphabets.
+// PaletteVerbsFor: lowercase letters = read verbs (left), uppercase
+// letters = mutators (right). Matches the keymap convention.
 func PaletteVerbsFor(e PaletteEntry) []PaletteVerb {
+	del := PaletteVerb{Letter: "K", Label: "kill"}
 	switch e.Kind {
 	case k8s.KindApp:
+		// Reads (lowercase, left) first.
 		base := []PaletteVerb{
 			{Letter: "d", Label: "describe"},
 			{Letter: "l", Label: "logs"},
 			{Letter: "e", Label: "events"},
-			{Letter: "x", Label: "restart"},
 		}
+		// Mutators (uppercase, right) layered on per SubKind.
 		switch e.SubKind {
 		case k8s.AppKindDeployment:
 			return append(base,
-				PaletteVerb{Letter: "s", Label: "scale"},
-				PaletteVerb{Letter: "r", Label: "revert"},
+				PaletteVerb{Letter: "S", Label: "scale"},
+				PaletteVerb{Letter: "U", Label: "undo"},
+				PaletteVerb{Letter: "R", Label: "restart"},
 				PaletteVerb{Letter: "E", Label: "edit"},
+				del,
 			)
 		case k8s.AppKindStatefulSet:
 			return append(base,
-				PaletteVerb{Letter: "s", Label: "scale"},
+				PaletteVerb{Letter: "S", Label: "scale"},
+				PaletteVerb{Letter: "R", Label: "restart"},
 				PaletteVerb{Letter: "E", Label: "edit"},
+				del,
 			)
 		case k8s.AppKindDaemonSet:
-			return append(base, PaletteVerb{Letter: "E", Label: "edit"})
+			return append(base,
+				PaletteVerb{Letter: "R", Label: "restart"},
+				PaletteVerb{Letter: "E", Label: "edit"},
+				del,
+			)
+		case k8s.AppKindJob, k8s.AppKindCronJob:
+			return append(base, del)
 		}
 		return base
 	case k8s.KindPod:
@@ -408,32 +421,53 @@ func PaletteVerbsFor(e PaletteEntry) []PaletteVerb {
 			{Letter: "d", Label: "describe"},
 			{Letter: "l", Label: "logs"},
 			{Letter: "e", Label: "events"},
-			{Letter: "S", Label: "shell"},
-			{Letter: "x", Label: "restart"},
+			{Letter: "s", Label: "shell"},
+			{Letter: "f", Label: "forward"},
+			{Letter: "R", Label: "restart"},
+			del,
 		}
 	case k8s.KindSecret:
 		return []PaletteVerb{
 			{Letter: "d", Label: "describe"},
 			{Letter: "v", Label: "reveal"},
 			{Letter: "E", Label: "edit"},
+			del,
 		}
 	case k8s.KindConfigMap:
 		return []PaletteVerb{
 			{Letter: "d", Label: "describe"},
 			{Letter: "E", Label: "edit"},
+			del,
 		}
-	case k8s.KindService, k8s.KindPVC:
+	case k8s.KindService:
 		return []PaletteVerb{
 			{Letter: "d", Label: "describe"},
 			{Letter: "e", Label: "events"},
 			{Letter: "E", Label: "edit"},
+			{Letter: "f", Label: "forward"},
+			del,
+		}
+	case k8s.KindPVC:
+		return []PaletteVerb{
+			{Letter: "d", Label: "describe"},
+			{Letter: "e", Label: "events"},
+			{Letter: "E", Label: "edit"},
+			del,
 		}
 	case k8s.KindIngress:
 		return []PaletteVerb{
 			{Letter: "d", Label: "describe"},
 			{Letter: "E", Label: "edit"},
+			del,
 		}
-	case k8s.KindNode, k8s.KindNamespace:
+	case k8s.KindNode:
+		return []PaletteVerb{
+			{Letter: "d", Label: "describe"},
+			{Letter: "e", Label: "events"},
+			{Letter: "C", Label: "cordon"},
+			{Letter: "D", Label: "drain"},
+		}
+	case k8s.KindNamespace, k8s.KindNamespaceFolder:
 		return []PaletteVerb{
 			{Letter: "d", Label: "describe"},
 			{Letter: "e", Label: "events"},
@@ -461,7 +495,7 @@ func paletteGlyphColor(t *theme.Theme, e PaletteEntry) color.Color {
 	switch e.Kind {
 	case k8s.KindApp, k8s.KindPod, k8s.KindContainer:
 		return t.P.Blue
-	case k8s.KindContext, k8s.KindNode, k8s.KindNodePool, k8s.KindNamespace:
+	case k8s.KindContext, k8s.KindNode, k8s.KindNodePool, k8s.KindNamespace, k8s.KindNamespaceFolder:
 		return t.P.Cyan
 	case k8s.KindService, k8s.KindIngress, k8s.KindPVC, k8s.KindPV:
 		return t.P.Yellow

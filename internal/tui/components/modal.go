@@ -54,16 +54,6 @@ func ModalBackdrop(t *theme.Theme) []lipgloss.WhitespaceOption {
 	}
 }
 
-// RenderModal frames a modal: panel with focused-cyan accent, a body of
-// (status row + viewport block + keys row), centered over the standard
-// backdrop. termW/termH are the outer terminal dims; modalW/modalH the
-// modal's outer box (caller-computed via ModalFitSize so all modals match).
-func RenderModal(t *theme.Theme, termW, termH, modalW, modalH int, title, status, body, keys string) string {
-	stack := lipgloss.JoinVertical(lipgloss.Left, status, body, keys)
-	panel := PanelWithAccent(t, title, modalW, modalH, stack, true, t.P.Cyan, t.P.Cyan)
-	return lipgloss.Place(termW, termH, lipgloss.Center, lipgloss.Center, panel, ModalBackdrop(t)...)
-}
-
 // BlockState is a discriminated union of the four states the centered-text
 // area of a modal can be in. Exactly one boolean / non-zero field should be
 // set per call; the renderer picks the matching message.

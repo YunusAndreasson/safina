@@ -23,26 +23,65 @@ import (
 // Tree section dispatches on.
 const (
 	KindContextList = "ContextList" // root level — list of kube contexts
-	KindContext     = "Context"     // a single cluster — drilling in shows its apps
+	KindContext     = "Context"     // a single cluster — drilling in shows its namespace folders
 	KindClusterFold = "ClusterFold" // synthetic row inside a context that drills into NodePools
 	KindSystemFold  = "SystemFold"  // synthetic row inside a context that drills into system namespaces
-	KindNamespace   = "Namespace"
-	KindApp         = "App" // generic — see AppInfo.Kind for the underlying k8s kind
-	KindPod         = "Pod"
-	KindContainer   = "Container"
-	KindNodePool    = "NodePool"
-	KindNode        = "Node"
-	KindHPA         = "HPA"
-	KindConfigFold  = "ConfigFold"  // synthetic row → ConfigMaps
-	KindSecretsFold = "SecretsFold" // synthetic row → Secrets
-	KindNetworkFold = "NetworkFold" // synthetic row → Services
-	KindStorageFold = "StorageFold" // synthetic row → PVCs
-	KindConfigMap   = "ConfigMap"
-	KindSecret      = "Secret"
-	KindService     = "Service"
-	KindIngress     = "Ingress"
-	KindPVC         = "PVC"
-	KindPV          = "PV"
+	// KindInfrastructureFold groups everything at the cluster root that
+	// isn't a user namespace: Nodes, System namespaces, and the
+	// "Configure resources" settings affordance. Tucking them behind a
+	// single fold keeps the cluster root view focused on the workload
+	// containers (the on-caller's primary navigation surface) without
+	// hiding the non-workload affordances from the user — they're one
+	// drill away under a clearly labeled category.
+	KindInfrastructureFold = "InfrastructureFold"
+	KindNamespace          = "Namespace"
+	// KindNamespaceFolder is a user namespace surfaced at cluster-root as a
+	// drillable folder. Same drill semantics as KindNamespace under SystemFold:
+	// pressing Enter lists the workload/Config/Secrets/Network/Storage folds
+	// scoped to that namespace. Distinct constant so the renderer can tell
+	// "user ns folder at cluster-root" apart from "system ns row under
+	// SystemFold" — only the former participates in the cluster-root mix of
+	// Cluster + All + ns folders + System.
+	KindNamespaceFolder = "NamespaceFolder"
+	// KindAllNamespacesFold is the virtual "All" folder at cluster root.
+	// Drilling it gives the unified cross-namespace view safina used to show
+	// at cluster root (Workloads + Config + Secrets + Network + Storage,
+	// spanning every user namespace). On-callers don't have to pick a
+	// namespace to see "everything" — this is the fast path.
+	KindAllNamespacesFold = "AllNamespacesFold"
+	KindApp               = "App" // generic — see AppInfo.Kind for the underlying k8s kind
+	KindPod               = "Pod"
+	KindContainer         = "Container"
+	KindNodePool          = "NodePool"
+	KindNode              = "Node"
+	KindHPA               = "HPA"
+	KindConfigFold        = "ConfigFold"  // synthetic row → ConfigMaps
+	KindSecretsFold       = "SecretsFold" // synthetic row → Secrets
+	KindNetworkFold       = "NetworkFold" // synthetic row → Services
+	KindIngressFold       = "IngressFold" // synthetic row → Ingresses
+	KindStorageFold       = "StorageFold" // synthetic row → PVCs
+	// KindWorkloadsFold groups Deployments/StatefulSets/DaemonSets/CronJobs/Jobs
+	// under a single fold at the cluster root — paired with SystemFold so the
+	// root view reads as a uniform set of folds rather than mixing inline rows
+	// with synthetic ones. Drilling into it returns the same Apps slice the
+	// previous Context-level view rendered directly.
+	KindWorkloadsFold = "WorkloadsFold"
+	KindConfigMap     = "ConfigMap"
+	KindSecret        = "Secret"
+	KindService       = "Service"
+	KindIngress       = "Ingress"
+	KindPVC           = "PVC"
+	KindPV            = "PV"
+	// KindCustomFold is the per-GVR fold the tree renders for any
+	// resource the user enabled in EnabledResources that isn't one of the
+	// built-in folds above. Drilling it lists instances via the dynamic
+	// client and surfaces them as KindGenericResource rows.
+	KindCustomFold = "CustomFold"
+	// KindGenericResource is the leaf row for a single instance of a
+	// CustomFold's GVR. The renderer shows name + age + best-effort
+	// status; the resource's GVR travels on NodeRef.GVR so verbs can
+	// route through the dynamic client.
+	KindGenericResource = "GenericResource"
 )
 
 // Underlying k8s kinds embedded inside an App row.
@@ -170,6 +209,12 @@ type NodeInfo struct {
 	PodsMax     int32
 	Schedulable bool
 	Health      Health
+	// Pressures lists the kubelet-asserted pressure conditions that are
+	// currently true on this node: MemoryPressure, DiskPressure, PIDPressure,
+	// NetworkUnavailable. Empty for healthy nodes. Surfaced inline as small
+	// red glyphs so an on-caller can spot "the kubelet itself says it's
+	// hurting" before request/usage math catches up.
+	Pressures []string
 }
 
 // NodePoolInfo aggregates over the nodes in a pool.
@@ -1044,8 +1089,38 @@ func nodeToInfo(n corev1.Node, metrics map[string]ResourceUsage, pods []corev1.P
 	if !ni.Schedulable {
 		ni.Status = "SchedulingDisabled"
 	}
+	ni.Pressures = nodePressures(n)
 	ni.Health = nodeHealth(ni)
 	return ni
+}
+
+// nodePressures collects the kubelet-asserted pressure conditions that
+// are currently True on the node. Order matches the kubelet's own
+// reporting (Memory, Disk, PID, Network) so the rendered glyph string
+// stays stable across refreshes.
+func nodePressures(n corev1.Node) []string {
+	if len(n.Status.Conditions) == 0 {
+		return nil
+	}
+	want := []corev1.NodeConditionType{
+		corev1.NodeMemoryPressure,
+		corev1.NodeDiskPressure,
+		corev1.NodePIDPressure,
+		corev1.NodeNetworkUnavailable,
+	}
+	out := make([]string, 0, len(want))
+	for _, t := range want {
+		for _, c := range n.Status.Conditions {
+			if c.Type == t && c.Status == corev1.ConditionTrue {
+				out = append(out, string(t))
+				break
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func nodeReadyStatus(n corev1.Node) string {
@@ -1064,6 +1139,11 @@ func nodeHealth(n NodeInfo) Health {
 	switch {
 	case n.Status == "NotReady":
 		return HealthFailing
+	case len(n.Pressures) > 0:
+		// kubelet shouting "I'm in trouble right now" outranks the
+		// request-vs-alloc heuristic — if MemoryPressure or DiskPressure
+		// is firing, the node is actively evicting or about to.
+		return HealthDegraded
 	case !n.Schedulable:
 		return HealthDegraded
 	case n.CPUAlloc > 0 && n.CPURequest > n.CPUAlloc*9/10:
@@ -1134,6 +1214,114 @@ func groupIntoPools(nodes []NodeInfo) []NodePoolInfo {
 		out = append(out, *idx[name])
 	}
 	return out
+}
+
+// ClusterHealth is the at-a-glance state of a whole cluster, sized to fit
+// in a topbar pill. Populated once per cluster-health tick; consumers read
+// the zero value as "no data yet" and hide the module.
+type ClusterHealth struct {
+	NodesReady    int
+	NodesTotal    int
+	PodsRunning   int
+	PodsPending   int
+	PodsCrashing  int
+	PodsTotal     int
+	CPUUsed       int64 // sum of node CPUUsed, millicores
+	CPUAlloc      int64
+	MemUsed       int64 // bytes
+	MemAlloc      int64
+	PressureCount int // total active pressure conditions across all nodes
+}
+
+// HasData reports whether the snapshot carries enough to render the pill.
+// Used by the topbar to suppress an empty pill on the very first tick.
+func (c ClusterHealth) HasData() bool {
+	return c.NodesTotal > 0
+}
+
+// LoadClusterHealth produces a ClusterHealth snapshot of the cluster: node
+// readiness, pod counts by state, summed resource usage vs allocatable,
+// and active pressure conditions. Best-effort — metrics-server failure
+// degrades gracefully (usage stays zero, the rest of the fields populate).
+//
+// Sized for a single periodic call from the topbar refresh ticker, NOT
+// per-row rendering. The two list calls (nodes + pods, both cluster-scoped)
+// are the same the tree itself runs when the user drills into Nodes; we
+// pay the extra round-trip once every cluster-health tick instead of every
+// 5s tree refresh so users not on the Nodes view still get the pill.
+func LoadClusterHealth(ctx context.Context, cs kubernetes.Interface) (ClusterHealth, error) {
+	var ch ClusterHealth
+
+	var (
+		nodes       *corev1.NodeList
+		pods        *corev1.PodList
+		nodeMetrics map[string]ResourceUsage
+		errNodes    error
+		errPods     error
+	)
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		nodes, errNodes = cs.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	}()
+	go func() {
+		defer wg.Done()
+		pods, errPods = cs.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
+	}()
+	go func() {
+		defer wg.Done()
+		nodeMetrics, _ = ListNodeMetrics(ctx, cs)
+	}()
+	wg.Wait()
+
+	// Nodes are load-bearing for the cluster pill; pods are nice-to-have.
+	// If the node list fails we return the error so the model can keep the
+	// previous snapshot rather than reset to all-zero.
+	if errNodes != nil {
+		return ch, errNodes
+	}
+	if errPods != nil {
+		pods = &corev1.PodList{}
+	}
+
+	for _, n := range nodes.Items {
+		ch.NodesTotal++
+		if nodeReadyStatus(n) == "Ready" && !n.Spec.Unschedulable {
+			ch.NodesReady++
+		}
+		ch.CPUAlloc += quantityMilli(n.Status.Allocatable, corev1.ResourceCPU)
+		ch.MemAlloc += quantityBytes(n.Status.Allocatable, corev1.ResourceMemory)
+		if nodeMetrics != nil {
+			if u, ok := nodeMetrics[n.Name]; ok {
+				ch.CPUUsed += u.CPU
+				ch.MemUsed += u.Memory
+			}
+		}
+		ch.PressureCount += len(nodePressures(n))
+	}
+
+	for _, p := range pods.Items {
+		ch.PodsTotal++
+		switch p.Status.Phase {
+		case corev1.PodRunning:
+			ch.PodsRunning++
+		case corev1.PodPending:
+			ch.PodsPending++
+		}
+		// CrashLoopBackOff lives at the container-status level, not pod
+		// phase. A pod that is Running but has a container in CLB is the
+		// classic "looks healthy from the outside, screaming on the inside"
+		// case the on-caller wants to see.
+		for _, cs := range p.Status.ContainerStatuses {
+			if cs.State.Waiting != nil && cs.State.Waiting.Reason == "CrashLoopBackOff" {
+				ch.PodsCrashing++
+				break
+			}
+		}
+	}
+
+	return ch, nil
 }
 
 // ListPodsOnNode fetches pods scheduled on the given node, cross-namespace.

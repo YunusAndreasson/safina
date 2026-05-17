@@ -117,7 +117,7 @@ func BuildContextSnapshot(t *Tree, activeContext string) ContextSnapshot {
 				}
 			}
 		}
-	case k8s.KindNamespace:
+	case k8s.KindNamespace, k8s.KindNamespaceFolder:
 		fmt.Fprintf(&b, "selected: namespace/%s\n", sel.Name)
 	case k8s.KindContext:
 		fmt.Fprintf(&b, "selected: cluster picker (no resource yet)\n")
@@ -250,7 +250,7 @@ func pathNamespace(path []NodeRef, sel NodeRef) string {
 		if path[i].Namespace != "" {
 			return path[i].Namespace
 		}
-		if path[i].Kind == k8s.KindNamespace {
+		if path[i].Kind == k8s.KindNamespace || path[i].Kind == k8s.KindNamespaceFolder {
 			return path[i].Name
 		}
 	}

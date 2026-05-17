@@ -3,9 +3,12 @@ package sections
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/yunus/safina/internal/debug"
@@ -56,6 +59,14 @@ type LogStreamStartedMsg struct {
 type EventsLoadedMsg struct {
 	Events []k8s.EventInfo
 	Err    error
+}
+
+// HotLoadedMsg carries the top-N pods sorted by CPU usage for the hot-list
+// modal. Mirrors EventsLoadedMsg's shape so the same load-flow patterns
+// apply: SetItems(items, err) on the section, done.
+type HotLoadedMsg struct {
+	Pods []k8s.PodInfo
+	Err  error
 }
 
 // DescribeLoadedMsg carries the YAML dump for the resource currently shown
@@ -175,6 +186,31 @@ func ApplyEdit(ctx context.Context, mgr *k8s.Manager, contextName, namespace, ki
 	}
 }
 
+// hotListSize is the cap on rows shown in the hot-list modal. Twenty is
+// "more than a screen but not so many that the operator has to scan a
+// page of mostly-quiet pods" — the noisy-neighbour case usually surfaces
+// in the first 3-5 rows. Defining it here (not in the section) so the
+// loader can pre-truncate at the network edge.
+const hotListSize = 20
+
+// LoadHot fetches a fresh top-N-by-CPU pod list across the whole cluster.
+// Cluster-scoped list call + metrics-server fetch, then sort + truncate.
+// Pods without metrics (metrics-server unavailable, or pod hasn't reported
+// yet) are excluded — the hot list is meaningless if you can't sort by
+// usage, and rendering them at the top with "—" would mislead the operator.
+func LoadHot(ctx context.Context, mgr *k8s.Manager, contextName string) tea.Cmd {
+	return func() tea.Msg {
+		done := debug.Track("k8s.hot", "context", contextName)
+		defer done()
+		client, ok := mgr.GetClient(contextName)
+		if !ok {
+			return HotLoadedMsg{Err: fmt.Errorf("context not found")}
+		}
+		pods, err := k8s.ListHotPodsByCPU(ctx, client.Clientset, hotListSize)
+		return HotLoadedMsg{Pods: pods, Err: err}
+	}
+}
+
 // LoadEvents fetches the event list for involvedObject = kind/name in
 // namespace. Newest first.
 func LoadEvents(ctx context.Context, mgr *k8s.Manager, contextName, namespace, kind, name string) tea.Cmd {
@@ -190,6 +226,31 @@ func LoadEvents(ctx context.Context, mgr *k8s.Manager, contextName, namespace, k
 	}
 }
 
+// DiscoveryLoadedMsg carries the list of GVRs the cluster exposes,
+// populated once per cluster switch (lazy on first open of the Resource
+// Browser). The root model stores the list on the Tree so future fold
+// rendering can use real Kind names from discovery.
+type DiscoveryLoadedMsg struct {
+	Kinds []k8s.ResourceKind
+	Err   error
+}
+
+// LoadDiscovery enumerates every GVR the API server exposes. Best-
+// effort — partial discovery (one CRD group wedged) still returns
+// useful data.
+func LoadDiscovery(ctx context.Context, mgr *k8s.Manager, contextName string) tea.Cmd {
+	return func() tea.Msg {
+		done := debug.Track("k8s.discovery", "context", contextName)
+		defer done()
+		client, ok := mgr.GetClient(contextName)
+		if !ok {
+			return DiscoveryLoadedMsg{Err: fmt.Errorf("context not found")}
+		}
+		kinds, err := k8s.ListAvailableResources(client.Discovery)
+		return DiscoveryLoadedMsg{Kinds: kinds, Err: err}
+	}
+}
+
 // LoadTreeChildren fetches the children for a tree focus path. Dispatches
 // on the focus kind. Always returns TreeChildrenLoadedMsg — empty payload
 // on error so the UI can clear its loading state.
@@ -202,12 +263,12 @@ func LoadTreeChildren(ctx context.Context, mgr *k8s.Manager, contextName string,
 		if !ok {
 			return TreeChildrenLoadedMsg{Path: path, Err: fmt.Errorf("context not found")}
 		}
-		ch, err := loadChildren(ctx, client.Clientset, path, userNS, systemNS)
+		ch, err := loadChildren(ctx, client.Clientset, client.Dynamic, path, userNS, systemNS)
 		return TreeChildrenLoadedMsg{Path: path, Children: ch, Err: err}
 	}
 }
 
-func loadChildren(ctx context.Context, cs kubernetes.Interface, path []NodeRef, cfgUser, cfgSystem []string) (*Children, error) {
+func loadChildren(ctx context.Context, cs kubernetes.Interface, dyn dynamic.Interface, path []NodeRef, cfgUser, cfgSystem []string) (*Children, error) {
 	focus := path[len(path)-1]
 
 	switch focus.Kind {
@@ -218,9 +279,10 @@ func loadChildren(ctx context.Context, cs kubernetes.Interface, path []NodeRef, 
 		return &Children{Kind: k8s.KindContextList}, nil
 
 	case k8s.KindContext:
-		// Drilling into a single cluster: same payload as the previous
-		// "Home" root — user apps, with Cluster + System virtual rows
-		// composed in by the Tree section's visibleRows.
+		// Cluster-root now lists namespace folders directly: Cluster + All
+		// + every user namespace + System. Apps are still fetched here so
+		// (1) the All folder gets an accurate count, and (2) namespace
+		// folders inherit the worst-of-apps health pip via nsHealthCache.
 		userNs, sysNs, err := k8s.ListAndClassifyNamespaces(ctx, cs, cfgUser, cfgSystem)
 		if err != nil {
 			return nil, err
@@ -238,11 +300,30 @@ func loadChildren(ctx context.Context, cs kubernetes.Interface, path []NodeRef, 
 			return nil, err
 		}
 		return &Children{
-			Kind:        k8s.KindApp,
+			Kind:        k8s.KindNamespaceFolder,
+			UserNS:      userNs,
 			Apps:        apps,
 			SystemCount: len(sysNames),
 			SystemNS:    sysNames,
 		}, nil
+
+	case k8s.KindAllNamespacesFold:
+		// "All" folder: the unified cross-namespace view. Returns apps so
+		// the renderer can emit the same Workloads/Config/Secrets/Network/
+		// Storage fold layout the cluster root used to host inline.
+		userNs, _, err := k8s.ListAndClassifyNamespaces(ctx, cs, cfgUser, cfgSystem)
+		if err != nil {
+			return nil, err
+		}
+		userNames := make([]string, len(userNs))
+		for i, n := range userNs {
+			userNames[i] = n.Name
+		}
+		apps, err := k8s.ListAppsInNamespaces(ctx, cs, userNames)
+		if err != nil {
+			return nil, err
+		}
+		return &Children{Kind: k8s.KindApp, Apps: apps}, nil
 
 	case k8s.KindClusterFold:
 		pools, _, err := k8s.ListNodesAndPools(ctx, cs)
@@ -251,6 +332,39 @@ func loadChildren(ctx context.Context, cs kubernetes.Interface, path []NodeRef, 
 		}
 		return &Children{Kind: k8s.KindNodePool, Pools: pools}, nil
 
+	case k8s.KindInfrastructureFold:
+		// Children are three synthetic rows (Nodes, System, Configure
+		// resources). The only payload we need to fetch is the System
+		// namespace count so the System row can show "(N)" — without it
+		// the badge would render "(0)" or get suppressed entirely.
+		_, sysNs, err := k8s.ListAndClassifyNamespaces(ctx, cs, cfgUser, cfgSystem)
+		if err != nil {
+			return nil, err
+		}
+		sysNames := make([]string, len(sysNs))
+		for i, n := range sysNs {
+			sysNames[i] = n.Name
+		}
+		return &Children{
+			Kind:        k8s.KindInfrastructureFold,
+			SystemCount: len(sysNs),
+			SystemNS:    sysNames,
+		}, nil
+
+	case k8s.KindWorkloadsFold:
+		// Scope by parent: a Workloads fold inside a NamespaceFolder lists
+		// only that namespace's workloads; otherwise (inside the All fold)
+		// it spans every user namespace.
+		nss, err := workloadNamespaces(ctx, cs, path, cfgUser, cfgSystem)
+		if err != nil {
+			return nil, err
+		}
+		apps, err := k8s.ListAppsInNamespaces(ctx, cs, nss)
+		if err != nil {
+			return nil, err
+		}
+		return &Children{Kind: k8s.KindApp, Apps: apps}, nil
+
 	case k8s.KindSystemFold:
 		_, sysNs, err := k8s.ListAndClassifyNamespaces(ctx, cs, cfgUser, cfgSystem)
 		if err != nil {
@@ -258,8 +372,12 @@ func loadChildren(ctx context.Context, cs kubernetes.Interface, path []NodeRef, 
 		}
 		return &Children{Kind: k8s.KindNamespace, Namespaces: sysNs}, nil
 
-	case k8s.KindNamespace:
-		// Drilling into a single namespace lists its apps.
+	case k8s.KindNamespace, k8s.KindNamespaceFolder:
+		// Drilling into a single namespace folder: render its scoped fold
+		// layout. Apps are loaded so the Workloads count badge populates and
+		// the namespace's worst-of health pip stays current. The renderer
+		// detects the parent kind and emits Workloads/Config/Secrets/Network/
+		// Storage fold rows above (or instead of) the apps list.
 		apps, err := k8s.ListAppsInNamespaces(ctx, cs, []string{focus.Name})
 		if err != nil {
 			return nil, err
@@ -306,49 +424,48 @@ func loadChildren(ctx context.Context, cs kubernetes.Interface, path []NodeRef, 
 		return &Children{Kind: k8s.KindPod, Pods: pods}, nil
 
 	case k8s.KindConfigFold:
-		_, sysNs, err := k8s.ListAndClassifyNamespaces(ctx, cs, cfgUser, cfgSystem)
+		nss, err := workloadNamespaces(ctx, cs, path, cfgUser, cfgSystem)
 		if err != nil {
 			return nil, err
 		}
-		sysSet := make(map[string]bool, len(sysNs))
-		for _, n := range sysNs {
-			sysSet[n.Name] = true
-		}
-		cms, err := k8s.ListConfigMapsAcrossNamespaces(ctx, cs, allNamespaces(ctx, cs, sysSet))
+		cms, err := k8s.ListConfigMapsAcrossNamespaces(ctx, cs, nss)
 		if err != nil {
 			return nil, err
 		}
 		return &Children{Kind: k8s.KindConfigMap, ConfigMaps: cms}, nil
 
 	case k8s.KindSecretsFold:
-		_, sysNs, err := k8s.ListAndClassifyNamespaces(ctx, cs, cfgUser, cfgSystem)
+		nss, err := workloadNamespaces(ctx, cs, path, cfgUser, cfgSystem)
 		if err != nil {
 			return nil, err
 		}
-		sysSet := make(map[string]bool, len(sysNs))
-		for _, n := range sysNs {
-			sysSet[n.Name] = true
-		}
-		secrets, err := k8s.ListSecretsAcrossNamespaces(ctx, cs, allNamespaces(ctx, cs, sysSet))
+		secrets, err := k8s.ListSecretsAcrossNamespaces(ctx, cs, nss)
 		if err != nil {
 			return nil, err
 		}
 		return &Children{Kind: k8s.KindSecret, Secrets: secrets}, nil
 
 	case k8s.KindNetworkFold:
-		_, sysNs, err := k8s.ListAndClassifyNamespaces(ctx, cs, cfgUser, cfgSystem)
+		nss, err := workloadNamespaces(ctx, cs, path, cfgUser, cfgSystem)
 		if err != nil {
 			return nil, err
 		}
-		sysSet := make(map[string]bool, len(sysNs))
-		for _, n := range sysNs {
-			sysSet[n.Name] = true
-		}
-		svcs, err := k8s.ListServicesAcrossNamespaces(ctx, cs, allNamespaces(ctx, cs, sysSet))
+		svcs, err := k8s.ListServicesAcrossNamespaces(ctx, cs, nss)
 		if err != nil {
 			return nil, err
 		}
 		return &Children{Kind: k8s.KindService, Services: svcs}, nil
+
+	case k8s.KindIngressFold:
+		nss, err := workloadNamespaces(ctx, cs, path, cfgUser, cfgSystem)
+		if err != nil {
+			return nil, err
+		}
+		ings, err := k8s.ListIngressesAcrossNamespaces(ctx, cs, nss)
+		if err != nil {
+			return nil, err
+		}
+		return &Children{Kind: k8s.KindIngress, Ingresses: ings}, nil
 
 	case k8s.KindService:
 		ings, err := k8s.ListIngressesForService(ctx, cs, focus.Namespace, focus.Name)
@@ -358,15 +475,11 @@ func loadChildren(ctx context.Context, cs kubernetes.Interface, path []NodeRef, 
 		return &Children{Kind: k8s.KindIngress, Ingresses: ings}, nil
 
 	case k8s.KindStorageFold:
-		_, sysNs, err := k8s.ListAndClassifyNamespaces(ctx, cs, cfgUser, cfgSystem)
+		nss, err := workloadNamespaces(ctx, cs, path, cfgUser, cfgSystem)
 		if err != nil {
 			return nil, err
 		}
-		sysSet := make(map[string]bool, len(sysNs))
-		for _, n := range sysNs {
-			sysSet[n.Name] = true
-		}
-		pvcs, err := k8s.ListPVCsAcrossNamespaces(ctx, cs, allNamespaces(ctx, cs, sysSet))
+		pvcs, err := k8s.ListPVCsAcrossNamespaces(ctx, cs, nss)
 		if err != nil {
 			return nil, err
 		}
@@ -387,9 +500,54 @@ func loadChildren(ctx context.Context, cs kubernetes.Interface, path []NodeRef, 
 			pvs = append(pvs, *pv)
 		}
 		return &Children{Kind: k8s.KindPV, PVs: pvs}, nil
+
+	case k8s.KindCustomFold:
+		gvr, ok := parseGVR(focus.GVR)
+		if !ok {
+			return nil, fmt.Errorf("invalid GVR %q", focus.GVR)
+		}
+		nsList, err := workloadNamespaces(ctx, cs, path, cfgUser, cfgSystem)
+		if err != nil {
+			return nil, err
+		}
+		// Cluster-scope path: list everything (empty namespace). When a
+		// namespace folder is in the breadcrumb we got exactly one ns
+		// back; pass it through so the dynamic List call is namespaced.
+		// "All folder" returns multiple namespaces; we run one list call
+		// per namespace and merge. The dynamic client doesn't have an
+		// "any namespace" shortcut beyond cluster-scope listing — but
+		// listing across the whole cluster from inside the All folder is
+		// also fine for user GVRs (RBAC permitting), so we take that
+		// fast path when nsList covers every user namespace.
+		var items []k8s.GenericResource
+		if len(nsList) == 1 {
+			items, err = k8s.ListGeneric(ctx, dyn, gvr, nsList[0])
+		} else {
+			items, err = k8s.ListGeneric(ctx, dyn, gvr, "")
+		}
+		if err != nil {
+			return nil, err
+		}
+		return &Children{Kind: k8s.KindGenericResource, Generic: items}, nil
+
 	}
 
 	return &Children{Kind: focus.Kind}, nil
+}
+
+// parseGVR splits "group/version/resource" back into a schema.GVR. Group
+// is allowed to be empty (core). Returns ok=false when the format isn't
+// the expected three-part shape — we never want to silently list against
+// a bogus GVR.
+func parseGVR(s string) (schema.GroupVersionResource, bool) {
+	parts := strings.SplitN(s, "/", 3)
+	if len(parts) != 3 {
+		return schema.GroupVersionResource{}, false
+	}
+	if parts[1] == "" || parts[2] == "" {
+		return schema.GroupVersionResource{}, false
+	}
+	return schema.GroupVersionResource{Group: parts[0], Version: parts[1], Resource: parts[2]}, true
 }
 
 // allNamespaces returns user namespace names — every namespace whose name
@@ -409,14 +567,42 @@ func allNamespaces(ctx context.Context, cs kubernetes.Interface, sysSet map[stri
 	return names
 }
 
-func DeletePod(ctx context.Context, mgr *k8s.Manager, contextName, namespace, podName string) tea.Cmd {
+// workloadNamespaces resolves which namespaces a resource-fold (Workloads,
+// Config, Secrets, Network, Storage) should list against, by inspecting the
+// drill path. When a NamespaceFolder (or system Namespace) parent is in the
+// path the fold is scoped to that single namespace — what the user expects
+// after drilling "payments/ ▸ Workloads". Otherwise (inside the All folder)
+// it spans every user namespace, mirroring safina's pre-folders behavior.
+func workloadNamespaces(ctx context.Context, cs kubernetes.Interface, path []NodeRef, cfgUser, cfgSystem []string) ([]string, error) {
+	for i := len(path) - 1; i >= 0; i-- {
+		switch path[i].Kind {
+		case k8s.KindNamespaceFolder, k8s.KindNamespace:
+			return []string{path[i].Name}, nil
+		}
+	}
+	_, sysNs, err := k8s.ListAndClassifyNamespaces(ctx, cs, cfgUser, cfgSystem)
+	if err != nil {
+		return nil, err
+	}
+	sysSet := make(map[string]bool, len(sysNs))
+	for _, n := range sysNs {
+		sysSet[n.Name] = true
+	}
+	return allNamespaces(ctx, cs, sysSet), nil
+}
+
+// DeleteResource issues a cluster-side delete for any kind the tree
+// surfaces. Subject is just the bare name — the success/failure banner
+// reads "deleted · frontend" without the kind, matching how the user
+// referred to the row when they pressed the verb.
+func DeleteResource(ctx context.Context, mgr *k8s.Manager, contextName, kind, namespace, name string) tea.Cmd {
 	return func() tea.Msg {
 		client, ok := mgr.GetClient(contextName)
 		if !ok {
-			return ActionDoneMsg{Action: "delete", Subject: podName, Err: fmt.Errorf("context not found")}
+			return ActionDoneMsg{Action: "delete", Subject: name, Err: fmt.Errorf("context not found")}
 		}
-		err := k8s.DeletePod(ctx, client.Clientset, namespace, podName)
-		return ActionDoneMsg{Action: "delete", Subject: podName, Err: err}
+		err := k8s.DeleteResource(ctx, client.Clientset, kind, namespace, name)
+		return ActionDoneMsg{Action: "delete", Subject: name, Err: err}
 	}
 }
 
@@ -519,6 +705,21 @@ func AttachDebug(ctx context.Context, mgr *k8s.Manager, contextName, namespace, 
 			return ShellExitMsg{Err: err}
 		}
 		return ShellSessionStartedMsg{Session: sess, IsDebug: true}
+	}
+}
+
+// RestartPod kills a single Pod so its parent controller recreates it.
+// At the API level this is a delete; we wrap it here so the success banner
+// reads "restart · podname" — matching the verb the keymap and footer
+// taught, instead of the lower-level "delete" emitted by DeleteResource.
+func RestartPod(ctx context.Context, mgr *k8s.Manager, contextName, namespace, name string) tea.Cmd {
+	return func() tea.Msg {
+		client, ok := mgr.GetClient(contextName)
+		if !ok {
+			return ActionDoneMsg{Action: "restart", Subject: name, Err: fmt.Errorf("context not found")}
+		}
+		err := k8s.DeleteResource(ctx, client.Clientset, "Pod", namespace, name)
+		return ActionDoneMsg{Action: "restart", Subject: name, Err: err}
 	}
 }
 

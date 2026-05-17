@@ -26,18 +26,23 @@ func PanelContentWidth(w int) int {
 //	│ content              │
 //	╰──────────────────────╯
 //
-// w and h are the *outer* dimensions including borders.
+// When focused, the border paints with a Blue → accent → Pink gradient instead
+// of a flat fill — the Charm-stack signature that distinguishes "the active
+// panel" at a glance. w and h are the *outer* dimensions including borders.
 func Panel(t *theme.Theme, title string, w, h int, content string, focused bool) string {
 	return PanelWithAccent(t, title, w, h, content, focused, t.P.Blue, t.P.Cyan)
 }
 
 // PanelWithAccent renders a panel using custom focus accent colors. When
-// focused, the border uses borderAccent + a heavy ThickBorder for a clear
-// visual-weight pop; when blurred, it falls back to RoundedBorder in dim. The
-// title uses titleAccent (bold) on focus, dim otherwise.
+// focused, the border uses ThickBorder painted with the theme's focus
+// gradient anchored on borderAccent (Blue → borderAccent → Pink, or flat for
+// warning anchors like Yellow/Red — see Theme.FocusGradient). When blurred,
+// it falls back to RoundedBorder in dim. The title uses titleAccent (bold)
+// on focus, dim otherwise.
 //
-// Use this to signal mode changes (e.g. switch to pink when a filter is
-// active) without losing the rest of the panel chrome.
+// The gradient is recomputed per render but each cell pays a single
+// lipgloss.Style allocation; for the panel sizes we render (≤ 200 cells of
+// perimeter on a typical terminal) this is in the noise.
 func PanelWithAccent(t *theme.Theme, title string, w, h int, content string, focused bool, borderAccent, titleAccent color.Color) string {
 	if w < 4 {
 		w = 4
@@ -46,20 +51,98 @@ func PanelWithAccent(t *theme.Theme, title string, w, h int, content string, foc
 		h = 2
 	}
 
-	// Border weight does the heavy lifting for focus signalling: thick rule
-	// for the active panel, soft rounded rule for the rest. Color comes on top.
-	b := lipgloss.RoundedBorder()
-	col := t.P.Dim
-	if focused {
-		b = lipgloss.ThickBorder()
-		col = borderAccent
+	if !focused {
+		return renderFlatPanel(t, title, w, h, content, t.P.Dim, t.P.Dim)
 	}
-	border := lipgloss.NewStyle().Foreground(col)
 
-	titleStyle := lipgloss.NewStyle().Foreground(col)
-	if focused {
-		titleStyle = titleStyle.Bold(true).Foreground(titleAccent)
+	b := lipgloss.ThickBorder()
+	topGrad := t.FocusGradient(borderAccent, w)
+	vGrad := t.FocusGradient(borderAccent, h)
+
+	titleStyle := lipgloss.NewStyle().Foreground(titleAccent).Bold(true)
+	titleSeg := titleStyle.Render(" " + strings.TrimSpace(title) + " ")
+	titleW := lipgloss.Width(titleSeg)
+
+	leadDashes := 1
+	dashesAfterTitle := w - 2 - leadDashes - titleW
+	if dashesAfterTitle < 1 {
+		dashesAfterTitle = 1
+		// Title would have overflowed; recompute width to actually fit.
+		titleW = w - 2 - leadDashes - dashesAfterTitle
+		if titleW < 0 {
+			titleW = 0
+		}
 	}
+
+	// Top edge: each border cell painted with its own gradient color so the
+	// hue glides across the rule. The title spans columns
+	// [leadDashes+1, leadDashes+titleW] and keeps its semantic color.
+	var topB strings.Builder
+	topB.WriteString(colorCell(topGrad[0], b.TopLeft))
+	for i := 0; i < leadDashes; i++ {
+		topB.WriteString(colorCell(topGrad[1+i], b.Top))
+	}
+	topB.WriteString(titleSeg)
+	startAfter := 1 + leadDashes + titleW
+	for i := 0; i < dashesAfterTitle; i++ {
+		idx := startAfter + i
+		if idx >= len(topGrad) {
+			idx = len(topGrad) - 1
+		}
+		topB.WriteString(colorCell(topGrad[idx], b.Top))
+	}
+	topB.WriteString(colorCell(topGrad[len(topGrad)-1], b.TopRight))
+	top := topB.String()
+
+	// Bottom edge: same horizontal gradient, no title interruption.
+	var botB strings.Builder
+	botB.WriteString(colorCell(topGrad[0], b.BottomLeft))
+	for i := 1; i < w-1; i++ {
+		botB.WriteString(colorCell(topGrad[i], b.Bottom))
+	}
+	botB.WriteString(colorCell(topGrad[len(topGrad)-1], b.BottomRight))
+	bot := botB.String()
+
+	// Left/right edges paint the vertical gradient — connects the top corner
+	// hue to the bottom corner hue along the side, so the gradient feels
+	// continuous around the perimeter rather than two unrelated bands.
+	innerH := h - 2
+	contentW := PanelContentWidth(w)
+	lines := strings.Split(content, "\n")
+	out := make([]string, 0, h)
+	out = append(out, top)
+	for i := 0; i < innerH; i++ {
+		var ln string
+		if i < len(lines) {
+			ln = lines[i]
+		}
+		lw := lipgloss.Width(ln)
+		fill := contentW - lw
+		if fill < 0 {
+			ln = lipgloss.NewStyle().MaxWidth(contentW).Render(ln)
+			fill = 0
+		}
+		// Side colors come from the vertical gradient at row i+1 (row 0 is
+		// the top edge already drawn; row h-1 is the bottom edge).
+		idx := i + 1
+		if idx >= len(vGrad) {
+			idx = len(vGrad) - 1
+		}
+		left := colorCell(vGrad[idx], b.Left)
+		right := colorCell(vGrad[idx], b.Right)
+		out = append(out, left+ln+strings.Repeat(" ", fill)+right)
+	}
+	out = append(out, bot)
+	return strings.Join(out, "\n")
+}
+
+// renderFlatPanel is the blurred-panel fast path: a single foreground color
+// for the whole border, no per-cell styling. Same shape as PanelWithAccent
+// pre-gradient; kept separate so the focused path can stay readable.
+func renderFlatPanel(t *theme.Theme, title string, w, h int, content string, borderColor, titleColor color.Color) string {
+	b := lipgloss.RoundedBorder()
+	border := lipgloss.NewStyle().Foreground(borderColor)
+	titleStyle := lipgloss.NewStyle().Foreground(titleColor)
 	titleSeg := titleStyle.Render(" " + strings.TrimSpace(title) + " ")
 	titleW := lipgloss.Width(titleSeg)
 
@@ -73,7 +156,6 @@ func PanelWithAccent(t *theme.Theme, title string, w, h int, content string, foc
 		border.Render(strings.Repeat(b.Top, dashesAfterTitle)+b.TopRight)
 
 	bot := border.Render(b.BottomLeft + strings.Repeat(b.Bottom, w-2) + b.BottomRight)
-
 	innerH := h - 2
 	contentW := PanelContentWidth(w)
 	left := border.Render(b.Left)
@@ -97,4 +179,11 @@ func PanelWithAccent(t *theme.Theme, title string, w, h int, content string, foc
 	}
 	out = append(out, bot)
 	return strings.Join(out, "\n")
+}
+
+// colorCell renders a single border cell (string, may be multi-byte UTF-8)
+// with the given foreground color. Centralised so the gradient-rendering
+// loops stay readable.
+func colorCell(c color.Color, cell string) string {
+	return lipgloss.NewStyle().Foreground(c).Render(cell)
 }
