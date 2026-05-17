@@ -26,12 +26,22 @@ import (
 // — impossible in v1 because every terminal collapsed both onto the same
 // byte. Terminals that don't support the protocol fall back gracefully to
 // v1 semantics; nothing breaks.
+//
+// ReportFocus opts us into FocusMsg / BlurMsg from the terminal so update.go
+// can pause auto-refresh while the operator is in another window — saves API
+// quota and lets the data freeze at the moment they walked away, so when
+// they come back the topbar's "↻ Ns" tells the truth about staleness.
+//
+// Bracketed paste mode is enabled by default in tea v2 — multi-line pastes
+// arrive as a single PasteMsg instead of fragmented keystrokes, which is
+// what the chat textarea relies on for YAML / log snippets.
 func (m *Model) View() tea.View {
 	content := m.render()
 	v := tea.View{
 		Content:     content,
 		AltScreen:   true,
 		MouseMode:   tea.MouseModeCellMotion,
+		ReportFocus: true,
 		WindowTitle: m.title,
 		KeyboardEnhancements: tea.KeyboardEnhancements{
 			ReportAlternateKeys: true,
@@ -65,7 +75,7 @@ func (m *Model) render() string {
 	// pickers, palette, help, cluster switcher all float.
 	switch m.state {
 	case stateHelp:
-		return m.composeOverlay(base, m.renderHelpModal())
+		return m.composeCard(base, m.renderHelpModal())
 	case statePalette:
 		return m.composeOverlay(base, m.palette.View(m.ctx, w, h))
 	case stateClusters:
@@ -73,43 +83,102 @@ func (m *Model) render() string {
 	case stateBrowser:
 		return m.composeOverlay(base, m.browser.View(m.ctx, w, h))
 	case stateScaleInput:
-		return m.composeOverlay(base, m.renderScaleModal())
+		return m.composeCard(base, m.renderScaleModal())
 	case stateDeleteConfirm:
 		verb, subject := m.deleteConfirmText()
-		return m.composeOverlay(base, m.renderConfirmModal(verb, subject))
+		return m.composeCard(base, m.renderConfirmModal(verb, subject))
 	case stateRollbackConfirm:
-		return m.composeOverlay(base, m.renderConfirmModal("revert deployment", m.deployName()))
+		return m.composeCard(base, m.renderConfirmModal("rollback deployment", m.deployName()))
 	case stateRestartConfirm:
-		return m.composeOverlay(base, m.renderConfirmModal("restart app", m.deployName()))
+		return m.composeCard(base, m.renderConfirmModal("restart app", m.deployName()))
 	case stateRestartPodConfirm:
-		return m.composeOverlay(base, m.renderConfirmModal("restart pod", m.tree.SelectedRef().Name))
+		return m.composeCard(base, m.renderConfirmModal("restart pod", m.tree.SelectedRef().Name))
 	case stateEditConfirm:
-		return m.composeOverlay(base, m.renderEditConfirmModal())
+		return m.composeCard(base, m.renderEditConfirmModal())
 	case statePortForwardInput:
-		return m.composeOverlay(base, m.renderPortForwardModal())
+		return m.composeCard(base, m.renderPortForwardModal())
 	case stateCordonConfirm:
 		verb := "cordon"
 		if !m.nodeTarget.Schedulable {
 			verb = "uncordon"
 		}
-		return m.composeOverlay(base, m.renderConfirmModal(verb+" node", m.nodeTarget.Name))
+		return m.composeCard(base, m.renderConfirmModal(verb+" node", m.nodeTarget.Name))
 	case stateDrainConfirm:
 		subj := m.nodeTarget.Name
 		if m.drainConfirmPods >= 0 {
 			subj = fmt.Sprintf("%s · evicts %d pods", m.nodeTarget.Name, m.drainConfirmPods)
 		}
-		return m.composeOverlay(base, m.renderConfirmModal("drain node", subj))
+		return m.composeCard(base, m.renderConfirmModal("drain node", subj))
 	}
 	return base
 }
 
-// composeOverlay layers an overlay (modal / palette / picker) over the base.
-// The overlay strings are already self-positioned (via lipgloss.Place) so we
-// simply return the overlay — Place fills the whole terminal with backdrop
-// dots. The base is captured for the side-effect of any layout state it
-// computed (sizing, selection sync) even though only the overlay is shown.
-func (m *Model) composeOverlay(_, overlay string) string {
-	return overlay
+// composeOverlay layers an overlay (palette / browser / cluster switcher)
+// over the base via lipgloss.Compositor. Each overlay is a full-screen
+// Place-positioned string today (its own dotted backdrop), so layering it
+// at z=1 over base at z=0 is a faithful preservation of the current look
+// — the value is the z-buffered architecture, which lets future overlays
+// drop the backdrop and have the live tree show through underneath.
+//
+// The render side-effects of base (sizing, selection sync, tab hitbox
+// stashing) still run because base is always rendered; we now also draw
+// it as the bottom layer instead of throwing it away.
+func (m *Model) composeOverlay(base, overlay string) string {
+	w, h := m.ctx.Width, m.ctx.Height
+	comp := lipgloss.NewCompositor(
+		lipgloss.NewLayer(base).X(0).Y(0).Z(0),
+		lipgloss.NewLayer(overlay).X(0).Y(0).Z(1),
+	)
+	return lipgloss.NewCanvas(w, h).Compose(comp).Render()
+}
+
+// composeCard layers a self-contained card (a small confirm / scale /
+// help / edit / port-forward modal that doesn't carry its own backdrop)
+// centred over the base, with the standard dim-dot backdrop drawn as the
+// middle layer. The card layer reads "floating over data" instead of
+// "data swapped for a static fullscreen frame" — proper z-ordering with
+// lipgloss.Compositor.
+//
+// Centring math: x = (w - cardW) / 2, y = (h - cardH) / 2 — same result
+// lipgloss.Place computes, but exposed as a Layer so the card paints
+// only its own bounds (no fullscreen overwrite of base).
+func (m *Model) composeCard(base, card string) string {
+	w, h := m.ctx.Width, m.ctx.Height
+	cardW, cardH := lipgloss.Size(card)
+	cx := (w - cardW) / 2
+	if cx < 0 {
+		cx = 0
+	}
+	cy := (h - cardH) / 2
+	if cy < 0 {
+		cy = 0
+	}
+	// Backdrop layer: a full-screen field of dim dots that paints over the
+	// base so the modal reads as gated ("don't keep typing into the tree").
+	// Same visual signature as the lipgloss.Place backdrop the old path
+	// produced; rendered explicitly here so the layer order is obvious.
+	backdrop := m.renderModalBackdrop(w, h)
+	comp := lipgloss.NewCompositor(
+		lipgloss.NewLayer(base).X(0).Y(0).Z(0),
+		lipgloss.NewLayer(backdrop).X(0).Y(0).Z(1),
+		lipgloss.NewLayer(card).X(cx).Y(cy).Z(2),
+	)
+	return lipgloss.NewCanvas(w, h).Compose(comp).Render()
+}
+
+// renderModalBackdrop paints a w×h field of dim dots used as the
+// translucent-feeling backdrop layer under a modal card. Same dots and
+// dim-foreground style the lipgloss.Place backdrop used to draw via
+// WithWhitespaceChars — extracted so the Compositor path can layer it
+// explicitly.
+func (m *Model) renderModalBackdrop(w, h int) string {
+	t := m.ctx.Theme
+	dot := lipgloss.NewStyle().Foreground(t.P.BG3).Render(strings.Repeat("·", w))
+	rows := make([]string, h)
+	for i := range rows {
+		rows[i] = dot
+	}
+	return strings.Join(rows, "\n")
 }
 
 // renderBase composes the steady-state frame: topbar / optional banner /
@@ -183,6 +252,17 @@ func (m *Model) renderMainSplit(w, h int) string {
 	}
 	m.chat.SetScreenOrigin(originX, originY)
 
+	// Stash workspace tab strip geometry for the mouse-click router. The
+	// strip lives on the first content row inside the workspace panel: one
+	// cell right of the panel's left border, one cell down from the top
+	// border. Hit-testing in update.go translates a click column back into
+	// the WorkspaceTab the operator wants to activate.
+	m.tabStripOriginX = treeW + 1
+	m.tabStripOriginY = originY + 1
+	availability := m.workspaceTabAvailability()
+	tabs := sections.AvailableTabs(availability)
+	m.tabHitboxes = sections.WorkspaceTabHitboxes(tabs, sections.WorkspaceBodyWidth(wsW))
+
 	treeView := m.tree.View(m.ctx, treeW, h)
 	workspaceView := m.renderWorkspace(wsW, h, workspaceFocused)
 	return lipgloss.JoinHorizontal(lipgloss.Top, treeView, workspaceView)
@@ -219,10 +299,14 @@ func containsTab(tabs []sections.WorkspaceTab, want sections.WorkspaceTab) bool 
 }
 
 // workspaceOwnsFocus returns true when the model state designates the
-// workspace pane as the active surface (an immersive tab is open and
-// consuming keystrokes). The tree stays visible but the gradient border
-// migrates to the workspace.
+// workspace pane as the active surface — either an immersive tab is open
+// and consuming keystrokes, or the operator pressed Tab to peek at the
+// workspace without changing the active view. The tree stays visible but
+// the gradient border migrates to the workspace.
 func (m *Model) workspaceOwnsFocus() bool {
+	if m.peekWorkspace {
+		return true
+	}
 	switch m.state {
 	case stateLogView, stateEventsView, stateDescribeView,
 		stateHotView, stateForwardsList, stateDrainProgress,
@@ -456,9 +540,22 @@ func (m *Model) deleteConfirmText() (verb, subject string) {
 func (m *Model) renderFooter() string {
 	t := m.ctx.Theme
 	var view string
-	if m.state == stateChatView {
+	switch m.state {
+	case stateChatView:
 		view = m.renderChatFooter()
-	} else {
+	case stateLogView:
+		view = m.renderLogsFooter()
+	case stateEventsView:
+		view = m.renderEventsFooter()
+	case stateDescribeView:
+		view = m.renderDescribeFooter()
+	case stateHotView:
+		view = m.renderHotFooter()
+	case stateForwardsList:
+		view = m.renderForwardsFooter()
+	case stateDrainProgress:
+		view = m.renderDrainFooter()
+	default:
 		view = m.renderTreeFooter()
 	}
 	return lipgloss.NewStyle().
@@ -505,7 +602,7 @@ func (m *Model) renderChatFooter() string {
 	sep := t.HelpDesc.Render(" · ")
 	send := pair("↵", "send")
 	if m.chat.Streaming() {
-		send = t.HelpKey.Render("esc") + " " + t.HelpDesc.Render("cancel")
+		send = pair("esc", "cancel")
 	}
 	parts := []string{
 		send,
@@ -515,6 +612,88 @@ func (m *Model) renderChatFooter() string {
 		pair("⌃n", "new"),
 	}
 	return strings.Join(parts, sep)
+}
+
+// renderImmersiveFooter is the shared layout for workspace-tab footers:
+// the section's verbs render bright; the back-to-tree / help / quit
+// chrome row stays dim on the right so the global affordances read as a
+// separate visual register — mirroring renderTreeFooter's two-layer rule.
+func (m *Model) renderImmersiveFooter(verbs []keyDesc) string {
+	t := m.ctx.Theme
+	pair := func(k, d string, dim bool) string {
+		if dim {
+			s := lipgloss.NewStyle().Foreground(t.P.Dim)
+			return s.Render(k) + " " + s.Render(d)
+		}
+		return t.HelpKey.Render(k) + " " + t.HelpDesc.Render(d)
+	}
+	parts := make([]string, 0, len(verbs)+3)
+	for _, v := range verbs {
+		parts = append(parts, pair(v.Key, v.Desc, false))
+	}
+	parts = append(parts,
+		pair("esc", "back", true),
+		pair("?", "help", true),
+		pair("q", "quit", true),
+	)
+	sep := lipgloss.NewStyle().Foreground(t.P.Dim).Render(" · ")
+	return strings.Join(parts, sep)
+}
+
+type keyDesc struct{ Key, Desc string }
+
+func (m *Model) renderLogsFooter() string {
+	verbs := []keyDesc{
+		{Key: m.ctx.Keys.Yank.Help().Key, Desc: "copy"},
+		{Key: "/", Desc: "filter"},
+		{Key: "f", Desc: "follow"},
+		{Key: "g", Desc: "top"},
+		{Key: "G", Desc: "bottom"},
+	}
+	return m.renderImmersiveFooter(verbs)
+}
+
+func (m *Model) renderEventsFooter() string {
+	verbs := []keyDesc{
+		{Key: m.ctx.Keys.Yank.Help().Key, Desc: "copy"},
+		{Key: "/", Desc: "filter"},
+		{Key: m.ctx.Keys.Refresh.Help().Key, Desc: "refresh"},
+	}
+	return m.renderImmersiveFooter(verbs)
+}
+
+func (m *Model) renderDescribeFooter() string {
+	verbs := []keyDesc{
+		{Key: m.ctx.Keys.Yank.Help().Key, Desc: "copy"},
+		{Key: "/", Desc: "filter"},
+		{Key: m.ctx.Keys.Refresh.Help().Key, Desc: "refresh"},
+	}
+	return m.renderImmersiveFooter(verbs)
+}
+
+func (m *Model) renderHotFooter() string {
+	verbs := []keyDesc{
+		{Key: m.ctx.Keys.Refresh.Help().Key, Desc: "refresh"},
+	}
+	return m.renderImmersiveFooter(verbs)
+}
+
+func (m *Model) renderForwardsFooter() string {
+	verbs := []keyDesc{
+		{Key: m.ctx.Keys.Delete.Help().Key, Desc: "kill"},
+	}
+	return m.renderImmersiveFooter(verbs)
+}
+
+// renderDrainFooter omits esc/help/quit — esc is intentionally a no-op
+// while a drain is in flight (the operator shouldn't be able to half-drain
+// a node by accident), and the only useful key is ctrl+c to cancel.
+func (m *Model) renderDrainFooter() string {
+	t := m.ctx.Theme
+	pair := func(k, d string) string {
+		return t.HelpKey.Render(k) + " " + t.HelpDesc.Render(d)
+	}
+	return pair("⌃c", "cancel")
 }
 
 // contextualShortHelp builds the footer keymap from the current tree row.
@@ -539,7 +718,9 @@ func (m *Model) contextualShortHelp() []key.Binding {
 	mutators := []key.Binding{}
 	switch ref.Kind {
 	case k8s.KindContext:
-		return append([]key.Binding{k.Enter}, tail...)
+		// Cluster picker: the inline "↵ open" hint in the tree body already
+		// teaches the drill verb. Don't restate Enter here — Jakob's rule.
+		return tail
 	case k8s.KindApp:
 		reads = append(reads, k.Describe, k.Logs, k.Events)
 		if ref.SubKind == k8s.AppKindDeployment || ref.SubKind == k8s.AppKindStatefulSet {
@@ -578,8 +759,10 @@ func (m *Model) contextualShortHelp() []key.Binding {
 		reads = append(reads, k.Describe, k.Events, k.PortForward)
 	case k8s.KindPVC:
 		reads = append(reads, k.Describe, k.Events)
-	case k8s.KindIngress, k8s.KindPV:
-		reads = append(reads, k.Describe)
+	case k8s.KindIngress:
+		reads = append(reads, k.Describe, k.Events)
+	case k8s.KindPV:
+		reads = append(reads, k.Describe, k.Events)
 	}
 	if editKindFor(ref) != "" {
 		mutators = append(mutators, k.Edit)
@@ -591,14 +774,6 @@ func (m *Model) contextualShortHelp() []key.Binding {
 }
 
 // ── modals ────────────────────────────────────────────────────────────
-
-func (m *Model) modalBackdrop() []lipgloss.WhitespaceOption {
-	t := m.ctx.Theme
-	return []lipgloss.WhitespaceOption{
-		lipgloss.WithWhitespaceChars("·"),
-		lipgloss.WithWhitespaceStyle(lipgloss.NewStyle().Foreground(t.P.BG3)),
-	}
-}
 
 func (m *Model) renderScaleModal() string {
 	t := m.ctx.Theme
@@ -617,11 +792,10 @@ func (m *Model) renderScaleModal() string {
 		"",
 		m.scaleInput.View(),
 		"",
-		t.DimTxt.Italic(true).Render("Enter confirm  Esc cancel"),
+		t.DimTxt.Italic(true).Render("↵ confirm  esc cancel"),
 	)
 	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
-	return lipgloss.Place(m.ctx.Width, m.ctx.Height, lipgloss.Center, lipgloss.Center,
-		t.Modal.Render(content), m.modalBackdrop()...)
+	return t.Modal.Render(content)
 }
 
 func currentDesiredReplicas(app k8s.AppInfo) int {
@@ -648,10 +822,9 @@ func (m *Model) renderPortForwardModal() string {
 		m.pfInput.View(),
 		"",
 		t.DimTxt.Italic(true).Render("L:R or single port (same on both sides)"),
-		t.DimTxt.Italic(true).Render("Enter confirm  Esc cancel"),
+		t.DimTxt.Italic(true).Render("↵ confirm  esc cancel"),
 	)
-	return lipgloss.Place(m.ctx.Width, m.ctx.Height, lipgloss.Center, lipgloss.Center,
-		t.Modal.Render(content), m.modalBackdrop()...)
+	return t.Modal.Render(content)
 }
 
 func (m *Model) renderEditConfirmModal() string {
@@ -683,12 +856,11 @@ func (m *Model) renderEditConfirmModal() string {
 	}
 	parts = append(parts,
 		"",
-		lipgloss.NewStyle().Foreground(t.P.Green).Render("y")+t.DimTxt.Render(" apply  ")+t.DimTxt.Render("n/Esc cancel"),
+		lipgloss.NewStyle().Foreground(t.P.Green).Render("y")+t.DimTxt.Render(" apply  ")+t.DimTxt.Render("n/esc cancel"),
 	)
 
 	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
-	return lipgloss.Place(m.ctx.Width, m.ctx.Height, lipgloss.Center, lipgloss.Center,
-		t.Modal.Render(content), m.modalBackdrop()...)
+	return t.Modal.Render(content)
 }
 
 func (m *Model) renderConfirmModal(action, resource string) string {
@@ -698,10 +870,9 @@ func (m *Model) renderConfirmModal(action, resource string) string {
 		"",
 		lipgloss.NewStyle().Foreground(t.P.Red).Bold(true).Render(resource),
 		"",
-		lipgloss.NewStyle().Foreground(t.P.Green).Render("y")+t.DimTxt.Render(" confirm  ")+t.DimTxt.Render("n/Esc cancel"),
+		lipgloss.NewStyle().Foreground(t.P.Green).Render("y")+t.DimTxt.Render(" confirm  ")+t.DimTxt.Render("n/esc cancel"),
 	)
-	return lipgloss.Place(m.ctx.Width, m.ctx.Height, lipgloss.Center, lipgloss.Center,
-		t.Modal.Render(content), m.modalBackdrop()...)
+	return t.Modal.Render(content)
 }
 
 func (m *Model) renderHelpModal() string {
@@ -723,10 +894,9 @@ func (m *Model) renderHelpModal() string {
 		"",
 		body,
 		"",
-		t.DimTxt.Italic(true).Render("Esc or ? to close"),
+		t.DimTxt.Italic(true).Render("esc or ? to close"),
 	)
-	return lipgloss.Place(m.ctx.Width, m.ctx.Height, lipgloss.Center, lipgloss.Center,
-		t.Modal.Padding(1, 2).Render(content), m.modalBackdrop()...)
+	return t.Modal.Padding(1, 2).Render(content)
 }
 
 func renderHelpGroup(t *theme.Theme, g keys.Group) string {

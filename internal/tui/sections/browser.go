@@ -344,7 +344,7 @@ func renderBrowserRow(c *tuictx.Ctx, e browserEntry, hits []int, w int, selected
 	line := cursor + check + highlighted + suffix
 	pad := w - lipgloss.Width(line)
 	if pad > 0 {
-		line += bg.Render(strings.Repeat(" ", pad))
+		line += bg.Width(pad).Render("")
 	}
 	return line
 }

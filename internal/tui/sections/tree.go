@@ -1237,7 +1237,8 @@ func (t *Tree) visibleRows() []NodeRef {
 			// add CRDs / hide defaults via the Resource Browser. Labels
 			// stay the plural k8s resource names so the breadcrumb segment
 			// matches what `kubectl get <thing>` would return.
-			for _, spec := range t.foldSpecsFor(t.enabledResources) {
+			specs := t.foldSpecsFor(t.enabledResources)
+			for _, spec := range specs {
 				display := t.foldDisplay(spec.Label, spec.CountKind, spec.GVR)
 				if spec.Kind == k8s.KindWorkloadsFold {
 					// Workloads count is already on hand (we always load
@@ -1253,7 +1254,13 @@ func (t *Tree) visibleRows() []NodeRef {
 					Health:  k8s.HealthUnknown,
 				})
 			}
-			return out
+			// If the user hid every fold via the Resource Browser, fall
+			// through to render the apps directly — otherwise the namespace
+			// would look empty even though deployments exist, with no
+			// on-screen way back to the Browser other than the `,` chord.
+			if len(specs) > 0 {
+				return out
+			}
 		}
 
 		// One level deeper (under Workloads, or via filter-typed search):
@@ -1847,7 +1854,7 @@ func (t *Tree) renderNodeRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 // node has no active pressure conditions.
 func renderPressureCell(th *theme.Theme, pressures []string, width int, bg lipgloss.Style) string {
 	if len(pressures) == 0 {
-		return bg.Render(strings.Repeat(" ", width))
+		return bg.Width(width).Render("")
 	}
 	var b strings.Builder
 	for i, p := range pressures {
@@ -1877,7 +1884,7 @@ func renderPressureCell(th *theme.Theme, pressures []string, width int, bg lipgl
 	if lipgloss.Width(out) > width {
 		return out
 	}
-	return out + bg.Render(strings.Repeat(" ", width-lipgloss.Width(out)))
+	return out + bg.Width(width-lipgloss.Width(out)).Render("")
 }
 
 func (t *Tree) renderConfigMapRows(c *tuictx.Ctx, innerW, rowsAvail int) string {

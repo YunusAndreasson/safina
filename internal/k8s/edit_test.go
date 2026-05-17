@@ -98,19 +98,6 @@ func TestApplyEditedYAML_RejectsBadYAML(t *testing.T) {
 	assert.Contains(t, err.Error(), "yaml parse")
 }
 
-func TestIsEditableKind(t *testing.T) {
-	for _, k := range []string{
-		EditKindDeployment, EditKindStatefulSet, EditKindDaemonSet,
-		EditKindConfigMap, EditKindSecret,
-		EditKindService, EditKindIngress, EditKindPVC,
-	} {
-		assert.True(t, IsEditableKind(k), k)
-	}
-	for _, k := range []string{"Pod", "Node", "Namespace", "PersistentVolume", "Job", "CronJob", ""} {
-		assert.False(t, IsEditableKind(k), k)
-	}
-}
-
 func TestBuildEditableYAML_StatefulSet(t *testing.T) {
 	ss := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "ns"},

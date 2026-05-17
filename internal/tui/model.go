@@ -234,6 +234,38 @@ type Model struct {
 	// many tabs can identify which cluster a tab is pointed at.
 	title string
 
+	// focused tracks whether the terminal currently has OS focus. The
+	// refresh and clock ticks short-circuit while this is false so we
+	// don't burn API quota loading data the operator isn't looking at —
+	// FocusMsg / BlurMsg in update.go flip it. Starts true because a
+	// program that never sees a focus report (xterm without focus events)
+	// must still refresh; tea.View.ReportFocus opts us in to the reports.
+	focused bool
+
+	// lightBgWarned latches the one-shot banner raised when
+	// BackgroundColorMsg reports a light terminal. TokyoNight is designed
+	// for dark backgrounds — on a light terminal it reads as a low-contrast
+	// gray wash. We don't auto-switch palettes (no light palette ships
+	// today), but we tell the operator once so they understand the muddy
+	// rendering isn't a bug.
+	lightBgWarned bool
+
+	// tabStripOriginX / tabStripOriginY / tabHitboxes are stashed by the
+	// View pass so the MouseClickMsg handler can map a click column on the
+	// workspace tab strip back to the WorkspaceTab the user wants to
+	// activate. Mirrors chat.SetScreenOrigin: rendering knows the geometry
+	// the click handler needs to consume.
+	tabStripOriginX int
+	tabStripOriginY int
+	tabHitboxes     []sections.TabHitbox
+
+	// peekWorkspace tracks whether Tab has moved focus to the right pane
+	// without activating an immersive tab. The active view doesn't change
+	// (Inspector stays Inspector), but the gradient border migrates to the
+	// workspace and ←/→ start cycling the tab strip. Cleared by another Tab
+	// (focus back to tree) or by activating an immersive tab via hotkey.
+	peekWorkspace bool
+
 	// startupBanner is a one-shot error message raised in Init(), used by
 	// main to surface CLI-flag mistakes (e.g. --context=does-not-exist)
 	// without spilling a stderr line into the user's scrollback.
@@ -323,6 +355,12 @@ func NewModel(mgr *k8s.Manager, cfg *config.AppConfig) Model {
 		now:                time.Now(),
 		title:              "safina",
 		discoveryByContext: make(map[string]bool),
+		// Default to focused: terminals that don't report focus events leave
+		// the field at true forever and behave exactly like v1 — every tick
+		// refreshes. Terminals that do report focus override on the first
+		// FocusMsg / BlurMsg (BlurMsg fires immediately at startup if the
+		// terminal isn't focused at launch).
+		focused: true,
 	}
 	m.tree.Focused = true
 	if cfg != nil {
@@ -455,11 +493,19 @@ func (m *Model) saveConfig() {
 // Init satisfies tea.Model. Kicks off the auto-refresh tick, the wall-clock
 // tick, and the spinner. The app always starts at the context picker — the
 // user explicitly chooses which cluster to enter on every launch.
+//
+// RequestBackgroundColor asks the terminal what its background is so we can
+// warn (once) when safina is loaded in a light-mode terminal — the TokyoNight
+// palette is designed for dark and reads as gray-on-gray otherwise. Bubble
+// Tea v2 also auto-sends ColorProfileMsg at startup so the renderer
+// downsamples truecolor hex values to ANSI256/ANSI16 on limited terminals;
+// we just listen for it and stash the profile for diagnostics.
 func (m *Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{
 		m.autoRefreshTick(),
 		m.clockTick(),
 		m.ctx.Spinner.Tick,
+		tea.RequestBackgroundColor,
 	}
 	// If kubeconfig contained contexts that couldn't be built into a Client
 	// at startup, raise a one-shot banner so the user understands why their
@@ -629,12 +675,3 @@ func (m *Model) raiseError(msg string) tea.Cmd { return m.raiseBanner(msg, true)
 
 // raiseStatus is the success/info-flavoured raiseBanner — green render.
 func (m *Model) raiseStatus(msg string) tea.Cmd { return m.raiseBanner(msg, false) }
-
-// clearBanner removes the banner immediately and bumps the epoch so any
-// in-flight timer no-ops. Used when a follow-up action supersedes the prior
-// banner without raising a new one (e.g., a successful retry after an error).
-func (m *Model) clearBanner() {
-	m.bannerEpoch++
-	m.bannerMsg = ""
-	m.bannerErr = false
-}

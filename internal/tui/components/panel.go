@@ -19,22 +19,15 @@ func PanelContentWidth(w int) int {
 	return cw
 }
 
-// Panel renders a rounded-border box with the title in the top edge. The
-// content is expected to fill exactly PanelContentWidth(w) cells per line.
+// PanelWithAccent renders a rounded/thick-bordered box with the title in the
+// top edge. The content is expected to fill exactly PanelContentWidth(w)
+// cells per line. w and h are the *outer* dimensions including borders.
 //
 //	╭─ Title ──────────────╮
 //	│ content              │
 //	╰──────────────────────╯
 //
-// When focused, the border paints with a Blue → accent → Pink gradient instead
-// of a flat fill — the Charm-stack signature that distinguishes "the active
-// panel" at a glance. w and h are the *outer* dimensions including borders.
-func Panel(t *theme.Theme, title string, w, h int, content string, focused bool) string {
-	return PanelWithAccent(t, title, w, h, content, focused, t.P.Blue, t.P.Cyan)
-}
-
-// PanelWithAccent renders a panel using custom focus accent colors. When
-// focused, the border uses ThickBorder painted with the theme's focus
+// When focused, the border uses ThickBorder painted with the theme's focus
 // gradient anchored on borderAccent (Blue → borderAccent → Pink, or flat for
 // warning anchors like Yellow/Red — see Theme.FocusGradient). When blurred,
 // it falls back to RoundedBorder in dim. The title uses titleAccent (bold)

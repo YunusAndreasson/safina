@@ -156,7 +156,7 @@ func Topbar(t *theme.Theme, w int, crumbs []Crumb, refreshAge, clock string, for
 	if pad < 1 {
 		pad = 1
 	}
-	gap := lipgloss.NewStyle().Background(t.P.BG2).Render(strings.Repeat(" ", pad))
+	gap := lipgloss.NewStyle().Background(t.P.BG2).Width(pad).Render("")
 
 	return bar.Render(logo + logoSep + crumbCell + gap + right)
 }

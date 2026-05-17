@@ -149,12 +149,11 @@ func (a *Activity) Apply(msg ActivityLoadedMsg) {
 // untouched.
 func loadActivity(ctx context.Context, mgr *k8s.Manager, contextName, kind, name, namespace string) tea.Cmd {
 	return func() tea.Msg {
-		done := debug.Track("activity.events", "context", contextName, "kind", kind, "name", name)
-		defer done()
+		defer debug.Track("activity.events", "context", contextName, "kind", kind, "name", name)()
 		out := ActivityLoadedMsg{Kind: kind, Name: name, Namespace: namespace}
 		client, ok := mgr.GetClient(contextName)
 		if !ok {
-			out.Err = fmt.Errorf("context not found")
+			out.Err = errContextNotFound
 			return out
 		}
 		evts, err := k8s.ListEvents(ctx, client.Clientset, namespace, kind, name)

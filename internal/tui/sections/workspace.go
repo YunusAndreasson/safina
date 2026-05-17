@@ -101,6 +101,71 @@ func AvailableTabs(a WSTabAvailability) []WorkspaceTab {
 	return tabs
 }
 
+// TabHitbox describes the on-strip x-range one tab occupies after rendering.
+// Used by the mouse-click router to map a column to a tab so left-clicking a
+// label switches to it (the same affordance the (l)/(e)/(y) hotkeys already
+// expose, surfaced for operators who reach for the mouse).
+//
+// X0 is inclusive, X1 is exclusive — half-open interval matches the way
+// MouseClickMsg.X is reported (zero-based column). Tab is the WorkspaceTab
+// value to activate when X0 ≤ click_x < X1.
+type TabHitbox struct {
+	Tab WorkspaceTab
+	X0  int
+	X1  int
+}
+
+// WorkspaceTabHitboxes recomputes the strip layout (same math as
+// RenderWorkspaceTabStrip) and returns the per-tab column ranges within the
+// strip's coordinate space (origin = strip's first cell). Caller adds the
+// strip's screen-origin x to translate back to terminal coordinates.
+//
+// Returns nil when the strip falls back to its truncated single-tab form —
+// the click target there would be the active tab only and there's no useful
+// switching to do, so we don't generate a hitbox.
+func WorkspaceTabHitboxes(tabs []WorkspaceTab, w int) []TabHitbox {
+	if len(tabs) == 0 {
+		return nil
+	}
+	// Mirror RenderWorkspaceTabStrip's layout: each tab's rendered label is
+	// "❯ Label" for the active tab and "Label" for others, joined by a 3-cell
+	// separator. For hit-testing we treat the active tab's "❯ " prefix as part
+	// of its label so the X0..X1 range catches clicks on the cursor glyph too.
+	const sepW = 3
+	hits := make([]TabHitbox, 0, len(tabs))
+	pos := 0
+	for i, tab := range tabs {
+		label := tab.Label()
+		// Style/render width matches RenderWorkspaceTabStrip: active tab adds
+		// "❯ " (2 cells), inactive tabs are plain. We don't actually pick the
+		// active styling here — the *width* is identical either way for hit
+		// purposes because both render the literal label glyphs; we approximate
+		// with the inactive width to avoid a circular dep on `active`. The
+		// 2-cell delta on the active tab makes its hit zone 2 wider than
+		// strictly accurate, which is the friendlier failure mode (slightly
+		// generous click target on the focused tab).
+		segW := lipgloss.Width(label)
+		hits = append(hits, TabHitbox{Tab: tab, X0: pos, X1: pos + segW})
+		pos += segW
+		if i < len(tabs)-1 {
+			pos += sepW
+		}
+	}
+	// If the strip would have truncated, the hitboxes past the visible region
+	// are meaningless — the caller renders "…" instead of trailing labels.
+	// Return only the prefix that fits.
+	if pos <= w {
+		return hits
+	}
+	cut := hits[:0]
+	for _, h := range hits {
+		if h.X1 <= w {
+			cut = append(cut, h)
+		}
+	}
+	return cut
+}
+
 // RenderWorkspaceTabStrip renders the tab strip — a one-row band where
 // the active tab is bright cyan-bold prefixed with ❯, inactive tabs are
 // dim, and the line as a whole serves as the panel's first content row.

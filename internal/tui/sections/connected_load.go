@@ -2,7 +2,6 @@ package sections
 
 import (
 	"context"
-	"fmt"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -26,12 +25,11 @@ type ConnectedMsg struct {
 // SetSelection actually needs the data.
 func LoadConnections(ctx context.Context, mgr *k8s.Manager, contextName, kind, subKind, namespace, name string) tea.Cmd {
 	return func() tea.Msg {
-		done := debug.Track("k8s.connections", "context", contextName, "kind", kind, "name", name)
-		defer done()
+		defer debug.Track("k8s.connections", "context", contextName, "kind", kind, "name", name)()
 		out := ConnectedMsg{Kind: kind, SubKind: subKind, Namespace: namespace, Name: name}
 		client, ok := mgr.GetClient(contextName)
 		if !ok {
-			out.Err = fmt.Errorf("context not found")
+			out.Err = errContextNotFound
 			return out
 		}
 		cs := client.Clientset

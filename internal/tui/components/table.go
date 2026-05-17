@@ -45,8 +45,10 @@ func Header(t *theme.Theme, labels []string, widths []int, aligns []Align) strin
 		}
 		cells[i] = style.Render(l)
 	}
-	gap := t.ColHeader.Render(strings.Repeat(" ", gapW))
-	pad := t.ColHeader.Render(strings.Repeat(" ", edgePad))
+	// Width(n).Render("") paints n cells of the style's background — same
+	// result as strings.Repeat(" ", n) wrapped in Render, but declarative.
+	gap := t.ColHeader.Width(gapW).Render("")
+	pad := t.ColHeader.Width(edgePad).Render("")
 	return pad + strings.Join(cells, gap) + pad
 }
 
@@ -69,8 +71,8 @@ func Row(t *theme.Theme, vals []string, widths []int, aligns []Align, selected b
 		}
 		cells[i] = s.Render(v)
 	}
-	gap := bg.Render(strings.Repeat(" ", gapW))
-	pad := bg.Render(strings.Repeat(" ", edgePad))
+	gap := bg.Width(gapW).Render("")
+	pad := bg.Width(edgePad).Render("")
 	body := pad + strings.Join(cells, gap) + pad
 	return bg.Width(RowOuterWidth(widths)).Render(body)
 }

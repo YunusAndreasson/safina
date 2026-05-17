@@ -161,5 +161,8 @@ func RenderModalStatusBar(t *theme.Theme, modalW int, filter Filter, indicators 
 	if pad < 1 {
 		pad = 1
 	}
-	return left + strings.Repeat(" ", pad) + right
+	// Bare-text gap (no surrounding bg style) — Width(pad).Render("") on
+	// an empty style produces exactly the same characters as the literal
+	// space repeat, but reads as "padding cell" instead of "manual chars."
+	return left + lipgloss.NewStyle().Width(pad).Render("") + right
 }

@@ -152,27 +152,6 @@ func resolvePodForService(ctx context.Context, cs kubernetes.Interface, namespac
 	return pod, remotePorts, nil
 }
 
-// PodPorts returns the container ports declared by a pod, for the prefill
-// hint in the input modal.
-func PodPorts(ctx context.Context, cs kubernetes.Interface, namespace, name string) ([]int32, error) {
-	p, err := cs.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		return nil, err
-	}
-	out := []int32{}
-	seen := map[int32]bool{}
-	for _, c := range p.Spec.Containers {
-		for _, cp := range c.Ports {
-			if cp.ContainerPort == 0 || seen[cp.ContainerPort] {
-				continue
-			}
-			seen[cp.ContainerPort] = true
-			out = append(out, cp.ContainerPort)
-		}
-	}
-	return out, nil
-}
-
 // StartPortForward opens a new forward. For Service targets it resolves one
 // ready endpoint pod first and pins to it. Returns the running PortForward
 // once the SPDY tunnel is ready (or an error if it never connects).

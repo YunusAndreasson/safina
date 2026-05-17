@@ -68,10 +68,6 @@ type Map struct {
 	// this is the discoverable escape hatch for "I want to look at a
 	// different cluster right now" without popping back to the root.
 	ClusterSwitch key.Binding
-	// Yaml binds to `y` and jumps the workspace to the Yaml tab (alias
-	// for Describe — the cosmic-horizon UI calls the YAML view "Yaml"
-	// rather than "Describe" since the latter is a kubectl-ism).
-	Yaml key.Binding
 }
 
 // Default builds the standard keybindings.
@@ -94,10 +90,12 @@ func Default() Map {
 		Describe: key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "describe")),
 		// Convention: lowercase = read-only; uppercase = mutates cluster
 		// state. Reading is safe to fat-finger; mutating requires the shift
-		// key. Same hierarchy as vi's d/D. The uppercase letters spell the
-		// English verb: S(cale) U(ndo) R(estart) E(dit) C(ordon) D(rain) K(ill).
+		// key. Same hierarchy as vi's d/D. The uppercase letters are picked
+		// to be mnemonic, not to spell the user-facing verb — operators
+		// recognise "rollback" instantly, so the help text uses that across
+		// footer/modal/banner even though the key is `U` (for "undo").
 		Scale:    key.NewBinding(key.WithKeys("S"), key.WithHelp("S", "scale")),
-		Rollback: key.NewBinding(key.WithKeys("U"), key.WithHelp("U", "undo")),
+		Rollback: key.NewBinding(key.WithKeys("U"), key.WithHelp("U", "rollback")),
 		Restart:  key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "restart")),
 		Logs:     key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "logs")),
 		Events:   key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "events")),
@@ -129,10 +127,6 @@ func Default() Map {
 		// for the cluster switcher since `:` is already the entry-resource
 		// palette — distinct concept, distinct chord.
 		ClusterSwitch: key.NewBinding(key.WithKeys("ctrl+k"), key.WithHelp("ctrl+k", "switch cluster")),
-		// `y` is a tree-row jump to the Yaml workspace tab. The legacy
-		// "yank" verb (also `y`) is preserved on contexts where it makes
-		// sense (logs / chat / describe focused) — see update.go dispatch.
-		Yaml: key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "yaml")),
 	}
 }
 

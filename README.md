@@ -48,21 +48,58 @@ safina --namespace=default
 
 ## Keybindings
 
+Lowercase keys are read-only verbs (safe to fat-finger); uppercase or chord
+keys mutate cluster state.
+
+### Navigation
+
 | Key | Action |
 |-----|--------|
-| ↑/k | Move up |
-| ↓/j | Move down |
-| Enter | Select / drill down |
-| Esc | Go back |
-| Tab | Switch between Pods/Deployments |
-| d | Delete selected pod |
-| s | Scale deployment |
-| r | Rollback deployment |
-| l | View pod logs |
-| S | Shell into pod (auto-falls-back to a netshoot debug container if the pod has no shell) |
-| R | Manual refresh |
+| ↑/k, ↓/j | Move cursor |
+| ↵ | Drill in / confirm |
+| Esc | Back / cancel |
+| / | Filter rows |
+| g, G | Jump to top / bottom |
+| n | Next failing row |
+| : | Command palette (fuzzy jump to any resource) |
+
+### Inspect (read-only)
+
+| Key | Action |
+|-----|--------|
+| d | Describe (YAML) |
+| l | Logs |
+| e | Events |
+| s | Shell into pod (falls back to a netshoot debug container) |
+| v | Reveal Secret (decoded) |
+| f | Port-forward a Pod or Service |
+| y | Yank selection / payload to clipboard (OSC52) |
+
+### Change (mutates cluster state)
+
+| Key | Action |
+|-----|--------|
+| S | Scale deployment / statefulset |
+| U | Undo (rollback) deployment |
+| R | Restart app / pod |
+| E | Edit YAML in `$EDITOR` (diff is shown and y/n-gated) |
+| C | Cordon / uncordon node |
+| D | Drain node |
+| K | Kill (delete) selected resource |
+
+### Meta
+
+| Key | Action |
+|-----|--------|
+| r | Refresh |
+| Tab | Move focus between tree (left) and workspace (right); ←/→ then cycles tabs |
+| i | Open chat tab |
+| , | Resource browser (pick which kinds appear as folds) |
+| Ctrl+K | Switch cluster |
+| Ctrl+F | Active port-forwards list |
+| H | Hot pods (top-N by CPU, cluster-wide) |
 | ? | Help |
-| q | Quit |
+| q, Ctrl+C | Quit |
 
 ### Shell View
 
@@ -81,7 +118,18 @@ safina --namespace=default
 | Space | Toggle follow mode |
 | g | Jump to top |
 | G | Jump to bottom |
+| / | Filter |
 | Esc | Close logs |
+
+### Chat View
+
+| Key | Action |
+|-----|--------|
+| ↵ | Send |
+| Shift+↵ | Newline |
+| Tab | Back to tree |
+| Ctrl+L | Clear |
+| Ctrl+N | New conversation |
 
 ## Project Structure
 

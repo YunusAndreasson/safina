@@ -144,17 +144,6 @@ func TestRaiseBanner_ErrorFlag(t *testing.T) {
 	assert.Equal(t, "something broke", m.bannerMsg)
 }
 
-func TestClearBanner_ResetsFields(t *testing.T) {
-	m := setupModel()
-	m.raiseBanner("temp", false)
-	assert.NotEmpty(t, m.bannerMsg)
-
-	m.clearBanner()
-	assert.Empty(t, m.bannerMsg)
-	assert.False(t, m.bannerErr)
-	assert.Equal(t, uint64(2), m.bannerEpoch)
-}
-
 func TestClearBannerMsg_StaleEpochNoOps(t *testing.T) {
 	m := setupModel()
 	m.bannerEpoch = 5

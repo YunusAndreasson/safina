@@ -49,6 +49,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg)
 
 	case clockMsg:
+		// Skip the wall-clock advance while blurred — the topbar reads the
+		// staleness "↻ Ns" off m.now, and we want that pinned to the last
+		// focused moment so the operator returning from another window sees
+		// at-a-glance "your data is N seconds old" instead of a clock that
+		// kept ticking against frozen data. The next FocusMsg rearms it.
+		if !m.focused {
+			return m, nil
+		}
 		m.now = time.Time(msg)
 		return m, m.clockTick()
 
@@ -371,7 +379,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// quiet "data is updating" cue. Cleared on TreeChildrenLoadedMsg.
 		var actCmd tea.Cmd
 		var healthCmd tea.Cmd
-		if m.state == stateMain && m.ctx.ActiveContext != "" &&
+		if m.focused && m.state == stateMain && m.ctx.ActiveContext != "" &&
 			m.tree.Focus().Kind != k8s.KindContextList {
 			m.tree.Refreshing = true
 			cmd = m.loadTreeFocus()
@@ -495,6 +503,87 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		return m, nil
+
+	case tea.MouseClickMsg:
+		// Left-click on the workspace tab strip switches to that tab. The
+		// stripe lives at (m.tabStripOriginX, m.tabStripOriginY); hit-test
+		// translates the click column back into a WorkspaceTab. We
+		// synthesize the matching keypress and re-dispatch so the load
+		// orchestration (Reset / SetSize / Stream) stays in one place
+		// instead of being duplicated for the mouse path.
+		if msg.Button == tea.MouseLeft && msg.Y == m.tabStripOriginY {
+			localX := msg.X - m.tabStripOriginX
+			if localX >= 0 {
+				for _, hit := range m.tabHitboxes {
+					if localX >= hit.X0 && localX < hit.X1 {
+						if synth, ok := tabActivationKey(hit.Tab); ok {
+							return m.handleKey(synth)
+						}
+						return m, nil
+					}
+				}
+			}
+		}
+		return m, nil
+
+	case tea.MouseWheelMsg:
+		// Mouse wheel is the natural escape-hatch for "I'm reading and want
+		// to scroll without finding the right keybinding." The scrollable
+		// workspace tabs (logs / events / yaml / chat) each wrap a bubbles
+		// viewport that handles MouseWheelMsg internally — we just forward.
+		// Tree pane doesn't use a viewport, so wheel there is a no-op; that
+		// matches the v1 behaviour and avoids a confusing partial scroll.
+		switch m.state {
+		case stateLogView:
+			cmd, _ := m.logs.Update(msg, m.ctx)
+			return m, cmd
+		case stateEventsView:
+			cmd, _ := m.events.Update(msg, m.ctx)
+			return m, cmd
+		case stateDescribeView:
+			cmd, _ := m.describe.Update(msg, m.ctx)
+			return m, cmd
+		case stateChatView:
+			cmd, _, _ := m.chat.Update(msg, m.ctx)
+			return m, cmd
+		}
+		return m, nil
+
+	case tea.FocusMsg:
+		// The terminal regained focus — resume the work the blur handler
+		// suppressed. We rearm both ticks immediately so the operator sees
+		// fresh data within a beat of switching back instead of waiting for
+		// the next 5s tick to land.
+		m.focused = true
+		return m, tea.Batch(m.autoRefreshTick(), m.clockTick())
+
+	case tea.BlurMsg:
+		// The operator switched to another tmux pane / window. We keep the
+		// tick scheduling alive (so the loop survives) but the refreshMsg /
+		// clockMsg handlers short-circuit while !m.focused — no API calls,
+		// no wall-clock churn. The next FocusMsg snaps everything back.
+		m.focused = false
+		return m, nil
+
+	case tea.ColorProfileMsg:
+		// v2's renderer auto-downsamples truecolor hex values to whatever
+		// the terminal supports — we don't need to act on this beyond
+		// logging it. Useful for debug: a degraded palette on an ANSI16
+		// terminal will be obvious in the journal.
+		debug.Log("terminal.color_profile", "profile", msg.String())
+		return m, nil
+
+	case tea.BackgroundColorMsg:
+		// Latch on the first response; some terminals re-emit on theme
+		// changes but a banner each time would be obnoxious. TokyoNight
+		// is a dark palette — on a light terminal it reads as a muddy
+		// gray wash, so we surface that once so the operator isn't left
+		// debugging the render.
+		if !m.lightBgWarned && !msg.IsDark() {
+			m.lightBgWarned = true
+			return m, m.raiseStatus("light terminal detected — safina's palette is dark-optimised")
+		}
+		return m, nil
 	}
 
 	return m, nil
@@ -519,6 +608,107 @@ func (m *Model) sectionHasFilterFocus() bool {
 		return true
 	}
 	return false
+}
+
+// tabActivationKey maps a workspace tab to the KeyPressMsg the operator
+// would type to activate it. Mouse clicks on the tab strip re-dispatch
+// through handleKey so the load orchestration (Reset / SetSize / Stream)
+// lives in exactly one place. Returns ok=false for tabs that don't have
+// a discoverable activation hotkey (Drain — it appears only while the op
+// is already running, so there's nothing to "activate"; Forwards — Ctrl+F
+// is a chord we synthesize with ModCtrl).
+func tabActivationKey(tab sections.WorkspaceTab) (tea.KeyPressMsg, bool) {
+	switch tab {
+	case sections.WSTabInspector:
+		return tea.KeyPressMsg{Text: "1", Code: '1'}, true
+	case sections.WSTabLogs:
+		return tea.KeyPressMsg{Text: "l", Code: 'l'}, true
+	case sections.WSTabEvents:
+		return tea.KeyPressMsg{Text: "e", Code: 'e'}, true
+	case sections.WSTabYaml:
+		// The Yaml tab is the Describe state — `d` is the hotkey for both.
+		return tea.KeyPressMsg{Text: "d", Code: 'd'}, true
+	case sections.WSTabChat:
+		return tea.KeyPressMsg{Text: "i", Code: 'i'}, true
+	case sections.WSTabHot:
+		return tea.KeyPressMsg{Text: "H", Code: 'H'}, true
+	case sections.WSTabForwards:
+		// Ctrl+F: Text is empty for non-printable chords; the matcher reads
+		// Code + Mod.
+		return tea.KeyPressMsg{Code: 'f', Mod: tea.ModCtrl}, true
+	}
+	return tea.KeyPressMsg{}, false
+}
+
+// cycleWorkspaceTab moves to the next or previous tab in the workspace
+// strip and routes activation through handleKey so the load orchestration
+// (Reset / SetSize / Stream) stays in one place. Cycles across the
+// availability set computed for the current selection — so the strip the
+// operator sees on screen is what they cycle through.
+//
+// Stops at the edges instead of wrapping: pressing ← on Inspector (the
+// leftmost tab) is a no-op rather than silently jumping to the far end.
+// Wraparound is unpredictable when the rightmost tab is Chat — the chat
+// textarea consumes ←/→ for cursor movement, so a wraparound would land
+// in a state where the operator can't easily cycle back out.
+//
+// When the next tab is Inspector we call returnToMain instead of
+// synthesizing a keypress: Inspector is the "no immersive state" view, so
+// it's activated by clearing state rather than pressing a verb. Peek mode
+// is preserved across the cycle so the workspace keeps focus until the
+// operator presses Tab again or hits Esc.
+func (m *Model) cycleWorkspaceTab(forward bool) (tea.Model, tea.Cmd) {
+	tabs := sections.AvailableTabs(m.workspaceTabAvailability())
+	if len(tabs) < 2 {
+		return m, nil
+	}
+	active := m.activeWorkspaceTab()
+	idx := -1
+	for i, t := range tabs {
+		if t == active {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		idx = 0
+	}
+	next := idx
+	if forward {
+		next = idx + 1
+	} else {
+		next = idx - 1
+	}
+	if next < 0 || next >= len(tabs) {
+		// At the edge — no-op rather than wrap. Keeps the cycle
+		// directionally predictable for the operator.
+		return m, nil
+	}
+	target := tabs[next]
+	if target == active {
+		return m, nil
+	}
+	// returnToMain cleans up the prior immersive tab (drains log channel,
+	// blurs chat, etc.) before we enter the next one. Inspector is the
+	// landing state; for other targets we then re-dispatch the activation
+	// hotkey through handleKey to run the right load path.
+	m.returnToMain()
+	if target == sections.WSTabInspector {
+		// Preserve peek so the workspace keeps the gradient border and the
+		// next ←/→ moves to the next tab instead of jumping back to tree.
+		m.peekWorkspace = true
+		m.tree.Focused = false
+		return m, nil
+	}
+	synth, ok := tabActivationKey(target)
+	if !ok {
+		return m, nil
+	}
+	// Preserve peek across the activation so the operator can keep cycling
+	// without re-pressing Tab between each ←/→.
+	m.peekWorkspace = true
+	m.tree.Focused = false
+	return m.handleKey(synth)
 }
 
 // returnToMain closes whatever immersive workspace tab is active and
@@ -552,16 +742,31 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	// Tab is the global pane-focus toggle. It works from any state where
+	// a filter isn't actively eating keystrokes — including immersive tabs
+	// like Logs/Events/Yaml, so the operator can always shift focus back
+	// to the tree without leaving the tab they're reading. The active
+	// view is preserved; only the gradient border + arrow target moves.
+	if msg.String() == "tab" && !m.sectionHasFilterFocus() {
+		m.peekWorkspace = !m.peekWorkspace
+		m.tree.Focused = !m.peekWorkspace
+		return m, nil
+	}
+
 	// Workspace tab quick-switch: when the workspace owns focus (any
-	// immersive tab is active), `1` jumps to Inspector. The Yaml tab is
-	// reached by Esc-then-y from immersive tabs since `y` is yank inside
-	// those sections; the cluster picker's `i` (Chat) is also reachable
-	// only from stateMain since most immersive sections consume `i` as
-	// a literal character in their filters / inputs.
+	// immersive tab is active, or the operator pressed Tab to peek),
+	// `1` jumps to Inspector and ←/→ cycle through the visible tabs.
+	// The Yaml tab is reached by Esc-then-y from immersive tabs since
+	// `y` is yank inside those sections; the cluster picker's `i` (Chat)
+	// is also reachable only from stateMain since most immersive sections
+	// consume `i` as a literal character in their filters / inputs.
 	if m.workspaceOwnsFocus() && !m.sectionHasFilterFocus() {
-		if msg.String() == "1" {
+		switch msg.String() {
+		case "1":
 			m.returnToMain()
 			return m, nil
+		case "left", "right":
+			return m.cycleWorkspaceTab(msg.String() == "right")
 		}
 	}
 
@@ -752,13 +957,12 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case msg.String() == "tab",
-		key.Matches(msg, m.ctx.Keys.Ask) && !m.tree.FilterActive():
+	case key.Matches(msg, m.ctx.Keys.Ask) && !m.tree.FilterActive():
 		// Open the Chat tab. The chat is just another workspace tab — Esc
-		// (or `1` for Inspector) closes it. Tab is the universal toggle;
-		// `i` (Ask) is the vim-discoverable alias surfaced in the footer.
-		// FilterActive gate lets the user type a literal `i` into the
-		// filter prompt without flipping to chat.
+		// (or `1` for Inspector) closes it. FilterActive gate lets the
+		// user type a literal `i` into the filter prompt without flipping
+		// to chat.
+		m.peekWorkspace = false
 		m.tree.Focused = false
 		m.chat.SetFocus(true)
 		m.syncChatContext()
@@ -1788,7 +1992,51 @@ func (m *Model) tryYank(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	if payload == "" {
 		return nil, false
 	}
-	return tea.Batch(tea.SetClipboard(payload), m.raiseStatus("copied")), true
+	return tea.Batch(copyToClipboard(payload), m.raiseStatus("copied")), true
+}
+
+// copyToClipboard prefers a system clipboard tool over OSC52. Some
+// terminals (ghostty, kitty with permissive=ask) prompt the user every
+// time a program writes OSC52 — a "copy" notification with a confirm
+// button shows up over the alt-screen. xclip / wl-copy / pbcopy bypass
+// that prompt because the write happens via the OS clipboard API instead
+// of an escape sequence the terminal interprets.
+//
+// We probe in the order: macOS native first, Wayland next, then X11.
+// OSC52 stays as the fallback — over SSH or in a stripped container
+// where none of these tools are installed, the operator still gets a
+// copy (modulo the terminal's prompt). This way the common-case dev
+// loop is friction-free and the edge case still works.
+func copyToClipboard(payload string) tea.Cmd {
+	candidates := [][]string{
+		{"pbcopy"},                           // macOS
+		{"wl-copy"},                          // Wayland
+		{"xclip", "-selection", "clipboard"}, // X11
+		{"xsel", "--clipboard", "--input"},   // X11 alt
+	}
+	for _, args := range candidates {
+		path, err := exec.LookPath(args[0])
+		if err != nil {
+			continue
+		}
+		bin, rest := path, args[1:]
+		body := payload
+		return func() tea.Msg {
+			// 2s ceiling: pbcopy / wl-copy / xclip should return in
+			// milliseconds — if one hangs (rare, but x11 selection servers
+			// can wedge) we drop the copy instead of stalling the UI.
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, bin, rest...)
+			cmd.Stdin = strings.NewReader(body)
+			_ = cmd.Run()
+			return nil
+		}
+	}
+	// No system clipboard tool — fall back to the OSC52 sequence. The
+	// terminal may prompt the user; that's better than silently dropping
+	// the copy in an SSH session where there is no other path.
+	return tea.SetClipboard(payload)
 }
 
 // childCount returns the visible row count for a Children payload. Used only

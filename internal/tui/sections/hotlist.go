@@ -106,7 +106,7 @@ func (s *Hot) Body(c *tuictx.Ctx, w, h int) string {
 	if s.err != nil {
 		return lipgloss.JoinVertical(lipgloss.Left,
 			hintRow,
-			th.ErrLine.Render("✗  "+s.err.Error()))
+			th.ErrLine.Render("✗ "+s.err.Error()))
 	}
 	if len(s.items) == 0 {
 		return lipgloss.JoinVertical(lipgloss.Left,

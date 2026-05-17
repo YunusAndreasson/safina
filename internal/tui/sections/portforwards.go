@@ -173,7 +173,7 @@ func StartPortForward(
 	return func() tea.Msg {
 		client, ok := mgr.GetClient(contextName)
 		if !ok {
-			return PortForwardStartedMsg{Requested: requested, Err: fmt.Errorf("context not found")}
+			return PortForwardStartedMsg{Requested: requested, Err: errContextNotFound}
 		}
 		pf, err := mgr.Forwards.StartPortForward(
 			ctx, client.Clientset, client.RESTConfig,

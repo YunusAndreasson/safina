@@ -160,7 +160,7 @@ func CordonNode(ctx context.Context, mgr *k8s.Manager, contextName, name string,
 		}
 		client, ok := mgr.GetClient(contextName)
 		if !ok {
-			return ActionDoneMsg{Action: action, Subject: name, Err: fmt.Errorf("context not found")}
+			return ActionDoneMsg{Action: action, Subject: name, Err: errContextNotFound}
 		}
 		var err error
 		if desiredSchedulable {
@@ -181,7 +181,7 @@ func StartDrain(parentCtx context.Context, mgr *k8s.Manager, contextName, nodeNa
 		client, ok := mgr.GetClient(contextName)
 		if !ok {
 			ch := make(chan k8s.DrainEvent, 1)
-			ch <- k8s.DrainEvent{Phase: "done", Err: fmt.Errorf("context not found"), Done: true}
+			ch <- k8s.DrainEvent{Phase: "done", Err: errContextNotFound, Done: true}
 			close(ch)
 			return DrainStartedMsg{Node: nodeName, Cancel: func() {}, Channel: ch}
 		}
@@ -219,7 +219,7 @@ func CountPodsOnNode(ctx context.Context, mgr *k8s.Manager, contextName, nodeNam
 	return func() tea.Msg {
 		client, ok := mgr.GetClient(contextName)
 		if !ok {
-			return PodsOnNodeMsg{Node: nodeName, Err: fmt.Errorf("context not found")}
+			return PodsOnNodeMsg{Node: nodeName, Err: errContextNotFound}
 		}
 		n, err := k8s.PodsOnNode(ctx, client.Clientset, nodeName, k8s.DefaultDrainOptions())
 		return PodsOnNodeMsg{Node: nodeName, Count: n, Err: err}

@@ -298,7 +298,7 @@ func renderPaletteRow(c *tuictx.Ctx, e PaletteEntry, hits []int, w int, selected
 	// Pad to width so the row's background fills the modal column.
 	pad := w - lipgloss.Width(line)
 	if pad > 0 {
-		line += bg.Render(strings.Repeat(" ", pad))
+		line += bg.Width(pad).Render("")
 	}
 	return line
 }

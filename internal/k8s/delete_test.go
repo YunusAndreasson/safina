@@ -154,13 +154,3 @@ func TestDeleteResource_UnknownKind(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Mystery")
 }
-
-func TestDeletePod_StillWorks(t *testing.T) {
-	// The DeletePod shim is what existing callers/tests use; verify it
-	// dispatches through DeleteResource correctly.
-	ctx := context.Background()
-	cs := fake.NewSimpleClientset(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "ns"}})
-	require.NoError(t, DeletePod(ctx, cs, "ns", "p"))
-	_, err := cs.CoreV1().Pods("ns").Get(ctx, "p", metav1.GetOptions{})
-	assert.True(t, apierrors.IsNotFound(err))
-}

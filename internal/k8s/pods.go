@@ -77,13 +77,6 @@ func podToInfo(p corev1.Pod) PodInfo {
 	}
 }
 
-// DeletePod is retained as a thin shim so existing tests stay green; new
-// callers should use DeleteResource which dispatches across every kind the
-// tree surfaces.
-func DeletePod(ctx context.Context, cs kubernetes.Interface, namespace, name string) error {
-	return DeleteResource(ctx, cs, "Pod", namespace, name)
-}
-
 // ListHotPodsByCPU returns the top `limit` pods cluster-wide sorted by
 // current CPU usage descending. Pods without metrics-server data are
 // excluded — the hot list is a "what's noisy right now" view, and a pod
@@ -149,13 +142,8 @@ type PodLogEvent struct {
 	Done bool
 }
 
-func StreamPodLogs(ctx context.Context, cs kubernetes.Interface, namespace, name string, previous bool, ch chan<- PodLogEvent) {
-	StreamPodContainerLogs(ctx, cs, namespace, name, "", previous, ch)
-}
-
-// StreamPodContainerLogs is the variant that targets a specific container
-// inside a multi-container pod. Pass container == "" to let kubelet pick
-// the default (first) container.
+// StreamPodContainerLogs streams logs from a specific container inside a
+// pod. Pass container == "" to let kubelet pick the default (first) container.
 func StreamPodContainerLogs(ctx context.Context, cs kubernetes.Interface, namespace, name, container string, previous bool, ch chan<- PodLogEvent) {
 	defer close(ch)
 

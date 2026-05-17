@@ -25,20 +25,6 @@ const (
 	EditKindPVC         = "PersistentVolumeClaim"
 )
 
-// IsEditableKind reports whether a kind can be opened for editing. Pods,
-// nodes, and namespaces are intentionally excluded — the API server rejects
-// most spec mutations on them, so offering edit there is a footgun. Jobs
-// stay out because they're effectively immutable once created.
-func IsEditableKind(kind string) bool {
-	switch kind {
-	case EditKindDeployment, EditKindStatefulSet, EditKindDaemonSet,
-		EditKindConfigMap, EditKindSecret,
-		EditKindService, EditKindIngress, EditKindPVC:
-		return true
-	}
-	return false
-}
-
 // BuildEditableYAML fetches a single resource and returns it as YAML the user
 // can edit. Strips ManagedFields (kubectl-style) and sets TypeMeta so the
 // document round-trips through the editor. For Secret, Data is decoded into
