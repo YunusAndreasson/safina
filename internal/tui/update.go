@@ -673,11 +673,9 @@ func (m *Model) cycleWorkspaceTab(forward bool) (tea.Model, tea.Cmd) {
 	if idx < 0 {
 		idx = 0
 	}
-	next := idx
+	next := idx - 1
 	if forward {
 		next = idx + 1
-	} else {
-		next = idx - 1
 	}
 	if next < 0 || next >= len(tabs) {
 		// At the edge — no-op rather than wrap. Keeps the cycle
@@ -756,10 +754,11 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Workspace tab quick-switch: when the workspace owns focus (any
 	// immersive tab is active, or the operator pressed Tab to peek),
 	// `1` jumps to Inspector and ←/→ cycle through the visible tabs.
-	// The Yaml tab is reached by Esc-then-y from immersive tabs since
-	// `y` is yank inside those sections; the cluster picker's `i` (Chat)
-	// is also reachable only from stateMain since most immersive sections
-	// consume `i` as a literal character in their filters / inputs.
+	// The Describe tab is reached by Esc-then-d from immersive tabs since
+	// `d` is consumed by section verbs while one of those tabs is active;
+	// the cluster picker's `i` (Chat) is also reachable only from stateMain
+	// since most immersive sections consume `i` as a literal character in
+	// their filters / inputs.
 	if m.workspaceOwnsFocus() && !m.sectionHasFilterFocus() {
 		switch msg.String() {
 		case "1":

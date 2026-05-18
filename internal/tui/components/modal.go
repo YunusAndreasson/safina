@@ -121,6 +121,38 @@ func RenderModalKeysRow(t *theme.Theme, pairs []KeyDesc) string {
 	return strings.Join(pieces, t.HelpDesc.Render(" · "))
 }
 
+// RenderHintRow renders an overlay's footer hint row — the same key/desc
+// pattern as RenderModalKeysRow, but with a roomier interpunct separator
+// (` · ` flanked by extra padding) suited to centred-overlay footers
+// (palette, browser, cluster switcher, scale / port-forward modals).
+// Sections previously hand-rolled this five different ways; centralising
+// makes every floating modal use one rhythm.
+func RenderHintRow(t *theme.Theme, pairs []KeyDesc) string {
+	if len(pairs) == 0 {
+		return ""
+	}
+	pieces := make([]string, len(pairs))
+	for i, p := range pairs {
+		pieces[i] = t.HelpKey.Render(p.Key) + t.HelpDesc.Render(" "+p.Desc)
+	}
+	return strings.Join(pieces, t.HelpDesc.Render("  ·  "))
+}
+
+// RenderConfirmHint renders the y/n confirm row used by every destructive
+// modal (delete, rollback, restart, cordon, drain, edit-apply). Pattern:
+//
+//	y <verb>  ·  n/esc cancel
+//
+// The "y" is painted green to signal "this is the go-ahead key"; the rest
+// stays dim so the row reads as a quiet affordance — the heavy lifting
+// (yellow verb / red subject) happens above it.
+func RenderConfirmHint(t *theme.Theme, verb string) string {
+	green := lipgloss.NewStyle().Foreground(t.P.Green).Bold(true)
+	yes := green.Render("y") + t.HelpDesc.Render(" "+verb)
+	no := t.HelpDesc.Render("n/esc cancel")
+	return yes + t.HelpDesc.Render("  ·  ") + no
+}
+
 // Indicator is a single right-aligned status indicator (match counts, scroll
 // %, follow/paused, etc.). Style is optional — when nil the renderer defaults
 // to t.DimTxt so most call sites can pass a bare {Text: …}.

@@ -73,7 +73,13 @@ func BuildContextSnapshot(t *Tree, activeContext string) ContextSnapshot {
 		fmt.Fprintf(&b, "namespace: %s\n", ns)
 	}
 	if app, ok := pathApp(t); ok {
-		fmt.Fprintf(&b, "%s: %s\n", strings.ToLower(app.Kind), app.Name)
+		// Prefer SubKind ("Deployment", "StatefulSet", …) over the generic
+		// KindApp tag — Claude needs the concrete workload kind, not "app".
+		kind := app.SubKind
+		if kind == "" {
+			kind = app.Kind
+		}
+		fmt.Fprintf(&b, "%s: %s\n", strings.ToLower(kind), app.Name)
 	}
 
 	switch sel.Kind {

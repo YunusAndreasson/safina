@@ -3,6 +3,7 @@ package sections
 import (
 	"context"
 	"fmt"
+	"image/color"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -236,17 +237,28 @@ func widestLabel(rows []inspectorRow) int {
 	return w
 }
 
-func statusLine(t *theme.Theme, text, kind string, innerW int) string {
-	col := t.P.FGFade
+// emphasisColor maps the inspector's emphasis tags ("good"/"warn"/"bad"/
+// "name"/"dim") to a palette color. Single source of truth so the headline
+// status, per-row values, and any future emphasis sites stay in lockstep.
+func emphasisColor(t *theme.Theme, kind string) color.Color {
 	switch kind {
+	case "name":
+		return t.P.FG
+	case "dim":
+		return t.P.Dim
 	case "good":
-		col = t.P.Green
+		return t.P.Green
 	case "warn":
-		col = t.P.Yellow
+		return t.P.Yellow
 	case "bad":
-		col = t.P.Red
+		return t.P.Red
 	}
-	return lipgloss.NewStyle().Foreground(col).Bold(true).Render(truncate(text, innerW))
+	return t.P.FGFade
+}
+
+func statusLine(t *theme.Theme, text, kind string, innerW int) string {
+	return lipgloss.NewStyle().Foreground(emphasisColor(t, kind)).Bold(true).
+		Render(truncate(text, innerW))
 }
 
 func renderInspectorRow(t *theme.Theme, r inspectorRow, labelW, innerW int) string {
@@ -255,20 +267,20 @@ func renderInspectorRow(t *theme.Theme, r inspectorRow, labelW, innerW int) stri
 	if valueW < 4 {
 		valueW = 4
 	}
-	var valStyle lipgloss.Style
+	valStyle := lipgloss.NewStyle().Foreground(emphasisColor(t, r.emphasis))
+	// "name" is the only emphasis that pulls bold; everything else (including
+	// the default plain-FG path) reads at normal weight so emphasised values
+	// don't fight the row label.
 	switch r.emphasis {
 	case "name":
-		valStyle = lipgloss.NewStyle().Foreground(t.P.FG).Bold(true)
-	case "dim":
-		valStyle = lipgloss.NewStyle().Foreground(t.P.Dim)
-	case "good":
-		valStyle = lipgloss.NewStyle().Foreground(t.P.Green)
-	case "warn":
-		valStyle = lipgloss.NewStyle().Foreground(t.P.Yellow)
-	case "bad":
-		valStyle = lipgloss.NewStyle().Foreground(t.P.Red)
-	default:
-		valStyle = lipgloss.NewStyle().Foreground(t.P.FG)
+		valStyle = valStyle.Bold(true)
+	case "", "good", "warn", "bad", "dim":
+		// no extra weight; emphasisColor already picked the right hue.
+	}
+	// Plain default needs a real FG (emphasisColor returns FGFade for unknown
+	// kinds, which is the headline default but too soft for row values).
+	if r.emphasis == "" {
+		valStyle = valStyle.Foreground(t.P.FG)
 	}
 	return label + "  " + valStyle.Render(truncate(r.value, valueW))
 }

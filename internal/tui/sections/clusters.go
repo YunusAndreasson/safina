@@ -134,7 +134,12 @@ func (s *ClusterSwitcher) View(c *tuictx.Ctx, termW, termH int, activeContext st
 
 	inner := components.PanelContentWidth(w)
 	title := t.CyanBold.Render("switch cluster")
-	hint := t.DimTxt.Italic(true).Render("type to filter · ↑↓ select · ↵ switch · esc cancel")
+	hint := components.RenderHintRow(t, []components.KeyDesc{
+		{Key: "type", Desc: "filter"},
+		{Key: "↑↓", Desc: "select"},
+		{Key: "↵", Desc: "switch"},
+		{Key: "esc", Desc: "cancel"},
+	})
 
 	prompt := t.FilterPrompt.Render("⎈ ") + t.FilterText.Render(s.query) + t.FilterPrompt.Render("▌")
 	divider := lipgloss.NewStyle().Foreground(t.P.Dim).Render(strings.Repeat("─", inner))

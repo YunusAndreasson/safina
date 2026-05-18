@@ -10,6 +10,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/yunus/safina/internal/k8s"
+	"github.com/yunus/safina/internal/tui/components"
 	"github.com/yunus/safina/internal/tui/theme"
 	"github.com/yunus/safina/internal/tui/tuictx"
 )
@@ -110,10 +111,10 @@ func (f *Forwards) View(w int) string {
 	// Delete is K (kill) everywhere else in the app — the forwards list
 	// is no exception. Keeping lowercase `d` here would steal the global
 	// describe letter and break the "uppercase = mutator" convention.
-	footer := lipgloss.NewStyle().Foreground(t.P.Green).Render("K") +
-		t.DimTxt.Render(" kill  ") +
-		t.DimTxt.Render("esc close")
-	lines = append(lines, footer)
+	lines = append(lines, components.RenderHintRow(t, []components.KeyDesc{
+		{Key: "K", Desc: "kill"},
+		{Key: "esc", Desc: "close"},
+	}))
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
 

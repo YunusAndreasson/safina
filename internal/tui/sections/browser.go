@@ -9,6 +9,7 @@ import (
 
 	"github.com/yunus/safina/internal/config"
 	"github.com/yunus/safina/internal/k8s"
+	"github.com/yunus/safina/internal/tui/components"
 	"github.com/yunus/safina/internal/tui/tuictx"
 )
 
@@ -265,11 +266,11 @@ func (b *Browser) View(c *tuictx.Ctx, termW, termH int) string {
 
 	list := b.renderList(c, innerW, listRows)
 
-	footer := lipgloss.NewStyle().Foreground(t.P.Dim).Render(
-		t.HelpKey.Render("space") + t.HelpDesc.Render(" toggle  ") +
-			t.HelpKey.Render("↵") + t.HelpDesc.Render(" save  ") +
-			t.HelpKey.Render("esc") + t.HelpDesc.Render(" cancel"),
-	)
+	footer := components.RenderHintRow(t, []components.KeyDesc{
+		{Key: "space", Desc: "toggle"},
+		{Key: "↵", Desc: "save"},
+		{Key: "esc", Desc: "cancel"},
+	})
 
 	body := lipgloss.JoinVertical(lipgloss.Left,
 		input,
@@ -282,9 +283,7 @@ func (b *Browser) View(c *tuictx.Ctx, termW, termH int) string {
 
 	panel := t.Modal.Padding(1, 2).Width(w).Render(body)
 	return lipgloss.Place(termW, termH, lipgloss.Center, lipgloss.Center, panel,
-		lipgloss.WithWhitespaceChars("·"),
-		lipgloss.WithWhitespaceStyle(lipgloss.NewStyle().Foreground(t.P.BG3)),
-	)
+		components.ModalBackdrop(t)...)
 }
 
 // renderList renders the matches as a window into the corpus, centred

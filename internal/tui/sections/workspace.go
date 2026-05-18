@@ -42,7 +42,7 @@ func (t WorkspaceTab) Label() string {
 	case WSTabEvents:
 		return "(e)vents"
 	case WSTabYaml:
-		return "(y)aml"
+		return "(d)escribe"
 	case WSTabChat:
 		return "(i) Chat"
 	case WSTabHot:

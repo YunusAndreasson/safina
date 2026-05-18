@@ -8,6 +8,7 @@ import (
 	"github.com/sahilm/fuzzy"
 
 	"github.com/yunus/safina/internal/k8s"
+	"github.com/yunus/safina/internal/tui/components"
 	"github.com/yunus/safina/internal/tui/theme"
 	"github.com/yunus/safina/internal/tui/tuictx"
 )
@@ -190,11 +191,11 @@ func (p *Palette) View(c *tuictx.Ctx, termW, termH int) string {
 		verbs = ""
 	}
 
-	footer := lipgloss.NewStyle().Foreground(t.P.Dim).Render(
-		t.HelpKey.Render("↵") + t.HelpDesc.Render(" open  ") +
-			t.HelpKey.Render("letter") + t.HelpDesc.Render(" verb  ") +
-			t.HelpKey.Render("esc") + t.HelpDesc.Render(" close"),
-	)
+	footer := components.RenderHintRow(t, []components.KeyDesc{
+		{Key: "↵", Desc: "open"},
+		{Key: "letter", Desc: "verb"},
+		{Key: "esc", Desc: "close"},
+	})
 
 	body := lipgloss.JoinVertical(lipgloss.Left,
 		input,
@@ -209,9 +210,7 @@ func (p *Palette) View(c *tuictx.Ctx, termW, termH int) string {
 
 	panel := t.Modal.Padding(1, 2).Width(w).Render(body)
 	return lipgloss.Place(termW, termH, lipgloss.Center, lipgloss.Center, panel,
-		lipgloss.WithWhitespaceChars("·"),
-		lipgloss.WithWhitespaceStyle(lipgloss.NewStyle().Foreground(t.P.BG3)),
-	)
+		components.ModalBackdrop(t)...)
 }
 
 // renderList renders the matches as a compact list with kind-glyph,

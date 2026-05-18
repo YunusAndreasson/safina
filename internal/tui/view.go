@@ -543,16 +543,9 @@ func (m *Model) renderFooter() string {
 	switch m.state {
 	case stateChatView:
 		view = m.renderChatFooter()
-	case stateLogView:
-		view = m.renderLogsFooter()
-	case stateEventsView:
-		view = m.renderEventsFooter()
-	case stateDescribeView:
-		view = m.renderDescribeFooter()
-	case stateHotView:
-		view = m.renderHotFooter()
-	case stateForwardsList:
-		view = m.renderForwardsFooter()
+	case stateLogView, stateEventsView, stateDescribeView,
+		stateHotView, stateForwardsList:
+		view = m.renderImmersiveFooter()
 	case stateDrainProgress:
 		view = m.renderDrainFooter()
 	default:
@@ -614,86 +607,35 @@ func (m *Model) renderChatFooter() string {
 	return strings.Join(parts, sep)
 }
 
-// renderImmersiveFooter is the shared layout for workspace-tab footers:
-// the section's verbs render bright; the back-to-tree / help / quit
-// chrome row stays dim on the right so the global affordances read as a
-// separate visual register — mirroring renderTreeFooter's two-layer rule.
-func (m *Model) renderImmersiveFooter(verbs []keyDesc) string {
+// renderImmersiveFooter renders just the global chrome row for any
+// workspace-tab state. Each immersive section (logs / events / describe /
+// hot / forwards) already paints a verb-hint row inside its own body, so
+// the footer's job is reduced to the universal "you can always leave / get
+// help / quit" affordances. The two-register rule from renderTreeFooter
+// still applies — the chrome stays dim so it reads as ambient.
+func (m *Model) renderImmersiveFooter() string {
 	t := m.ctx.Theme
-	pair := func(k, d string, dim bool) string {
-		if dim {
-			s := lipgloss.NewStyle().Foreground(t.P.Dim)
-			return s.Render(k) + " " + s.Render(d)
-		}
-		return t.HelpKey.Render(k) + " " + t.HelpDesc.Render(d)
+	dim := lipgloss.NewStyle().Foreground(t.P.Dim)
+	pair := func(k, d string) string {
+		return dim.Render(k) + " " + dim.Render(d)
 	}
-	parts := make([]string, 0, len(verbs)+3)
-	for _, v := range verbs {
-		parts = append(parts, pair(v.Key, v.Desc, false))
-	}
-	parts = append(parts,
-		pair("esc", "back", true),
-		pair("?", "help", true),
-		pair("q", "quit", true),
-	)
-	sep := lipgloss.NewStyle().Foreground(t.P.Dim).Render(" · ")
-	return strings.Join(parts, sep)
-}
-
-type keyDesc struct{ Key, Desc string }
-
-func (m *Model) renderLogsFooter() string {
-	verbs := []keyDesc{
-		{Key: m.ctx.Keys.Yank.Help().Key, Desc: "copy"},
-		{Key: "/", Desc: "filter"},
-		{Key: "f", Desc: "follow"},
-		{Key: "g", Desc: "top"},
-		{Key: "G", Desc: "bottom"},
-	}
-	return m.renderImmersiveFooter(verbs)
-}
-
-func (m *Model) renderEventsFooter() string {
-	verbs := []keyDesc{
-		{Key: m.ctx.Keys.Yank.Help().Key, Desc: "copy"},
-		{Key: "/", Desc: "filter"},
-		{Key: m.ctx.Keys.Refresh.Help().Key, Desc: "refresh"},
-	}
-	return m.renderImmersiveFooter(verbs)
-}
-
-func (m *Model) renderDescribeFooter() string {
-	verbs := []keyDesc{
-		{Key: m.ctx.Keys.Yank.Help().Key, Desc: "copy"},
-		{Key: "/", Desc: "filter"},
-		{Key: m.ctx.Keys.Refresh.Help().Key, Desc: "refresh"},
-	}
-	return m.renderImmersiveFooter(verbs)
-}
-
-func (m *Model) renderHotFooter() string {
-	verbs := []keyDesc{
-		{Key: m.ctx.Keys.Refresh.Help().Key, Desc: "refresh"},
-	}
-	return m.renderImmersiveFooter(verbs)
-}
-
-func (m *Model) renderForwardsFooter() string {
-	verbs := []keyDesc{
-		{Key: m.ctx.Keys.Delete.Help().Key, Desc: "kill"},
-	}
-	return m.renderImmersiveFooter(verbs)
+	sep := dim.Render(" · ")
+	return strings.Join([]string{
+		pair("esc", "back"),
+		pair("?", "help"),
+		pair("q", "quit"),
+	}, sep)
 }
 
 // renderDrainFooter omits esc/help/quit — esc is intentionally a no-op
 // while a drain is in flight (the operator shouldn't be able to half-drain
-// a node by accident), and the only useful key is ctrl+c to cancel.
+// a node by accident), and the only useful key is ctrl+c to cancel. The
+// body already labels the cancel chord; the footer reads as a dim echo so
+// the row isn't blank.
 func (m *Model) renderDrainFooter() string {
 	t := m.ctx.Theme
-	pair := func(k, d string) string {
-		return t.HelpKey.Render(k) + " " + t.HelpDesc.Render(d)
-	}
-	return pair("⌃c", "cancel")
+	dim := lipgloss.NewStyle().Foreground(t.P.Dim)
+	return dim.Render("⌃c") + " " + dim.Render("cancel")
 }
 
 // contextualShortHelp builds the footer keymap from the current tree row.
@@ -792,7 +734,10 @@ func (m *Model) renderScaleModal() string {
 		"",
 		m.scaleInput.View(),
 		"",
-		t.DimTxt.Italic(true).Render("↵ confirm  esc cancel"),
+		components.RenderHintRow(t, []components.KeyDesc{
+			{Key: "↵", Desc: "confirm"},
+			{Key: "esc", Desc: "cancel"},
+		}),
 	)
 	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
 	return t.Modal.Render(content)
@@ -822,7 +767,10 @@ func (m *Model) renderPortForwardModal() string {
 		m.pfInput.View(),
 		"",
 		t.DimTxt.Italic(true).Render("L:R or single port (same on both sides)"),
-		t.DimTxt.Italic(true).Render("↵ confirm  esc cancel"),
+		components.RenderHintRow(t, []components.KeyDesc{
+			{Key: "↵", Desc: "confirm"},
+			{Key: "esc", Desc: "cancel"},
+		}),
 	)
 	return t.Modal.Render(content)
 }
@@ -844,20 +792,19 @@ func (m *Model) renderEditConfirmModal() string {
 		body = renderUnifiedDiff(t, m.edit.Orig, m.edit.Edited)
 	}
 
+	yellow := lipgloss.NewStyle().Foreground(t.P.Yellow).Bold(true)
+	red := lipgloss.NewStyle().Foreground(t.P.Red).Bold(true)
 	parts := []string{
-		lipgloss.NewStyle().Foreground(t.P.Yellow).Bold(true).Render(subject),
+		yellow.Render(subject),
 		"",
-		lipgloss.NewStyle().Foreground(t.P.Red).Bold(true).Render(resource),
+		red.Render(resource),
 		"",
 		stat,
 	}
 	if body != "" {
 		parts = append(parts, "", body)
 	}
-	parts = append(parts,
-		"",
-		lipgloss.NewStyle().Foreground(t.P.Green).Render("y")+t.DimTxt.Render(" apply  ")+t.DimTxt.Render("n/esc cancel"),
-	)
+	parts = append(parts, "", components.RenderConfirmHint(t, "apply"))
 
 	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
 	return t.Modal.Render(content)
@@ -865,12 +812,14 @@ func (m *Model) renderEditConfirmModal() string {
 
 func (m *Model) renderConfirmModal(action, resource string) string {
 	t := m.ctx.Theme
+	yellow := lipgloss.NewStyle().Foreground(t.P.Yellow).Bold(true)
+	red := lipgloss.NewStyle().Foreground(t.P.Red).Bold(true)
 	content := lipgloss.JoinVertical(lipgloss.Left,
-		lipgloss.NewStyle().Foreground(t.P.Yellow).Bold(true).Render(action),
+		yellow.Render(action),
 		"",
-		lipgloss.NewStyle().Foreground(t.P.Red).Bold(true).Render(resource),
+		red.Render(resource),
 		"",
-		lipgloss.NewStyle().Foreground(t.P.Green).Render("y")+t.DimTxt.Render(" confirm  ")+t.DimTxt.Render("n/esc cancel"),
+		components.RenderConfirmHint(t, "confirm"),
 	)
 	return t.Modal.Render(content)
 }
@@ -894,7 +843,10 @@ func (m *Model) renderHelpModal() string {
 		"",
 		body,
 		"",
-		t.DimTxt.Italic(true).Render("esc or ? to close"),
+		components.RenderHintRow(t, []components.KeyDesc{
+			{Key: "esc", Desc: "close"},
+			{Key: "?", Desc: "close"},
+		}),
 	)
 	return t.Modal.Padding(1, 2).Render(content)
 }

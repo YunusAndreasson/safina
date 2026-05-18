@@ -404,12 +404,8 @@ func (s *Shell) View(c *tuictx.Ctx, termW, termH int) string {
 	}
 
 	panel := components.PanelWithAccent(t, title, s.modalW, s.modalH, content, true, border, titleColor)
-
-	backdrop := []lipgloss.WhitespaceOption{
-		lipgloss.WithWhitespaceChars("·"),
-		lipgloss.WithWhitespaceStyle(lipgloss.NewStyle().Foreground(t.P.BG3)),
-	}
-	return lipgloss.Place(termW, termH, lipgloss.Center, lipgloss.Center, panel, backdrop...)
+	return lipgloss.Place(termW, termH, lipgloss.Center, lipgloss.Center, panel,
+		components.ModalBackdrop(t)...)
 }
 
 // bodyForPhase returns the centre block (everything between status and keys
