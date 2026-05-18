@@ -177,16 +177,59 @@ func (s *Service) run(ctx context.Context, prompt, resume string, out chan<- Eve
 		return
 	}
 
-	sessionID := resume
-	scanner := bufio.NewScanner(stdout)
+	sessionID, scanErr, ok := decodeStream(ctx, stdout, out, resume)
+	if !ok {
+		return // consumer dropped; nothing more to send
+	}
+	if scanErr != nil && !errors.Is(scanErr, io.EOF) {
+		// Best-effort: surface the read error before we also try cmd.Wait().
+		select {
+		case out <- Event{Kind: KindDone, Err: fmt.Errorf("claude read: %w", scanErr)}:
+		case <-ctx.Done():
+		}
+		return
+	}
+
+	waitErr := cmd.Wait()
+	// Persist the session id even on error — the next turn can still resume.
+	if sessionID != "" {
+		s.mu.Lock()
+		s.sessionID = sessionID
+		s.mu.Unlock()
+	}
+
+	if waitErr != nil && ctx.Err() == nil {
+		// Real failure (not our cancel). Surface stderr if present — it usually
+		// holds the actionable detail (auth, rate-limit, etc.).
+		msg := strings.TrimSpace(stderrBuf.String())
+		if msg == "" {
+			msg = waitErr.Error()
+		}
+		select {
+		case out <- Event{Kind: KindDone, SessionID: sessionID, Err: errors.New(msg)}:
+		case <-ctx.Done():
+		}
+		return
+	}
+	select {
+	case out <- Event{Kind: KindDone, SessionID: sessionID}:
+	case <-ctx.Done():
+	}
+}
+
+// decodeStream reads stream-json lines from r and emits typed Events on out.
+// Returns the final session id (defaulting to resume when no init/result
+// carried a new one), the scanner error (so the caller can distinguish a
+// truncated read from clean EOF), and ok=false when ctx cancelled mid-emit
+// so the caller knows the consumer dropped and no further events should be
+// produced.
+func decodeStream(ctx context.Context, r io.Reader, out chan<- Event, resume string) (sessionID string, scanErr error, ok bool) {
+	sessionID = resume
+	scanner := bufio.NewScanner(r)
 	// stream-json lines can carry a full assistant message — bump the line cap
 	// well past bufio's 64KB default so we don't truncate long replies.
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 
-	// emit sends an event but bails on ctx cancellation so we never block
-	// forever on a full out channel after the consumer has dropped (e.g.,
-	// the user pressed esc and walked away mid-stream). Returns false if
-	// the caller should stop producing.
 	emit := func(ev Event) bool {
 		select {
 		case out <- ev:
@@ -212,7 +255,7 @@ func (s *Service) run(ctx context.Context, prompt, resume string, out chan<- Eve
 				if raw.SessionID != "" {
 					sessionID = raw.SessionID
 					if !emit(Event{Kind: KindInit, SessionID: raw.SessionID}) {
-						return
+						return sessionID, scanner.Err(), false
 					}
 				}
 			case "api_retry":
@@ -223,14 +266,14 @@ func (s *Service) run(ctx context.Context, prompt, resume string, out chan<- Eve
 					DelayMS:    raw.RetryDelayMS,
 					Reason:     raw.Error,
 				}) {
-					return
+					return sessionID, scanner.Err(), false
 				}
 			}
 		case "stream_event":
 			if raw.Event != nil && raw.Event.Delta != nil &&
 				raw.Event.Delta.Type == "text_delta" && raw.Event.Delta.Text != "" {
 				if !emit(Event{Kind: KindToken, Delta: raw.Event.Delta.Text}) {
-					return
+					return sessionID, scanner.Err(), false
 				}
 			}
 		case "result":
@@ -241,36 +284,12 @@ func (s *Service) run(ctx context.Context, prompt, resume string, out chan<- Eve
 			// fall back to the result.result string so the user still sees text.
 			if raw.Result != "" {
 				if !emit(Event{Kind: KindToken, Delta: raw.Result}) {
-					return
+					return sessionID, scanner.Err(), false
 				}
 			}
 		}
 	}
-	scanErr := scanner.Err()
-	if scanErr != nil && !errors.Is(scanErr, io.EOF) {
-		emit(Event{Kind: KindDone, Err: fmt.Errorf("claude read: %w", scanErr)})
-		return
-	}
-
-	waitErr := cmd.Wait()
-	// Persist the session id even on error — the next turn can still resume.
-	if sessionID != "" {
-		s.mu.Lock()
-		s.sessionID = sessionID
-		s.mu.Unlock()
-	}
-
-	if waitErr != nil && ctx.Err() == nil {
-		// Real failure (not our cancel). Surface stderr if present — it usually
-		// holds the actionable detail (auth, rate-limit, etc.).
-		msg := strings.TrimSpace(stderrBuf.String())
-		if msg == "" {
-			msg = waitErr.Error()
-		}
-		emit(Event{Kind: KindDone, SessionID: sessionID, Err: errors.New(msg)})
-		return
-	}
-	emit(Event{Kind: KindDone, SessionID: sessionID})
+	return sessionID, scanner.Err(), true
 }
 
 // Cancel pre-empts any in-flight turn. Safe to call when nothing is running.
