@@ -1,0 +1,2 @@
+# results-<ts>.csv and report-<ts>.md land here. Both globs are gitignored —
+# only this .gitkeep is tracked so the directory exists after a fresh clone.

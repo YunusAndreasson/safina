@@ -1,6 +1,15 @@
 # Build output
 /bin/
 
+# Bench harness outputs (timestamped CSV + Markdown reports). bench/baseline.json
+# is the only checked-in artifact — the regression-gate contract.
+/bench/out/results-*.csv
+/bench/out/report-*.md
+/bench/fixtures/manifests.yaml
+
+# Stray binary from `go build` without -o
+/safina
+
 # Local debug logs from SAFINA_DEBUG=1 (don't commit user activity)
 *.log
 debug.log
