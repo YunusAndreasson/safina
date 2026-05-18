@@ -67,7 +67,7 @@ func TestActivity_ApplyCurrentResultLands(t *testing.T) {
 		Events: []k8s.EventInfo{{Reason: "Pulled", Message: "image pulled"}},
 	})
 	assert.Len(t, a.items, 1)
-	assert.False(t, a.loading)
+	assert.False(t, a.gate.IsLoading())
 	assert.False(t, a.lastFetch.IsZero())
 	assert.False(t, a.NeedsRefresh(a.lastFetch.Add(time.Second)),
 		"fresh result should defeat NeedsRefresh until throttle elapses")

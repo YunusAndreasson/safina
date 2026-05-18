@@ -37,9 +37,12 @@ type Activity struct {
 	// events for a row that's no longer selected).
 	kind, name, namespace string
 
-	items   []k8s.EventInfo
-	loading bool
-	err     error
+	items []k8s.EventInfo
+	// gate suppresses the spinner flash on selection-change when the event
+	// fetch returns inside the LoadGate.ShowAfter window — common on small
+	// clusters where ListEvents is essentially "instant".
+	gate components.LoadGate
+	err  error
 
 	// lastFetch is when the last load completed (success or error). Used to
 	// throttle the auto-refresh tick and to gate redundant SetSelection
@@ -71,7 +74,7 @@ func (a *Activity) Clear() {
 	a.curKey = ""
 	a.kind, a.name, a.namespace = "", "", ""
 	a.items = nil
-	a.loading = false
+	a.gate.Stop()
 	a.err = nil
 	a.lastFetch = time.Time{}
 }
@@ -93,9 +96,9 @@ func (a *Activity) NeedsRefresh(now time.Time) bool {
 		return false
 	}
 	if a.lastFetch.IsZero() {
-		return !a.loading
+		return !a.gate.IsLoading()
 	}
-	return now.Sub(a.lastFetch) >= activityRefreshInterval && !a.loading
+	return now.Sub(a.lastFetch) >= activityRefreshInterval && !a.gate.IsLoading()
 }
 
 // SetSelection points the tile at a new resource. Returns a load Cmd when
@@ -116,7 +119,7 @@ func (a *Activity) SetSelection(ctx context.Context, mgr *k8s.Manager, contextNa
 	a.kind, a.name, a.namespace = kind, name, namespace
 	a.items = nil
 	a.err = nil
-	a.loading = true
+	a.gate.Start()
 	a.lastFetch = time.Time{}
 	return loadActivity(ctx, mgr, contextName, kind, name, namespace)
 }
@@ -124,10 +127,10 @@ func (a *Activity) SetSelection(ctx context.Context, mgr *k8s.Manager, contextNa
 // Refresh re-issues a load against the current selection. No-op when
 // nothing is selected. Idempotent if a load is already in flight.
 func (a *Activity) Refresh(ctx context.Context, mgr *k8s.Manager, contextName string) tea.Cmd {
-	if a.kind == "" || a.loading {
+	if a.kind == "" || a.gate.IsLoading() {
 		return nil
 	}
-	a.loading = true
+	a.gate.Start()
 	return loadActivity(ctx, mgr, contextName, a.kind, a.name, a.namespace)
 }
 
@@ -138,7 +141,7 @@ func (a *Activity) Apply(msg ActivityLoadedMsg) {
 	if msg.Kind != a.kind || msg.Name != a.name || msg.Namespace != a.namespace {
 		return
 	}
-	a.loading = false
+	a.gate.Stop()
 	a.lastFetch = time.Now()
 	a.err = msg.Err
 	a.items = msg.Events
@@ -187,10 +190,11 @@ func (a *Activity) renderBody(c *tuictx.Ctx, innerW, innerH int) string {
 	switch {
 	case a.kind == "":
 		return t.Idle.Render("nothing selected")
-	case a.loading && len(a.items) == 0:
+	case a.gate.Visible() && len(a.items) == 0:
 		return t.Idle.Render(c.Spinner.View() + " loading events…")
 	case a.err != nil:
-		return lipgloss.NewStyle().Foreground(t.P.Red).Render("✗ " + a.err.Error())
+		return lipgloss.NewStyle().Foreground(t.P.Red).
+			Render(components.TruncPad("✗ "+a.err.Error(), innerW))
 	case len(a.items) == 0:
 		return t.Idle.Render("no recent events")
 	}
