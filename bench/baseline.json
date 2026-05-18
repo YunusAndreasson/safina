@@ -1,15 +1,15 @@
 {
-  "recorded_at": "2026-05-18T21:02:14.124073943+02:00",
+  "recorded_at": "2026-05-18T22:15:08.154442715+02:00",
   "seed": 42,
   "cells": {
-    "V0-baseline|S1-cold-list-pods": 101,
-    "V0-baseline|S2-repeat-list-pods": 429,
-    "V0-baseline|S4-cluster-health": 64,
-    "V4-field-selector|S1-cold-list-pods": 26,
-    "V4-field-selector|S2-repeat-list-pods": 312,
-    "V4-field-selector|S4-cluster-health": 100,
+    "V0-baseline|S1-cold-list-pods": 40,
+    "V0-baseline|S2-repeat-list-pods": 388,
+    "V0-baseline|S4-cluster-health": 39,
+    "V4-field-selector|S1-cold-list-pods": 23,
+    "V4-field-selector|S2-repeat-list-pods": 229,
+    "V4-field-selector|S4-cluster-health": 63,
     "V6-informer-cache|S1-cold-list-pods": 0,
     "V6-informer-cache|S2-repeat-list-pods": 0,
-    "V6-informer-cache|S4-cluster-health": 6
+    "V6-informer-cache|S4-cluster-health": 3
   }
 }
