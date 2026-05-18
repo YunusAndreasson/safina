@@ -13,6 +13,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 )
@@ -1285,42 +1286,97 @@ func LoadClusterHealth(ctx context.Context, cs kubernetes.Interface) (ClusterHea
 		pods = &corev1.PodList{}
 	}
 
-	for _, n := range nodes.Items {
-		ch.NodesTotal++
-		if nodeReadyStatus(n) == "Ready" && !n.Spec.Unschedulable {
-			ch.NodesReady++
-		}
-		ch.CPUAlloc += quantityMilli(n.Status.Allocatable, corev1.ResourceCPU)
-		ch.MemAlloc += quantityBytes(n.Status.Allocatable, corev1.ResourceMemory)
-		if nodeMetrics != nil {
-			if u, ok := nodeMetrics[n.Name]; ok {
-				ch.CPUUsed += u.CPU
-				ch.MemUsed += u.Memory
-			}
-		}
-		ch.PressureCount += len(nodePressures(n))
+	for i := range nodes.Items {
+		ch.addNode(nodes.Items[i], nodeMetrics)
+	}
+	for i := range pods.Items {
+		ch.addPod(pods.Items[i])
 	}
 
-	for _, p := range pods.Items {
-		ch.PodsTotal++
-		switch p.Status.Phase {
-		case corev1.PodRunning:
-			ch.PodsRunning++
-		case corev1.PodPending:
-			ch.PodsPending++
-		}
-		// CrashLoopBackOff lives at the container-status level, not pod
-		// phase. A pod that is Running but has a container in CLB is the
-		// classic "looks healthy from the outside, screaming on the inside"
-		// case the on-caller wants to see.
-		for _, cs := range p.Status.ContainerStatuses {
-			if cs.State.Waiting != nil && cs.State.Waiting.Reason == "CrashLoopBackOff" {
-				ch.PodsCrashing++
-				break
-			}
+	return ch, nil
+}
+
+// addNode accumulates one node's contribution to ch. Shared between the
+// direct-API path (LoadClusterHealth) and the cache-aware Client method.
+func (ch *ClusterHealth) addNode(n corev1.Node, nodeMetrics map[string]ResourceUsage) {
+	ch.NodesTotal++
+	if nodeReadyStatus(n) == "Ready" && !n.Spec.Unschedulable {
+		ch.NodesReady++
+	}
+	ch.CPUAlloc += quantityMilli(n.Status.Allocatable, corev1.ResourceCPU)
+	ch.MemAlloc += quantityBytes(n.Status.Allocatable, corev1.ResourceMemory)
+	if nodeMetrics != nil {
+		if u, ok := nodeMetrics[n.Name]; ok {
+			ch.CPUUsed += u.CPU
+			ch.MemUsed += u.Memory
 		}
 	}
+	ch.PressureCount += len(nodePressures(n))
+}
 
+// addPod accumulates one pod's contribution to ch. Mirrors addNode's split:
+// shared body between direct-API and cache-aware paths.
+func (ch *ClusterHealth) addPod(p corev1.Pod) {
+	ch.PodsTotal++
+	switch p.Status.Phase {
+	case corev1.PodRunning:
+		ch.PodsRunning++
+	case corev1.PodPending:
+		ch.PodsPending++
+	}
+	// CrashLoopBackOff lives at the container-status level, not pod phase.
+	// A pod that is Running but has a container in CLB is the classic
+	// "looks healthy from the outside, screaming on the inside" case the
+	// on-caller wants to see.
+	for _, cs := range p.Status.ContainerStatuses {
+		if cs.State.Waiting != nil && cs.State.Waiting.Reason == "CrashLoopBackOff" {
+			ch.PodsCrashing++
+			break
+		}
+	}
+}
+
+// LoadClusterHealth is the cache-aware variant of the package-level function.
+// When the informer cache is available the pod + node lists are served from
+// local memory; metrics-server is always queried directly. Falls back to the
+// direct-API path when informers failed to sync (timeout, RBAC, or no set
+// was built).
+func (c *Client) LoadClusterHealth(ctx context.Context) (ClusterHealth, error) {
+	if c.informers == nil || c.informers.podLister == nil || c.informers.nodeLister == nil {
+		return LoadClusterHealth(ctx, c.Clientset)
+	}
+	var ch ClusterHealth
+
+	// Metrics-server stays on the direct path (no Watch support); fire it in
+	// parallel with the cache lookups so its latency doesn't add to ours.
+	var (
+		nodeMetrics map[string]ResourceUsage
+		wg          sync.WaitGroup
+	)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		nodeMetrics, _ = ListNodeMetrics(ctx, c.Clientset)
+	}()
+
+	nodes, err := c.informers.nodeLister.List(labels.Everything())
+	if err != nil {
+		wg.Wait()
+		return ch, err
+	}
+	pods, err := c.informers.podLister.List(labels.Everything())
+	if err != nil {
+		wg.Wait()
+		return ch, err
+	}
+	wg.Wait()
+
+	for _, n := range nodes {
+		ch.addNode(*n, nodeMetrics)
+	}
+	for _, p := range pods {
+		ch.addPod(*p)
+	}
 	return ch, nil
 }
 

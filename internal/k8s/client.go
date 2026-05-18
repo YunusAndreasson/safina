@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"sync"
 	"time"
 
 	"k8s.io/client-go/discovery"
@@ -31,6 +32,10 @@ type Client struct {
 	// Used for any resource the tree doesn't have a first-class typed
 	// renderer for (CRDs, anything the user enabled beyond the defaults).
 	Dynamic dynamic.Interface
+	// informers backs the cache-aware Client methods (HotPods, ClusterHealth).
+	// nil when initial sync failed (e.g. RBAC denies Watch); methods detect
+	// this and fall back to direct API reads.
+	informers *informerSet
 }
 
 // SkippedContext records a kubeconfig context whose Client construction
@@ -108,12 +113,29 @@ func NewClient(rawCfg *clientcmdapi.Config, ctxName string) (*Client, error) {
 		return nil, fmt.Errorf("failed to create dynamic client for %q: %w", ctxName, err)
 	}
 
+	// Eagerly start the pod + node informers and block until initial sync.
+	// On a typical cluster this is ~100-500ms; NewManager parallelises across
+	// contexts so total launch cost is bounded by the slowest cluster, not
+	// the sum. Failure (timeout or RBAC-denied Watch) leaves informers=nil,
+	// and the cache-aware methods fall back to direct API reads.
+	inf := startInformers(cs, 5*time.Second)
+
 	return &Client{
 		Clientset:  cs,
 		RESTConfig: restCfg,
 		Discovery:  disco,
 		Dynamic:    dyn,
+		informers:  inf,
 	}, nil
+}
+
+// Close releases the informer watch streams. Idempotent; safe on a Client
+// whose informer sync failed (informers will be nil).
+func (c *Client) Close() {
+	if c == nil {
+		return
+	}
+	c.informers.close()
 }
 
 func NewManager(rawCfg *clientcmdapi.Config) (*Manager, error) {
@@ -132,13 +154,33 @@ func NewManager(rawCfg *clientcmdapi.Config) (*Manager, error) {
 	}
 	sort.Strings(names)
 
-	for _, name := range names {
-		client, err := NewClient(rawCfg, name)
-		if err != nil {
-			m.Skipped = append(m.Skipped, SkippedContext{Name: name, Err: err})
+	// Build clients in parallel. Each NewClient blocks on informer sync
+	// (~100-500ms per cluster); doing them serially across N contexts would
+	// stack the wait, but in parallel total launch latency collapses to the
+	// slowest single cluster.
+	type result struct {
+		name   string
+		client *Client
+		err    error
+	}
+	results := make([]result, len(names))
+	var wg sync.WaitGroup
+	for i, name := range names {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c, err := NewClient(rawCfg, name)
+			results[i] = result{name: name, client: c, err: err}
+		}()
+	}
+	wg.Wait()
+
+	for _, r := range results {
+		if r.err != nil {
+			m.Skipped = append(m.Skipped, SkippedContext{Name: r.name, Err: r.err})
 			continue
 		}
-		m.Clients[name] = client
+		m.Clients[r.name] = r.client
 	}
 
 	if len(m.Clients) == 0 {
@@ -146,6 +188,18 @@ func NewManager(rawCfg *clientcmdapi.Config) (*Manager, error) {
 	}
 
 	return m, nil
+}
+
+// Close shuts down every per-cluster informer in the manager. Called from
+// the TUI Quit path so informer watch streams don't outlive the process
+// intent. Idempotent.
+func (m *Manager) Close() {
+	if m == nil {
+		return
+	}
+	for _, c := range m.Clients {
+		c.Close()
+	}
 }
 
 func (m *Manager) GetClient(contextName string) (*Client, bool) {

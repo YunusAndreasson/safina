@@ -116,7 +116,7 @@ func LoadHot(ctx context.Context, mgr *k8s.Manager, contextName string) tea.Cmd 
 		if !ok {
 			return HotLoadedMsg{Err: errContextNotFound}
 		}
-		pods, err := k8s.ListHotPodsByCPU(ctx, client.Clientset, hotListSize)
+		pods, err := client.ListHotPodsByCPU(ctx, hotListSize)
 		return HotLoadedMsg{Pods: pods, Err: err}
 	}
 }

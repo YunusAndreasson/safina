@@ -488,6 +488,11 @@ func (m *Model) saveConfig() {
 	if m.ctx.Manager != nil && m.ctx.Manager.Forwards != nil {
 		m.ctx.Manager.Forwards.StopAll()
 	}
+	// Tear down informer watch streams so process exit doesn't leak
+	// long-lived HTTP/2 connections to every cluster the manager touched.
+	if m.ctx.Manager != nil {
+		m.ctx.Manager.Close()
+	}
 }
 
 // Init satisfies tea.Model. Kicks off the auto-refresh tick, the wall-clock
@@ -580,11 +585,10 @@ func (m *Model) loadClusterHealth() tea.Cmd {
 	if !ok || client == nil || client.Clientset == nil {
 		return nil
 	}
-	cs := client.Clientset
 	bg := m.ctx.Background
 	active := m.ctx.ActiveContext
 	return func() tea.Msg {
-		h, err := k8s.LoadClusterHealth(bg, cs)
+		h, err := client.LoadClusterHealth(bg)
 		return clusterHealthMsg{Context: active, Health: h, Err: err}
 	}
 }
