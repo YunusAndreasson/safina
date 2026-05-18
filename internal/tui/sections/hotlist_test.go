@@ -17,16 +17,19 @@ func TestHot_ResetClearsItemsAndArmsLoading(t *testing.T) {
 	h.Reset()
 	assert.Nil(t, h.items, "Reset must drop the previous list")
 	assert.Equal(t, 0, h.cursor)
-	assert.True(t, h.loading, "Reset arms loading=true so the modal shows the spinner until the fresh data arrives")
-	assert.NoError(t, h.err)
+	require.NoError(t, h.err)
+	// Spinner-visibility semantics are owned by components.LoadGate (see
+	// loadgate_test.go); here we just verify Reset drove the gate into a
+	// running-load state, which the gate represents via its loading flag.
+	assert.True(t, h.gate.IsLoading())
 }
 
 func TestHot_SetItemsClearsLoading(t *testing.T) {
 	h := NewHot()
 	h.Reset()
-	require.True(t, h.loading)
+	require.True(t, h.gate.IsLoading())
 	h.SetItems([]k8s.PodInfo{{Name: "p"}}, nil)
-	assert.False(t, h.loading, "SetItems must clear loading — otherwise the modal spins forever after data arrives")
+	assert.False(t, h.gate.IsLoading(), "SetItems must stop the load — otherwise the gate stays armed forever")
 }
 
 func TestHot_SetItemsClampsCursorWhenListShrinks(t *testing.T) {
@@ -89,13 +92,13 @@ func TestHot_SelectedReturnsHighlightedRow(t *testing.T) {
 }
 
 func TestHot_SetItemsWithErrorClearsLoading(t *testing.T) {
-	// Loader failure must still flip loading=false, otherwise the user
-	// sees the spinner instead of the error message.
+	// Loader failure must still stop the gate, otherwise the user sees the
+	// spinner (once minVisible elapses anyway) instead of the error.
 	h := NewHot()
 	h.Reset()
-	require.True(t, h.loading)
+	require.True(t, h.gate.IsLoading())
 	h.SetItems(nil, errors.New("metrics-server down"))
-	assert.False(t, h.loading)
+	assert.False(t, h.gate.IsLoading())
 	require.Error(t, h.err)
 	assert.Contains(t, h.err.Error(), "metrics-server")
 }

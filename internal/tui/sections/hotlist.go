@@ -27,8 +27,11 @@ type Hot struct {
 
 	cursor int
 
-	loading bool
-	err     error
+	// gate suppresses spinner flicker now that ListHotPodsByCPU serves from
+	// the informer cache in single-digit ms — the spinner would otherwise
+	// flash on and immediately off, which is worse than no indicator.
+	gate components.LoadGate
+	err  error
 
 	// modalW/modalH cache the last viewport size SetSize was handed so
 	// View can render at the same dimensions without the caller having
@@ -52,14 +55,14 @@ func (s *Hot) SetSize(w, h int) {
 func (s *Hot) Reset() {
 	s.items = nil
 	s.cursor = 0
-	s.loading = true
+	s.gate.Start()
 	s.err = nil
 }
 
 // SetItems hands the loaded hot list (or error) to the modal.
 func (s *Hot) SetItems(items []k8s.PodInfo, err error) {
 	s.items = items
-	s.loading = false
+	s.gate.Stop()
 	s.err = err
 	if s.cursor >= len(items) {
 		s.cursor = 0
@@ -98,7 +101,7 @@ func (s *Hot) Body(c *tuictx.Ctx, w, h int) string {
 	th := c.Theme
 	hint := th.HelpDesc.Render("R refresh · esc close")
 	hintRow := lipgloss.NewStyle().Width(w).Align(lipgloss.Right).Render(hint)
-	if s.loading {
+	if s.gate.Visible() {
 		return lipgloss.JoinVertical(lipgloss.Left,
 			hintRow,
 			th.Idle.Render(c.Spinner.View()+" loading hot pods…"))
