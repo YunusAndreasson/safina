@@ -69,8 +69,17 @@ func NewClient(rawCfg *clientcmdapi.Config, ctxName string) (*Client, error) {
 	}
 
 	restCfg.Timeout = 30 * time.Second
-	restCfg.QPS = 50
-	restCfg.Burst = 100
+	// QPS/Burst sized for safina's parallel fan-out call patterns (cluster-
+	// health tick, resource-browser per-namespace scan, connection graph).
+	// Bench validated this directly: at the client-go default of 50/100, S5
+	// (50 parallel List calls across 10 namespaces) sat at a flat 1000ms p95
+	// — pure client-side rate-limit floor, identical across every API knob
+	// (protobuf, field selector, fan-out cap, informer cache). Raising to
+	// 200/400 dropped S5 p95 to ~250ms (-75%) and S3 to ~32ms (-69%) with
+	// bytes-on-wire and call counts unchanged. Sits well under the apiserver
+	// APF default flow limits, so safe on real clusters.
+	restCfg.QPS = 200
+	restCfg.Burst = 400
 
 	// Wrap the transport so every API request is audited when SAFINA_DEBUG
 	// is set. Compose with any existing WrapTransport (auth/exec plugins
