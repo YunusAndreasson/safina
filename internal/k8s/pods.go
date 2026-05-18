@@ -123,26 +123,33 @@ func ListHotPodsByCPU(ctx context.Context, cs kubernetes.Interface, limit int) (
 		out = append(out, info)
 	}
 
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].CPU != out[j].CPU {
-			return out[i].CPU > out[j].CPU
-		}
-		// Stable tiebreak: memory descending, then namespace/name ascending.
-		// Without this, ties between two near-idle pods would flicker
-		// position between refreshes.
-		if out[i].Memory != out[j].Memory {
-			return out[i].Memory > out[j].Memory
-		}
-		if out[i].Namespace != out[j].Namespace {
-			return out[i].Namespace < out[j].Namespace
-		}
-		return out[i].Name < out[j].Name
-	})
+	return rankHotPods(out, limit), nil
+}
 
-	if len(out) > limit {
-		out = out[:limit]
+// rankHotPods is the pure sort+truncate that ListHotPodsByCPU uses, lifted
+// out for direct unit tests. Sort order: CPU desc, then memory desc, then
+// namespace asc, then name asc. The tiebreak chain is what keeps the modal
+// from flickering positions between refreshes when many pods are near-idle.
+func rankHotPods(pods []PodInfo, limit int) []PodInfo {
+	if limit <= 0 {
+		limit = 20
 	}
-	return out, nil
+	sort.Slice(pods, func(i, j int) bool {
+		if pods[i].CPU != pods[j].CPU {
+			return pods[i].CPU > pods[j].CPU
+		}
+		if pods[i].Memory != pods[j].Memory {
+			return pods[i].Memory > pods[j].Memory
+		}
+		if pods[i].Namespace != pods[j].Namespace {
+			return pods[i].Namespace < pods[j].Namespace
+		}
+		return pods[i].Name < pods[j].Name
+	})
+	if len(pods) > limit {
+		pods = pods[:limit]
+	}
+	return pods
 }
 
 type PodLogEvent struct {
