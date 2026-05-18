@@ -44,6 +44,8 @@ func main() {
 		baselinePath   string
 		recordBaseline bool
 		tolerancePct   float64
+		qps            float64
+		burst          int
 	)
 
 	flag.StringVar(&kubeconfig, "kubeconfig", defaultKubeconfig(), "path to kubeconfig")
@@ -59,6 +61,8 @@ func main() {
 	flag.StringVar(&baselinePath, "baseline", "bench/baseline.json", "baseline file (read for --quick, written by --record-baseline)")
 	flag.BoolVar(&recordBaseline, "record-baseline", false, "overwrite --baseline with this run's p95 numbers")
 	flag.Float64Var(&tolerancePct, "tolerance-pct", 15.0, "regression budget (p95 % over baseline)")
+	flag.Float64Var(&qps, "qps", 50, "client QPS (mirrors prod default — raise to probe rate-limit floor)")
+	flag.IntVar(&burst, "burst", 100, "client Burst (mirrors prod default)")
 	flag.Parse()
 
 	if kubeContext == "" {
@@ -89,7 +93,7 @@ func main() {
 	defer cancel()
 
 	factory := func() (*rest.Config, error) {
-		return buildRestConfig(kubeconfig, kubeContext)
+		return buildRestConfig(kubeconfig, kubeContext, qps, burst)
 	}
 
 	// Sanity check: confirm the cluster is reachable BEFORE wasting compute on
@@ -190,7 +194,7 @@ func defaultKubeconfig() string {
 	return filepath.Join(home, ".kube", "config")
 }
 
-func buildRestConfig(kubeconfig, kubeContext string) (*rest.Config, error) {
+func buildRestConfig(kubeconfig, kubeContext string, qps float64, burst int) (*rest.Config, error) {
 	loader := &clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfig}
 	cfg, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
 		loader,
@@ -199,11 +203,11 @@ func buildRestConfig(kubeconfig, kubeContext string) (*rest.Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Mirror the safina production config (client.go:71-73). Variants may
-	// override ContentType in place.
+	// Mirror the safina production config (client.go:71-73) by default;
+	// --qps / --burst flags override to probe the rate-limit floor.
 	cfg.Timeout = 30 * time.Second
-	cfg.QPS = 50
-	cfg.Burst = 100
+	cfg.QPS = float32(qps)
+	cfg.Burst = burst
 	// Make sure WrapTransport is non-nil so the runner can chain without a
 	// special case — and audit while we're here, so SAFINA_DEBUG users see
 	// per-request trails during benchmark runs too.
