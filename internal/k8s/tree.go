@@ -547,9 +547,18 @@ func ListAppsInNamespaces(ctx context.Context, cs kubernetes.Interface, namespac
 		}
 	}
 
+	// Identity-based sort: Namespace, Kind, Name. We deliberately do NOT
+	// sort by Health here, even though "failing apps first" is appealing —
+	// a row's Health flips frequently during normal cluster operation (pods
+	// cycling, deploys rolling), and a Health-first sort would shuffle row
+	// positions on every refresh. That moves the selected row out from
+	// under the user's cursor on the auto-tick — a real bug they noticed
+	// in the Workloads view. Failing rows stay visible via their glyph,
+	// foreground color, and the pulse animation; the `F` keybind jumps to
+	// the first unhealthy row when the user wants to scan for trouble.
 	sort.Slice(out, func(i, j int) bool {
-		if out[i].Health != out[j].Health {
-			return out[i].Health < out[j].Health
+		if out[i].Namespace != out[j].Namespace {
+			return out[i].Namespace < out[j].Namespace
 		}
 		if out[i].Kind != out[j].Kind {
 			return out[i].Kind < out[j].Kind
