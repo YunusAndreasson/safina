@@ -14,12 +14,16 @@
 package debug
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/yunus/safina/internal/errlog"
 )
 
 var (
@@ -39,7 +43,7 @@ func Init() string {
 		return ""
 	}
 	if os.Getenv("SAFINA_DEBUG") == "" {
-		logger = slog.New(slog.NewJSONHandler(io.Discard, nil))
+		logger = slog.New(slog.DiscardHandler)
 		return ""
 	}
 	path := os.Getenv("SAFINA_DEBUG_FILE")
@@ -48,18 +52,18 @@ func Init() string {
 		if err != nil {
 			// No home → fall back to stderr-equivalent silent disable rather
 			// than corrupting the TUI by writing to a real fd.
-			logger = slog.New(slog.NewJSONHandler(io.Discard, nil))
+			logger = slog.New(slog.DiscardHandler)
 			return ""
 		}
 		path = filepath.Join(home, ".safina", "debug.log")
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		logger = slog.New(slog.NewJSONHandler(io.Discard, nil))
+		logger = slog.New(slog.DiscardHandler)
 		return ""
 	}
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
-		logger = slog.New(slog.NewJSONHandler(io.Discard, nil))
+		logger = slog.New(slog.DiscardHandler)
 		return ""
 	}
 	sink = f
@@ -95,7 +99,7 @@ func log() *slog.Logger {
 	mu.Unlock()
 	if l == nil {
 		// Init was never called; behave as a no-op rather than crash.
-		return slog.New(slog.NewJSONHandler(io.Discard, nil))
+		return slog.New(slog.DiscardHandler)
 	}
 	return l
 }
@@ -104,7 +108,31 @@ func log() *slog.Logger {
 func Log(event string, kv ...any) { log().Info(event, kv...) }
 
 // Errf emits an event at error level. Same key/value calling convention.
-func Errf(event string, kv ...any) { log().Error(event, kv...) }
+// Errors are also mirrored to the always-on errlog so they're grep-able
+// alongside klog noise from client-go, even when SAFINA_DEBUG is unset.
+func Errf(event string, kv ...any) {
+	log().Error(event, kv...)
+	errlog.Writef(event, "%s", flattenKV(kv))
+}
+
+// flattenKV renders slog-style key/value pairs as "k=v k=v" for the
+// single-line errlog format. Odd trailing keys are emitted as bare "k".
+func flattenKV(kv []any) string {
+	if len(kv) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i := 0; i < len(kv); i += 2 {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		fmt.Fprintf(&b, "%v", kv[i])
+		if i+1 < len(kv) {
+			fmt.Fprintf(&b, "=%v", kv[i+1])
+		}
+	}
+	return b.String()
+}
 
 // Track times an operation and emits {event, dur_ms, err?}. Use as:
 //

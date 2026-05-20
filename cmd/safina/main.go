@@ -9,6 +9,7 @@ import (
 
 	"github.com/yunus/safina/internal/config"
 	"github.com/yunus/safina/internal/debug"
+	"github.com/yunus/safina/internal/errlog"
 	"github.com/yunus/safina/internal/k8s"
 	"github.com/yunus/safina/internal/tui"
 )
@@ -39,6 +40,14 @@ color-coded status, and perform actions like scaling, rollback, and log viewing.
 			if logFile != "" && os.Getenv("SAFINA_DEBUG_FILE") == "" {
 				_ = os.Setenv("SAFINA_DEBUG_FILE", logFile)
 			}
+			// errlog comes up before anything that could trigger a klog
+			// emission (manager init opens client-go transports). It's
+			// always on — point is post-mortem evaluation, not a debug
+			// opt-in — and it captures client-go's stderr noise plus
+			// mirrored debug.Errf events.
+			errPath := errlog.Init()
+			defer errlog.Close()
+
 			debugPath := debug.Init()
 			defer debug.Close()
 			debug.Log("safina.start",
@@ -114,6 +123,9 @@ color-coded status, and perform actions like scaling, rollback, and log viewing.
 			// fighting the alt-screen frame.
 			if debugPath != "" {
 				fmt.Fprintf(os.Stderr, "safina debug log: %s\n", debugPath)
+			}
+			if errPath != "" {
+				fmt.Fprintf(os.Stderr, "safina error log: %s\n", errPath)
 			}
 		},
 	}
