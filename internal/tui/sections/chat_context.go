@@ -242,8 +242,11 @@ func healthLabel(h k8s.Health) string {
 		return "failing"
 	case k8s.HealthInProgress:
 		return "in_progress"
+	case k8s.HealthUnknown:
+		return "unknown"
+	default:
+		return "unknown"
 	}
-	return "unknown"
 }
 
 // pathNamespace finds the namespace covering the current selection. Apps,

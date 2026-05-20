@@ -82,7 +82,13 @@ func CenteredViewportBlock(t *theme.Theme, spinner string, vp viewport.Model, st
 		Align(lipgloss.Center, lipgloss.Center)
 	switch {
 	case st.Loading:
+		// Unify caption form: every in-flight surface shows "<spinner> <verb>…"
+		// so the modal/inline/title loaders all read the same tense regardless
+		// of whether the caller passed an override.
 		caption := defaultStr(st.Loading_, "loading")
+		if !strings.HasSuffix(caption, "…") {
+			caption += "…"
+		}
 		return box.Render(t.Idle.Render(spinner + " " + caption))
 	case st.Err != nil:
 		return box.Render(lipgloss.NewStyle().Foreground(t.P.Red).Render(st.Err.Error()))
@@ -138,6 +144,17 @@ func RenderHintRow(t *theme.Theme, pairs []KeyDesc) string {
 	return strings.Join(pieces, t.HelpDesc.Render("  ·  "))
 }
 
+// SearchPromptRow renders the centred-modal search input — a bold cyan `›`
+// prompt, the live query, and a single-cell reverse-video cursor. Shared by
+// the command palette and the resource browser so both modal-search overlays
+// type, paint, and align identically.
+func SearchPromptRow(t *theme.Theme, query string) string {
+	prompt := lipgloss.NewStyle().Foreground(t.P.Cyan).Bold(true).Render("›")
+	queryStyle := lipgloss.NewStyle().Foreground(t.P.FG)
+	cursor := lipgloss.NewStyle().Foreground(t.P.FG).Reverse(true).Render(" ")
+	return prompt + " " + queryStyle.Render(query) + cursor
+}
+
 // RenderConfirmHint renders the y/n confirm row used by every destructive
 // modal (delete, rollback, restart, cordon, drain, edit-apply). Pattern:
 //
@@ -176,7 +193,7 @@ func RenderModalStatusBar(t *theme.Theme, modalW int, filter Filter, indicators 
 	case filter.Value() != "":
 		left = t.FilterPrompt.Render("/") + t.FilterText.Render(filter.Value())
 	default:
-		left = t.DimTxt.Italic(true).Render("press / to filter")
+		left = t.Hint.Render("press / to filter")
 	}
 
 	parts := make([]string, 0, len(indicators))

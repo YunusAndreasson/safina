@@ -10,6 +10,7 @@ package bench
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -211,7 +212,7 @@ func buildInformer(ctx context.Context, base *rest.Config) (kubernetes.Interface
 	defer cancel()
 	if !cache.WaitForCacheSync(syncCtx.Done(), podInformer.Informer().HasSynced) {
 		close(stop)
-		return nil, nil, nil, fmt.Errorf("informer cache failed to sync within 30s")
+		return nil, nil, nil, errors.New("informer cache failed to sync within 30s")
 	}
 	opts := &Options{Informer: factory, PodLister: lister}
 	return cs, opts, func() { close(stop) }, nil
@@ -311,7 +312,7 @@ func tuneIdlePool(rt http.RoundTripper) bool {
 			return false
 		}
 		var next http.RoundTripper
-		for i := 0; i < v.NumField(); i++ {
+		for i := range v.NumField() {
 			f := v.Field(i)
 			if !f.CanInterface() {
 				continue

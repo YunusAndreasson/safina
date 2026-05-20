@@ -1,7 +1,7 @@
 package config
 
 import (
-	"fmt"
+	"errors"
 	"os"
 	"path/filepath"
 
@@ -110,7 +110,7 @@ func seedDefaults(cfg *AppConfig) {
 
 func Save(cfg *AppConfig) error {
 	if cfg == nil {
-		return fmt.Errorf("config is nil")
+		return errors.New("config is nil")
 	}
 	dir, err := ConfigDir()
 	if err != nil {

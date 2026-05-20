@@ -259,23 +259,23 @@ func (s *Shell) handleKey(km tea.KeyPressMsg, c *tuictx.Ctx) (tea.Cmd, bool) {
 		if km.Code == tea.KeyEscape && km.Mod == 0 {
 			return nil, true
 		}
-		return s.forwardKey(km), false
+		s.forwardKey(km)
+		return nil, false
 	}
 	return nil, false
 }
 
 // forwardKey translates a tea.KeyPressMsg into the byte sequence a real terminal
 // would emit, then writes it to the session's stdin pipe.
-func (s *Shell) forwardKey(km tea.KeyPressMsg) tea.Cmd {
+func (s *Shell) forwardKey(km tea.KeyPressMsg) {
 	if s.session == nil {
-		return nil
+		return
 	}
 	b := keyToBytes(km)
 	if len(b) == 0 {
-		return nil
+		return
 	}
 	_, _ = s.session.Stdin.Write(b)
-	return nil
 }
 
 // keyToBytes maps Bubble Tea key events to terminal input bytes. Covers the
@@ -374,7 +374,7 @@ func keyToBytes(km tea.KeyPressMsg) []byte {
 func (s *Shell) View(c *tuictx.Ctx, termW, termH int) string {
 	t := c.Theme
 
-	title := fmt.Sprintf("shell · %s", s.pod)
+	title := "shell · " + s.pod
 	if s.namespace != "" {
 		title = fmt.Sprintf("shell · %s · %s", s.pod, s.namespace)
 	}
@@ -401,6 +401,8 @@ func (s *Shell) View(c *tuictx.Ctx, termW, termH int) string {
 		border, titleColor = t.P.Yellow, t.P.Yellow
 	case phaseError:
 		border, titleColor = t.P.Red, t.P.Red
+	default:
+		// phaseConnect/phaseLive/phaseDebug — keep cyan accent.
 	}
 
 	panel := components.PanelWithAccent(t, title, s.modalW, s.modalH, content, true, border, titleColor)
@@ -423,9 +425,9 @@ func (s *Shell) bodyForPhase(c *tuictx.Ctx) string {
 		return s.renderTerminal(t)
 	case phaseDebug:
 		return centerBox(w, h,
-			c.Spinner.View()+" "+t.Idle.Render("creating debug container · "+k8s.DefaultDebugImage),
+			c.Spinner.View()+" "+t.Idle.Render("creating debug container · "+k8s.DefaultDebugImage+"…"),
 			"",
-			t.DimTxt.Italic(true).Render("first pull can take 10–30s"),
+			t.Hint.Render("first pull can take 10–30s"),
 		)
 	case phaseNoShell:
 		yellow := lipgloss.NewStyle().Foreground(t.P.Yellow).Bold(true)
@@ -433,7 +435,7 @@ func (s *Shell) bodyForPhase(c *tuictx.Ctx) string {
 			yellow.Render("no shell in this container"),
 			"",
 			t.DimTxt.Render("Attach a debug container with "+k8s.DefaultDebugImage+"?"),
-			t.DimTxt.Italic(true).Render("(includes curl, dig, tcpdump, jq, vim, …)"),
+			t.Hint.Render("(includes curl, dig, tcpdump, jq, vim, …)"),
 			"",
 			t.GreenTxt.Render("↵")+t.DimTxt.Render(" debug  ")+
 				t.DimTxt.Render("esc cancel"),
@@ -530,7 +532,7 @@ func (s *Shell) renderTerminal(t *theme.Theme) string {
 		hasRun = false
 	}
 
-	for y := 0; y < rows; y++ {
+	for y := range rows {
 		// Find the rightmost meaningful cell on this row so trailing
 		// default-blanks aren't styled and emitted. The panel pads short
 		// lines, so this is purely a perf win — and a big one because most
@@ -560,7 +562,7 @@ func (s *Shell) renderTerminal(t *theme.Theme) string {
 			k := runKey{
 				fg:     cell.FG,
 				bg:     cell.BG,
-				mode:   int16(cell.Mode),
+				mode:   cell.Mode,
 				cursor: cursorVisible && x == cur.X && y == cur.Y,
 			}
 			if hasRun && k != curKey {
@@ -593,6 +595,8 @@ func vtColorToLipgloss(c vt10x.Color, t *theme.Theme, isFG bool) color.Color {
 		return nil
 	case vt10x.DefaultBG, vt10x.DefaultCursor:
 		return nil
+	default:
+		// named ANSI / 256 / truecolor — handled by the numeric path below.
 	}
 	if c < 256 {
 		// ANSI 0..15 + xterm 256-color: pass numeric index through to lipgloss,
@@ -617,9 +621,9 @@ func (s *Shell) statusRow(c *tuictx.Ctx) string {
 	right := ""
 	switch s.phase {
 	case phaseConnect:
-		left = t.DimTxt.Italic(true).Render("connecting…")
+		left = t.Hint.Render("connecting…")
 	case phaseDebug:
-		left = t.DimTxt.Italic(true).Render("attaching debug…")
+		left = t.Hint.Render("attaching debug…")
 	case phaseLive:
 		right = lipgloss.NewStyle().Foreground(t.P.Green).Bold(true).Render("● connected")
 	case phaseNoShell:
@@ -652,7 +656,7 @@ func (s *Shell) keysRow(t *theme.Theme) string {
 	case phaseLive:
 		return pair("esc", "detach") + sep +
 			pair("ctrl+c", "interrupt") + sep +
-			t.DimTxt.Italic(true).Render("ephemeral debug containers can't be removed")
+			t.Hint.Render("ephemeral debug containers can't be removed")
 	}
 	return ""
 }

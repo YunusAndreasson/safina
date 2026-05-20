@@ -210,7 +210,7 @@ func Sparkline(t *theme.Theme, buf *MetricBuffer, width int, bg lipgloss.Style) 
 	}
 
 	var b strings.Builder
-	for cell := 0; cell < width; cell++ {
+	for cell := range width {
 		lIdx := cell * samplesPerCell
 		rIdx := cell*samplesPerCell + 1
 
@@ -239,6 +239,84 @@ func Sparkline(t *theme.Theme, buf *MetricBuffer, width int, bg lipgloss.Style) 
 
 		// Color by the louder side so the warning palette tracks the
 		// peak — that's where the operator's eye should land.
+		cellFrac := lFrac
+		if rFrac > cellFrac {
+			cellFrac = rFrac
+		}
+		b.WriteString(bg.Foreground(sparkColor(t, cellFrac)).Render(string(ch)))
+	}
+	return b.String()
+}
+
+// SparklineFull renders the *entire* buffered history into `width` cells by
+// max-bucketing samples. Where Sparkline shows only the latest 2×width raw
+// samples (recency window — what you want in a tree row), SparklineFull
+// spreads however many samples are present across the full cell width
+// (history window — what you want in the Inspector). Each cell-half holds
+// the max of its bucket so transient spikes don't get averaged away.
+//
+// Falls back to the recency renderer when the buffer holds fewer samples
+// than would fill width×2 halves — until enough history has accrued, the
+// "wide view" and "recent view" coincide anyway.
+func SparklineFull(t *theme.Theme, buf *MetricBuffer, width int, bg lipgloss.Style) string {
+	if width < 2 {
+		width = 2
+	}
+	if buf == nil || buf.Len() < 2 {
+		return bg.Foreground(t.P.Dim).Render(strings.Repeat("·", width))
+	}
+	samples := buf.Samples()
+	const halvesPerCell = 2
+	totalHalves := width * halvesPerCell
+	if len(samples) <= totalHalves {
+		return Sparkline(t, buf, width, bg)
+	}
+	ceiling := buf.Ceiling()
+	if ceiling <= 0 {
+		ceiling = 1
+	}
+	if float64(buf.HighWater())/float64(ceiling) < idleCeilingFraction {
+		floor := string(brailleBase + rune(brailleLeft[1]+brailleRight[1]))
+		return bg.Foreground(t.P.Dim).Render(strings.Repeat(floor, width))
+	}
+
+	// Bucket samples into totalHalves slots, taking the max value per
+	// bucket — preserves peak shape under heavy downsampling rather than
+	// smearing spikes into the mean. Bucket boundaries are computed in
+	// float so the residue distributes evenly across the row.
+	buckets := make([]int64, totalHalves)
+	step := float64(len(samples)) / float64(totalHalves)
+	for h := range totalHalves {
+		lo := int(float64(h) * step)
+		hi := int(float64(h+1) * step)
+		if hi <= lo {
+			hi = lo + 1
+		}
+		if hi > len(samples) {
+			hi = len(samples)
+		}
+		var peak int64
+		for j := lo; j < hi; j++ {
+			if samples[j] > peak {
+				peak = samples[j]
+			}
+		}
+		buckets[h] = peak
+	}
+
+	var b strings.Builder
+	for cell := range width {
+		lFrac := float64(buckets[cell*halvesPerCell]) / float64(ceiling)
+		rFrac := float64(buckets[cell*halvesPerCell+1]) / float64(ceiling)
+		if lFrac > 1 {
+			lFrac = 1
+		}
+		if rFrac > 1 {
+			rFrac = 1
+		}
+		lLevel := levelFor(lFrac)
+		rLevel := levelFor(rFrac)
+		ch := brailleBase + rune(brailleLeft[lLevel]+brailleRight[rLevel])
 		cellFrac := lFrac
 		if rFrac > cellFrac {
 			cellFrac = rFrac

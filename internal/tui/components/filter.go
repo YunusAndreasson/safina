@@ -38,7 +38,7 @@ func NewFilter(t *theme.Theme) Filter {
 	// Italic placeholder reads as a separate typographic register from real
 	// query text — the operator can tell at a glance whether they're seeing
 	// a hint or their own input.
-	placeholder := t.DimTxt.Italic(true)
+	placeholder := t.Hint
 	styles.Focused.Prompt = t.FilterPrompt
 	styles.Focused.Text = t.FilterText
 	styles.Focused.Placeholder = placeholder

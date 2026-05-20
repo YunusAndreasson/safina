@@ -172,10 +172,7 @@ func (p *Palette) View(c *tuictx.Ctx, termW, termH int) string {
 	}
 
 	// Input row.
-	prompt := lipgloss.NewStyle().Foreground(t.P.Cyan).Bold(true).Render("›")
-	queryStyle := lipgloss.NewStyle().Foreground(t.P.FG)
-	cursor := lipgloss.NewStyle().Foreground(t.P.FG).Reverse(true).Render(" ")
-	input := prompt + " " + queryStyle.Render(p.query) + cursor
+	input := components.SearchPromptRow(t, p.query)
 
 	// Result list.
 	list := p.renderList(c, innerW, listRows)
@@ -183,11 +180,10 @@ func (p *Palette) View(c *tuictx.Ctx, termW, termH int) string {
 	// Preview + verbs.
 	var preview, verbs string
 	if sel, ok := p.Selected(); ok {
-		preview = renderPalettePreview(c, sel, innerW)
-		verbs = renderPaletteVerbs(c, sel, innerW)
+		preview = renderPalettePreview(c, sel)
+		verbs = renderPaletteVerbs(c, sel)
 	} else {
-		preview = lipgloss.NewStyle().Foreground(t.P.Dim).Italic(true).
-			Render("type to search · drill what you've already loaded")
+		preview = t.Hint.Render("type to search · drill what you've already loaded")
 		verbs = ""
 	}
 
@@ -218,8 +214,7 @@ func (p *Palette) View(c *tuictx.Ctx, termW, termH int) string {
 func (p *Palette) renderList(c *tuictx.Ctx, w, rows int) string {
 	t := c.Theme
 	if len(p.matches) == 0 {
-		return lipgloss.NewStyle().Foreground(t.P.Dim).Italic(true).
-			Render("  no matches — drill into a cluster to populate the index")
+		return t.Hint.Render("  no matches — drill into a cluster to populate the index")
 	}
 	start := 0
 	end := len(p.matches)
@@ -320,7 +315,7 @@ func highlightMatches(s string, hits []int, base, match lipgloss.Style) string {
 		return base.Render(s)
 	}
 	var b strings.Builder
-	for i := 0; i < len(s); i++ {
+	for i := range len(s) {
 		ch := string(s[i])
 		if _, ok := hitset[i]; ok {
 			b.WriteString(match.Render(ch))
@@ -334,7 +329,7 @@ func highlightMatches(s string, hits []int, base, match lipgloss.Style) string {
 // renderPalettePreview renders the highlighted match's quick-info row.
 // Compact one-liner — the operator hits ↵ to drill into the full view if
 // they want depth.
-func renderPalettePreview(c *tuictx.Ctx, e PaletteEntry, w int) string {
+func renderPalettePreview(c *tuictx.Ctx, e PaletteEntry) string {
 	t := c.Theme
 	bar := lipgloss.NewStyle().Foreground(t.P.Cyan).Render("▌ ")
 	name := lipgloss.NewStyle().Foreground(t.P.FG).Bold(true).Render(e.Name)
@@ -357,7 +352,7 @@ func renderPalettePreview(c *tuictx.Ctx, e PaletteEntry, w int) string {
 // chip shows `letter label` so the operator can press Tab + letter to
 // dispatch directly. Verbs come from PaletteVerbsFor — the per-kind
 // affordance table.
-func renderPaletteVerbs(c *tuictx.Ctx, e PaletteEntry, w int) string {
+func renderPaletteVerbs(c *tuictx.Ctx, e PaletteEntry) string {
 	t := c.Theme
 	verbs := PaletteVerbsFor(e)
 	if len(verbs) == 0 {

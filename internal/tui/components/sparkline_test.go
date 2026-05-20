@@ -120,6 +120,69 @@ func TestSparkline_VariableTrendRenders(t *testing.T) {
 	}
 }
 
+// TestSparklineFull_FallsBackBelowCapacity proves SparklineFull defers to
+// the recency renderer until the buffer holds more samples than width×2.
+// Both paths must agree until enough history exists to downsample.
+func TestSparklineFull_FallsBackBelowCapacity(t *testing.T) {
+	th := theme.Default()
+	bg := lipgloss.NewStyle()
+
+	buf := NewMetricBufferWithFloor(4320, 1000)
+	for _, v := range []int64{100, 200, 300, 400} {
+		buf.Push(v)
+	}
+	// width=4 ⇒ needs 8 samples to enter downsampling path.
+	full := stripStyles(SparklineFull(th, buf, 4, bg))
+	recency := stripStyles(Sparkline(th, buf, 4, bg))
+	assert.Equal(t, recency, full, "SparklineFull should defer to Sparkline below cap")
+}
+
+// TestSparklineFull_BucketsPreservePeaks proves the max-aggregation
+// strategy keeps peaks visible under heavy downsampling — a single spike
+// in the middle of 200 idle samples must still register as a tall cell.
+func TestSparklineFull_BucketsPreservePeaks(t *testing.T) {
+	th := theme.Default()
+	bg := lipgloss.NewStyle()
+
+	buf := NewMetricBufferWithFloor(4320, 1000)
+	for i := range 200 {
+		v := int64(20) // idle floor
+		if i == 100 {
+			v = 950 // single near-ceiling spike in the middle
+		}
+		buf.Push(v)
+	}
+	out := stripStyles(SparklineFull(th, buf, 4, bg))
+	// At least one cell should encode a level > 1 (the spike), proving
+	// max-bucketing surfaced it instead of averaging it away.
+	saw := false
+	for _, r := range out {
+		if brailleMaxLevel(r) > 1 {
+			saw = true
+			break
+		}
+	}
+	assert.True(t, saw, "spike must survive bucketing, got %q", out)
+}
+
+// TestSparklineFull_IdleBufferRendersFlat confirms the idle branch — a
+// buffer whose high-water sits below 2% of the configured ceiling renders
+// as the dim flat floor even when full of samples.
+func TestSparklineFull_IdleBufferRendersFlat(t *testing.T) {
+	th := theme.Default()
+	bg := lipgloss.NewStyle()
+
+	buf := NewMetricBufferWithFloor(4320, 1000)
+	for range 200 {
+		buf.Push(5) // 0.5% of ceiling
+	}
+	out := stripStyles(SparklineFull(th, buf, 4, bg))
+	// Every cell should be the floor pattern (h=1 on both halves).
+	for _, r := range out {
+		assert.Equal(t, 1, brailleMaxLevel(r), "idle cell should be floor, got %q", out)
+	}
+}
+
 // brailleMaxLevel decodes a braille-bar cell back to the max of its two
 // half-column heights (0..4). Inverse of the encoding in sparkline.go.
 func brailleMaxLevel(r rune) int {

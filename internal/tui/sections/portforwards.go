@@ -80,7 +80,7 @@ func (f *Forwards) View(w int) string {
 	title := t.Divider("port forwards", w)
 	if len(f.rows) == 0 {
 		body := lipgloss.NewStyle().Foreground(t.P.FGFade).Render("  (no active forwards)")
-		hint := t.DimTxt.Italic(true).Render("press f on a pod or service row to start one")
+		hint := t.Hint.Render("press f on a pod or service row to start one")
 		return lipgloss.JoinVertical(lipgloss.Left, title, "", body, "", hint)
 	}
 
@@ -120,15 +120,15 @@ func (f *Forwards) View(w int) string {
 
 // truncMid keeps the start and end and inserts "…" so the human-meaningful
 // context/name fragments stay readable when they overflow.
-func truncMid(s string, max int) string {
-	if len(s) <= max {
+func truncMid(s string, width int) string {
+	if len(s) <= width {
 		return s
 	}
-	if max < 3 {
-		return s[:max]
+	if width < 3 {
+		return s[:width]
 	}
-	left := (max - 1) / 2
-	right := max - 1 - left
+	left := (width - 1) / 2
+	right := width - 1 - left
 	return s[:left] + "…" + s[len(s)-right:]
 }
 

@@ -135,7 +135,7 @@ func (l *Logs) PaneTitle() string {
 	if l.namespace != "" {
 		return fmt.Sprintf("logs · %s · %s", l.pod, l.namespace)
 	}
-	return fmt.Sprintf("logs · %s", l.pod)
+	return "logs · " + l.pod
 }
 
 func (l *Logs) recomputeViewportSize() {

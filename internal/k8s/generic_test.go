@@ -14,9 +14,9 @@ import (
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 )
 
-func newUnstructured(group, version, kind, ns, name string, age time.Duration, status map[string]interface{}) *unstructured.Unstructured {
+func newUnstructured(group, kind, ns, name string, age time.Duration, status map[string]interface{}) *unstructured.Unstructured {
 	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(schema.GroupVersionKind{Group: group, Version: version, Kind: kind})
+	u.SetGroupVersionKind(schema.GroupVersionKind{Group: group, Version: "v1", Kind: kind})
 	u.SetNamespace(ns)
 	u.SetName(name)
 	u.SetCreationTimestamp(metav1.NewTime(time.Now().Add(-age)))
@@ -35,9 +35,9 @@ func TestListGeneric_ReturnsRows(t *testing.T) {
 	scheme.AddKnownTypeWithName(gvk, &unstructured.Unstructured{})
 
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme, listKinds,
-		newUnstructured("monitoring.coreos.com", "v1", "PrometheusRule", "alpha", "rule-a", time.Hour, nil),
-		newUnstructured("monitoring.coreos.com", "v1", "PrometheusRule", "alpha", "rule-b", 2*time.Hour, nil),
-		newUnstructured("monitoring.coreos.com", "v1", "PrometheusRule", "beta", "rule-c", 30*time.Minute, nil),
+		newUnstructured("monitoring.coreos.com", "PrometheusRule", "alpha", "rule-a", time.Hour, nil),
+		newUnstructured("monitoring.coreos.com", "PrometheusRule", "alpha", "rule-b", 2*time.Hour, nil),
+		newUnstructured("monitoring.coreos.com", "PrometheusRule", "beta", "rule-c", 30*time.Minute, nil),
 	)
 
 	got, err := ListGeneric(context.Background(), dyn, gvr, "")
@@ -64,8 +64,8 @@ func TestListGeneric_FiltersByNamespace(t *testing.T) {
 	scheme.AddKnownTypeWithName(gvk, &unstructured.Unstructured{})
 
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme, listKinds,
-		newUnstructured("monitoring.coreos.com", "v1", "PrometheusRule", "alpha", "rule-a", time.Hour, nil),
-		newUnstructured("monitoring.coreos.com", "v1", "PrometheusRule", "beta", "rule-b", time.Hour, nil),
+		newUnstructured("monitoring.coreos.com", "PrometheusRule", "alpha", "rule-a", time.Hour, nil),
+		newUnstructured("monitoring.coreos.com", "PrometheusRule", "beta", "rule-b", time.Hour, nil),
 	)
 
 	got, err := ListGeneric(context.Background(), dyn, gvr, "alpha")
@@ -75,7 +75,7 @@ func TestListGeneric_FiltersByNamespace(t *testing.T) {
 }
 
 func TestExtractGenericStatus_PhasePreferred(t *testing.T) {
-	u := newUnstructured("apps", "v1", "Foo", "ns", "name", time.Hour, map[string]interface{}{
+	u := newUnstructured("apps", "Foo", "ns", "name", time.Hour, map[string]interface{}{
 		"phase": "Running",
 		"conditions": []interface{}{
 			map[string]interface{}{"type": "Ready", "status": "False", "reason": "ShouldNotShow"},
@@ -85,7 +85,7 @@ func TestExtractGenericStatus_PhasePreferred(t *testing.T) {
 }
 
 func TestExtractGenericStatus_ReadyTrue(t *testing.T) {
-	u := newUnstructured("apps", "v1", "Foo", "ns", "name", time.Hour, map[string]interface{}{
+	u := newUnstructured("apps", "Foo", "ns", "name", time.Hour, map[string]interface{}{
 		"conditions": []interface{}{
 			map[string]interface{}{"type": "Progressing", "status": "True"},
 			map[string]interface{}{"type": "Ready", "status": "True"},
@@ -95,7 +95,7 @@ func TestExtractGenericStatus_ReadyTrue(t *testing.T) {
 }
 
 func TestExtractGenericStatus_ReadyFalseWithReason(t *testing.T) {
-	u := newUnstructured("apps", "v1", "Foo", "ns", "name", time.Hour, map[string]interface{}{
+	u := newUnstructured("apps", "Foo", "ns", "name", time.Hour, map[string]interface{}{
 		"conditions": []interface{}{
 			map[string]interface{}{"type": "Ready", "status": "False", "reason": "Pending"},
 		},
@@ -104,12 +104,12 @@ func TestExtractGenericStatus_ReadyFalseWithReason(t *testing.T) {
 }
 
 func TestExtractGenericStatus_NoSignal(t *testing.T) {
-	u := newUnstructured("apps", "v1", "Foo", "ns", "name", time.Hour, nil)
+	u := newUnstructured("apps", "Foo", "ns", "name", time.Hour, nil)
 	assert.Empty(t, extractGenericStatus(*u))
 }
 
 func TestExtractGenericStatus_FirstTrueConditionFallback(t *testing.T) {
-	u := newUnstructured("apps", "v1", "Foo", "ns", "name", time.Hour, map[string]interface{}{
+	u := newUnstructured("apps", "Foo", "ns", "name", time.Hour, map[string]interface{}{
 		"conditions": []interface{}{
 			map[string]interface{}{"type": "Synced", "status": "True"},
 		},

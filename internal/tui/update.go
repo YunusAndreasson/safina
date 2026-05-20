@@ -67,7 +67,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// title, and persist. The load fires from the cache-miss check below.
 		focus := msg.Path[len(msg.Path)-1]
 		debug.Log("tree.focus",
-			"kind", string(focus.Kind),
+			"kind", focus.Kind,
 			"name", focus.Name,
 			"namespace", focus.Namespace,
 			"depth", len(msg.Path))
@@ -127,14 +127,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sections.TreeChildrenLoadedMsg:
 		m.tree.Loading = false
-		m.tree.Refreshing = false
+		m.tree.FinishRefresh()
 		focus := msg.Path[len(msg.Path)-1]
 		if msg.Err != nil {
 			if isCtxDone(msg.Err) {
-				debug.Log("tree.load_canceled", "kind", string(focus.Kind), "name", focus.Name)
+				debug.Log("tree.load_canceled", "kind", focus.Kind, "name", focus.Name)
 				return m, nil
 			}
-			debug.Errf("tree.load_failed", "kind", string(focus.Kind), "name", focus.Name, "err", msg.Err.Error())
+			debug.Errf("tree.load_failed", "kind", focus.Kind, "name", focus.Name, "err", msg.Err.Error())
 			// Record on the tree so the body can show a retry hint inline
 			// (P4.5: distinguish "load failed" from "API returned empty"),
 			// AND raise the global banner so an error during a background
@@ -147,7 +147,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.lastRefresh = time.Now()
 		actCmd := m.syncSelection()
 		debug.Log("tree.loaded",
-			"kind", string(focus.Kind),
+			"kind", focus.Kind,
 			"name", focus.Name,
 			"children", childCount(msg.Children))
 		return m, actCmd
@@ -381,9 +381,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var healthCmd tea.Cmd
 		if m.focused && m.state == stateMain && m.ctx.ActiveContext != "" &&
 			m.tree.Focus().Kind != k8s.KindContextList {
-			m.tree.Refreshing = true
+			m.tree.StartRefresh()
 			cmd = m.loadTreeFocus()
-			debug.Log("refresh.tick", "context", m.ctx.ActiveContext, "focus", string(m.tree.Focus().Kind))
+			debug.Log("refresh.tick", "context", m.ctx.ActiveContext, "focus", m.tree.Focus().Kind)
 			// Piggyback the activity-tile re-fetch on the same tick when
 			// its own throttle has elapsed. Events change less often than
 			// the tree's row data, so the tile's NeedsRefresh check (15s)
@@ -546,8 +546,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case stateChatView:
 			cmd, _, _ := m.chat.Update(msg, m.ctx)
 			return m, cmd
+		default:
+			return m, nil
 		}
-		return m, nil
 
 	case tea.FocusMsg:
 		// The terminal regained focus — resume the work the blur handler
@@ -606,6 +607,46 @@ func (m *Model) sectionHasFilterFocus() bool {
 	case stateChatView:
 		// Chat is always "filter active" — every key is a textarea char.
 		return true
+	default:
+		return false
+	}
+}
+
+// isImmersiveSwitchKey reports whether the keystroke is one of the global
+// action verbs the tree pane responds to. When the operator is inside an
+// immersive workspace tab (logs/events/yaml/etc.) we want these to bounce
+// through returnToMain → handleTreeAction instead of being swallowed by
+// the section, so jumping logs→events doesn't require an Esc step. The
+// list mirrors the entries in handleTreeAction and the "global modal" keys
+// (Hot, Forwards, ClusterSwitch, Refresh, Chat, Configure, Help, palette)
+// that also do nothing inside a section's Update right now.
+func (m *Model) isImmersiveSwitchKey(msg tea.KeyPressMsg) bool {
+	k := m.ctx.Keys
+	switch {
+	case key.Matches(msg, k.Logs),
+		key.Matches(msg, k.Events),
+		key.Matches(msg, k.Describe),
+		key.Matches(msg, k.Shell),
+		key.Matches(msg, k.Delete),
+		key.Matches(msg, k.Scale),
+		key.Matches(msg, k.Rollback),
+		key.Matches(msg, k.Restart),
+		key.Matches(msg, k.Edit),
+		key.Matches(msg, k.Reveal),
+		key.Matches(msg, k.PortForward),
+		key.Matches(msg, k.Cordon),
+		key.Matches(msg, k.Drain),
+		key.Matches(msg, k.Hot),
+		key.Matches(msg, k.Forwards),
+		key.Matches(msg, k.ClusterSwitch),
+		key.Matches(msg, k.Refresh),
+		key.Matches(msg, k.Ask),
+		key.Matches(msg, k.Configure),
+		key.Matches(msg, k.Help):
+		return true
+	}
+	if msg.String() == ":" {
+		return true // palette
 	}
 	return false
 }
@@ -636,8 +677,10 @@ func tabActivationKey(tab sections.WorkspaceTab) (tea.KeyPressMsg, bool) {
 		// Ctrl+F: Text is empty for non-printable chords; the matcher reads
 		// Code + Mod.
 		return tea.KeyPressMsg{Code: 'f', Mod: tea.ModCtrl}, true
+	default:
+		// WSTabDrain — no discoverable activation hotkey.
+		return tea.KeyPressMsg{}, false
 	}
-	return tea.KeyPressMsg{}, false
 }
 
 // cycleWorkspaceTab moves to the next or previous tab in the workspace
@@ -727,6 +770,8 @@ func (m *Model) returnToMain() {
 	case stateChatView:
 		m.chat.SetFocus(false)
 		m.tree.Focused = true
+	default:
+		// Other immersive views (events, describe, etc.) don't need cleanup beyond resetting state.
 	}
 	m.state = stateMain
 }
@@ -754,11 +799,11 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Workspace tab quick-switch: when the workspace owns focus (any
 	// immersive tab is active, or the operator pressed Tab to peek),
 	// `1` jumps to Inspector and ←/→ cycle through the visible tabs.
-	// The Describe tab is reached by Esc-then-d from immersive tabs since
-	// `d` is consumed by section verbs while one of those tabs is active;
-	// the cluster picker's `i` (Chat) is also reachable only from stateMain
-	// since most immersive sections consume `i` as a literal character in
-	// their filters / inputs.
+	// Action keys (l/e/d/s/K/S/U/R/E/v/f/C/D) are hoisted out of the
+	// section's Update so the operator can jump immersive→immersive
+	// without the Esc bounce — they target the same tree selection that
+	// was live when we entered the section. The filter-focus guard keeps
+	// these letters typeable inside `/` queries.
 	if m.workspaceOwnsFocus() && !m.sectionHasFilterFocus() {
 		switch msg.String() {
 		case "1":
@@ -766,6 +811,20 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "left", "right":
 			return m.cycleWorkspaceTab(msg.String() == "right")
+		}
+		if m.isImmersiveSwitchKey(msg) {
+			// Bounce through stateMain so the section gets its standard
+			// teardown (log channel drain, chat focus reset, etc.) and
+			// the re-dispatch lands on the same global keymap a fresh
+			// tree-pane keypress would. We MUST clear peekWorkspace too —
+			// otherwise the recursive handleKey re-enters workspaceOwnsFocus
+			// via the peek flag, re-matches this branch, and stack-overflows.
+			// The follow-up action (e.g. opening Events) sets its own
+			// immersive state, which restores workspace-owns-focus via
+			// `m.state`, so the cleared peek doesn't lose anything.
+			m.returnToMain()
+			m.peekWorkspace = false
+			return m.handleKey(msg)
 		}
 	}
 
@@ -865,6 +924,9 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case stateBrowser:
 		return m.handleBrowser(msg)
+	default:
+		// stateMain / stateChatView — fall through to the post-switch dispatch
+		// (Chat textarea + global stateMain keymap below).
 	}
 
 	// Chat tab keystroke routing. When the Chat tab is the active workspace
@@ -951,7 +1013,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.ctx.ActiveContext != "" && m.tree.Focus().Kind != k8s.KindContextList {
 			m.tree.InvalidateFocus()
 			m.tree.Loading = true
-			m.tree.Refreshing = true
+			m.tree.StartRefresh()
 			return m, m.loadTreeFocus()
 		}
 		return m, nil
@@ -1841,6 +1903,8 @@ func (m *Model) handleConfirm(msg tea.KeyPressMsg) tea.Cmd {
 			m.drain.Reset(node, func() {}) // real cancel arrives via DrainStartedMsg
 			m.state = stateDrainProgress
 			return sections.StartDrain(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext, node)
+		default:
+			// Non-confirm states fall through to the post-switch reset.
 		}
 		m.state = stateMain
 		return nil

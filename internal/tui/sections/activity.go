@@ -216,7 +216,7 @@ func (a *Activity) renderBody(c *tuictx.Ctx, innerW, innerH int) string {
 	}
 
 	lines := make([]string, 0, rowCount)
-	for i := 0; i < rowCount; i++ {
+	for i := range rowCount {
 		e := a.items[i]
 		lines = append(lines, a.renderRow(t, e, ageW, dotW, reasonW, msgW))
 	}

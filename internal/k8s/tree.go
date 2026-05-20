@@ -114,7 +114,10 @@ func (h Health) Glyph() string {
 	case HealthDegraded:
 		return "⚠"
 	case HealthInProgress:
-		return "⏵"
+		// ↻ (clockwise open circle arrow) reads as "spinning/working" in
+		// nearly every monospaced font; the previous ⏵ rendered as a tiny
+		// triangle that operators kept confusing with random punctuation.
+		return "↻"
 	case HealthHealthy:
 		return "✓"
 	default:
@@ -597,6 +600,7 @@ func classifyDeploymentHealth(d appsv1.Deployment) Health {
 	if desired == 0 {
 		return HealthUnknown
 	}
+	available := corev1.ConditionUnknown
 	for _, c := range d.Status.Conditions {
 		if c.Type == appsv1.DeploymentReplicaFailure && c.Status == corev1.ConditionTrue {
 			return HealthFailing
@@ -607,8 +611,19 @@ func classifyDeploymentHealth(d appsv1.Deployment) Health {
 			// equally non-recoverable without operator intervention.
 			return HealthFailing
 		}
+		if c.Type == appsv1.DeploymentAvailable {
+			available = c.Status
+		}
 	}
 	ready := d.Status.ReadyReplicas
+	// Available=False with zero ready replicas means nothing's serving traffic
+	// — the controller has reported it explicitly. Don't sit on HealthInProgress
+	// for the full progressDeadlineSeconds (default 10 min) while pods crash-
+	// loop; promote to Failing so the row glyph matches the "Unavailable"
+	// headline the Inspector already shows.
+	if ready == 0 && available == corev1.ConditionFalse {
+		return HealthFailing
+	}
 	if ready == desired && d.Status.UpdatedReplicas == desired && d.Status.Replicas == desired {
 		return HealthHealthy
 	}
@@ -803,12 +818,12 @@ func listHPABadges(ctx context.Context, cs kubernetes.Interface, ns string) map[
 }
 
 func hpaV2ToBadge(h autoscalingv2.HorizontalPodAutoscaler) *HPABadge {
-	min := int32(0)
+	minReplicas := int32(0)
 	if h.Spec.MinReplicas != nil {
-		min = *h.Spec.MinReplicas
+		minReplicas = *h.Spec.MinReplicas
 	}
 	return &HPABadge{
-		Min:         min,
+		Min:         minReplicas,
 		Max:         h.Spec.MaxReplicas,
 		Current:     h.Status.CurrentReplicas,
 		PinnedAtMax: h.Status.CurrentReplicas == h.Spec.MaxReplicas && h.Spec.MaxReplicas > 0,
@@ -817,12 +832,12 @@ func hpaV2ToBadge(h autoscalingv2.HorizontalPodAutoscaler) *HPABadge {
 }
 
 func hpaV1ToBadge(h autoscalingv1.HorizontalPodAutoscaler) *HPABadge {
-	min := int32(0)
+	minReplicas := int32(0)
 	if h.Spec.MinReplicas != nil {
-		min = *h.Spec.MinReplicas
+		minReplicas = *h.Spec.MinReplicas
 	}
 	return &HPABadge{
-		Min:         min,
+		Min:         minReplicas,
 		Max:         h.Spec.MaxReplicas,
 		Current:     h.Status.CurrentReplicas,
 		PinnedAtMax: h.Status.CurrentReplicas == h.Spec.MaxReplicas && h.Spec.MaxReplicas > 0,
@@ -1332,6 +1347,8 @@ func (ch *ClusterHealth) addPod(p corev1.Pod) {
 		ch.PodsRunning++
 	case corev1.PodPending:
 		ch.PodsPending++
+	default:
+		// PodSucceeded/PodFailed/PodUnknown — counted as Total but not Running/Pending.
 	}
 	// CrashLoopBackOff lives at the container-status level, not pod phase.
 	// A pod that is Running but has a container in CLB is the classic

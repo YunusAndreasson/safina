@@ -237,7 +237,7 @@ func TestE2E_FullDrillAndCommandsOnPod(t *testing.T) {
 	// In the namespace view we see fold rows (Workloads, Config, …).
 	// Walk until we find the Workloads fold, drill in, and there we land
 	// on apps.
-	for hops := 0; hops < 20; hops++ {
+	for range 20 {
 		ref := m.tree.SelectedRef()
 		if ref.Kind == k8s.KindWorkloadsFold {
 			break

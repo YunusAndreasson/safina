@@ -28,6 +28,7 @@ func ChatSuggestionsForRef(ref NodeRef) []string {
 			return []string{
 				"what is this pod waiting on?",
 			}
+		default:
 		}
 	case k8s.KindApp:
 		switch ref.Health {
@@ -46,6 +47,7 @@ func ChatSuggestionsForRef(ref NodeRef) []string {
 			return []string{
 				"how is the rollout going?",
 			}
+		default:
 		}
 	case k8s.KindNode, k8s.KindNodePool:
 		switch ref.Health {
@@ -54,6 +56,7 @@ func ChatSuggestionsForRef(ref NodeRef) []string {
 				"why is this node not ready?",
 				"what's pressuring this node?",
 			}
+		default:
 		}
 	case k8s.KindContext:
 		// Cluster picker — no resource yet, but a good "where do I start?"

@@ -20,7 +20,7 @@ import (
 func TestHealth_Glyph(t *testing.T) {
 	assert.Equal(t, "✗", HealthFailing.Glyph())
 	assert.Equal(t, "⚠", HealthDegraded.Glyph())
-	assert.Equal(t, "⏵", HealthInProgress.Glyph())
+	assert.Equal(t, "↻", HealthInProgress.Glyph())
 	assert.Equal(t, "✓", HealthHealthy.Glyph())
 	assert.Equal(t, "…", HealthUnknown.Glyph())
 	assert.Equal(t, "…", Health(99).Glyph())
@@ -672,10 +672,10 @@ func TestLabelsMatch(t *testing.T) {
 // ── HPA badge ─────────────────────────────────────────────────────────
 
 func TestHPAV2ToBadge(t *testing.T) {
-	min := int32(2)
+	minReplicas := int32(2)
 	h := autoscalingv2.HorizontalPodAutoscaler{
 		Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
-			MinReplicas: &min,
+			MinReplicas: &minReplicas,
 			MaxReplicas: 10,
 		},
 		Status: autoscalingv2.HorizontalPodAutoscalerStatus{
@@ -690,10 +690,10 @@ func TestHPAV2ToBadge(t *testing.T) {
 }
 
 func TestHPAV2ToBadge_NotPinned(t *testing.T) {
-	min := int32(1)
+	minReplicas := int32(1)
 	h := autoscalingv2.HorizontalPodAutoscaler{
 		Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
-			MinReplicas: &min,
+			MinReplicas: &minReplicas,
 			MaxReplicas: 10,
 		},
 		Status: autoscalingv2.HorizontalPodAutoscalerStatus{

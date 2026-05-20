@@ -255,12 +255,9 @@ func (b *Browser) View(c *tuictx.Ctx, termW, termH int) string {
 		listRows = 6
 	}
 
-	prompt := lipgloss.NewStyle().Foreground(t.P.Cyan).Bold(true).Render("›")
-	queryStyle := lipgloss.NewStyle().Foreground(t.P.FG)
-	cursor := lipgloss.NewStyle().Foreground(t.P.FG).Reverse(true).Render(" ")
-	input := prompt + " " + queryStyle.Render(b.query) + cursor
+	input := components.SearchPromptRow(t, b.query)
 
-	header := lipgloss.NewStyle().Foreground(t.P.Dim).Italic(true).Render(
+	header := t.Hint.Render(
 		"every resource the cluster exposes — toggle which appear as folds in your tree",
 	)
 
@@ -291,8 +288,7 @@ func (b *Browser) View(c *tuictx.Ctx, termW, termH int) string {
 func (b *Browser) renderList(c *tuictx.Ctx, w, rows int) string {
 	t := c.Theme
 	if len(b.matches) == 0 {
-		return lipgloss.NewStyle().Foreground(t.P.Dim).Italic(true).
-			Render("  no matches")
+		return t.Hint.Render("  no matches")
 	}
 	start := 0
 	end := len(b.matches)

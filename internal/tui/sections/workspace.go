@@ -127,24 +127,15 @@ func WorkspaceTabHitboxes(tabs []WorkspaceTab, w int) []TabHitbox {
 	if len(tabs) == 0 {
 		return nil
 	}
-	// Mirror RenderWorkspaceTabStrip's layout: each tab's rendered label is
-	// "❯ Label" for the active tab and "Label" for others, joined by a 3-cell
-	// separator. For hit-testing we treat the active tab's "❯ " prefix as part
-	// of its label so the X0..X1 range catches clicks on the cursor glyph too.
+	// Mirror RenderWorkspaceTabStrip's layout: every tab renders as plain
+	// "Label" joined by a 3-cell separator. Active vs idle is signaled by
+	// color/weight only — no cursor glyph — so segment widths are the same
+	// for both states and we don't need the `active` argument here.
 	const sepW = 3
 	hits := make([]TabHitbox, 0, len(tabs))
 	pos := 0
 	for i, tab := range tabs {
-		label := tab.Label()
-		// Style/render width matches RenderWorkspaceTabStrip: active tab adds
-		// "❯ " (2 cells), inactive tabs are plain. We don't actually pick the
-		// active styling here — the *width* is identical either way for hit
-		// purposes because both render the literal label glyphs; we approximate
-		// with the inactive width to avoid a circular dep on `active`. The
-		// 2-cell delta on the active tab makes its hit zone 2 wider than
-		// strictly accurate, which is the friendlier failure mode (slightly
-		// generous click target on the focused tab).
-		segW := lipgloss.Width(label)
+		segW := lipgloss.Width(tab.Label())
 		hits = append(hits, TabHitbox{Tab: tab, X0: pos, X1: pos + segW})
 		pos += segW
 		if i < len(tabs)-1 {
@@ -167,23 +158,27 @@ func WorkspaceTabHitboxes(tabs []WorkspaceTab, w int) []TabHitbox {
 }
 
 // RenderWorkspaceTabStrip renders the tab strip — a one-row band where
-// the active tab is bright cyan-bold prefixed with ❯, inactive tabs are
-// dim, and the line as a whole serves as the panel's first content row.
-// Width-aware: if tabs would overflow, drops trailing tabs and appends "…".
+// the active tab is bright cyan-bold and inactive tabs are dim. The line
+// as a whole serves as the panel's first content row. Width-aware: if
+// tabs would overflow, drops trailing tabs and appends "…".
+//
+// No cursor glyph on the active tab: a pink "❯" prefix used to mark the
+// active tab, but it read as a row-selection cursor (the convention this
+// app uses in lists like portforwards) and confused users about which
+// affordance the chevron meant. Color + weight do the job on their own.
 func RenderWorkspaceTabStrip(t *theme.Theme, tabs []WorkspaceTab, active WorkspaceTab, w int) string {
 	if len(tabs) == 0 {
 		return ""
 	}
 	activeStyle := lipgloss.NewStyle().Foreground(t.P.Cyan).Bold(true)
 	idleStyle := lipgloss.NewStyle().Foreground(t.P.FGFade)
-	arrowStyle := lipgloss.NewStyle().Foreground(t.P.Pink).Bold(true)
 	sepStyle := lipgloss.NewStyle().Foreground(t.P.Dim)
 
 	parts := make([]string, 0, len(tabs))
 	for _, tab := range tabs {
 		label := tab.Label()
 		if tab == active {
-			parts = append(parts, arrowStyle.Render("❯ ")+activeStyle.Render(label))
+			parts = append(parts, activeStyle.Render(label))
 		} else {
 			parts = append(parts, idleStyle.Render(label))
 		}
@@ -263,9 +258,11 @@ func RenderInspectorTab(c *tuictx.Ctx, w, h int, inspector *Inspector, activity 
 	if h < 6 {
 		return inspector.View(c, w, h)
 	}
-	// Top: Inspector — content-bounded, capped at 13 rows so a tall workspace
-	// doesn't pad a metadata snapshot with empty space.
-	const inspMax = 13
+	// Top: Inspector — content-bounded, capped so a tall workspace doesn't
+	// pad a metadata snapshot with empty space. The cap is sized to fit
+	// title + status + LIVE USAGE (4 rows) + one typical metadata section,
+	// trusting Activity to absorb the rest of the height.
+	const inspMax = 17
 	inspH := h * 38 / 100
 	if inspH > inspMax {
 		inspH = inspMax

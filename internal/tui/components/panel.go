@@ -45,7 +45,7 @@ func PanelWithAccent(t *theme.Theme, title string, w, h int, content string, foc
 	}
 
 	if !focused {
-		return renderFlatPanel(t, title, w, h, content, t.P.Dim, t.P.Dim)
+		return renderFlatPanel(title, w, h, content, t.P.Dim, t.P.Dim)
 	}
 
 	b := lipgloss.ThickBorder()
@@ -72,12 +72,12 @@ func PanelWithAccent(t *theme.Theme, title string, w, h int, content string, foc
 	// [leadDashes+1, leadDashes+titleW] and keeps its semantic color.
 	var topB strings.Builder
 	topB.WriteString(colorCell(topGrad[0], b.TopLeft))
-	for i := 0; i < leadDashes; i++ {
+	for i := range leadDashes {
 		topB.WriteString(colorCell(topGrad[1+i], b.Top))
 	}
 	topB.WriteString(titleSeg)
 	startAfter := 1 + leadDashes + titleW
-	for i := 0; i < dashesAfterTitle; i++ {
+	for i := range dashesAfterTitle {
 		idx := startAfter + i
 		if idx >= len(topGrad) {
 			idx = len(topGrad) - 1
@@ -104,7 +104,7 @@ func PanelWithAccent(t *theme.Theme, title string, w, h int, content string, foc
 	lines := strings.Split(content, "\n")
 	out := make([]string, 0, h)
 	out = append(out, top)
-	for i := 0; i < innerH; i++ {
+	for i := range innerH {
 		var ln string
 		if i < len(lines) {
 			ln = lines[i]
@@ -132,7 +132,7 @@ func PanelWithAccent(t *theme.Theme, title string, w, h int, content string, foc
 // renderFlatPanel is the blurred-panel fast path: a single foreground color
 // for the whole border, no per-cell styling. Same shape as PanelWithAccent
 // pre-gradient; kept separate so the focused path can stay readable.
-func renderFlatPanel(t *theme.Theme, title string, w, h int, content string, borderColor, titleColor color.Color) string {
+func renderFlatPanel(title string, w, h int, content string, borderColor, titleColor color.Color) string {
 	b := lipgloss.RoundedBorder()
 	border := lipgloss.NewStyle().Foreground(borderColor)
 	titleStyle := lipgloss.NewStyle().Foreground(titleColor)
@@ -157,7 +157,7 @@ func renderFlatPanel(t *theme.Theme, title string, w, h int, content string, bor
 	lines := strings.Split(content, "\n")
 	out := make([]string, 0, h)
 	out = append(out, top)
-	for i := 0; i < innerH; i++ {
+	for i := range innerH {
 		var ln string
 		if i < len(lines) {
 			ln = lines[i]

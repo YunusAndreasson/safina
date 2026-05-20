@@ -2,7 +2,7 @@ package k8s
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"sort"
 	"strings"
 
@@ -33,7 +33,7 @@ type GenericResource struct {
 // silently degrade.
 func ListGeneric(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersionResource, namespace string) ([]GenericResource, error) {
 	if dyn == nil {
-		return nil, fmt.Errorf("dynamic client unavailable")
+		return nil, errors.New("dynamic client unavailable")
 	}
 	var lister dynamic.ResourceInterface
 	if namespace == "" {

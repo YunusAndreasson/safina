@@ -114,7 +114,7 @@ func (c *Connected) View(ctx *tuictx.Ctx, w, h int) string {
 	body := c.renderBody(ctx, components.PanelContentWidth(w), h-2)
 	title := "Connected"
 	if c.snap.loading {
-		title = "Connected · " + ctx.Spinner.View() + " loading"
+		title = "Connected · " + ctx.Spinner.View() + " loading…"
 	}
 	return components.PanelWithAccent(t, title, w, h, body, false, t.P.Pink, t.P.Pink)
 }
@@ -166,7 +166,7 @@ func (c *Connected) renderGroups(t *theme.Theme, innerW int) []string {
 	}
 	if len(s.uses) == 0 && len(s.usedBy) == 0 && !s.loading && s.err == nil {
 		parts = append(parts, "")
-		parts = append(parts, t.DimTxt.Italic(true).Render(truncate("— no references found —", innerW)))
+		parts = append(parts, t.Hint.Render(truncate("— no references found —", innerW)))
 	}
 	return parts
 }
@@ -180,7 +180,7 @@ func renderConnectedRow(t *theme.Theme, r k8s.ConnectedRef, innerW int) string {
 		glyph = "·"
 	}
 	nameStyle := lipgloss.NewStyle().Foreground(t.P.FG)
-	reasonStyle := lipgloss.NewStyle().Foreground(t.P.Dim).Italic(true)
+	reasonStyle := t.Hint
 	glyphStyle := lipgloss.NewStyle().Foreground(t.P.Dim)
 
 	left := glyphStyle.Render(glyph) + " " + nameStyle.Render(r.Name)

@@ -28,7 +28,7 @@ func TestStreamPodContainerLogs_NoGoroutineLeakOnDrop(t *testing.T) {
 
 	baseline := goroutineCount()
 
-	for i := 0; i < 30; i++ {
+	for i := range 30 {
 		ctx, cancel := context.WithCancel(context.Background())
 		ch := make(chan PodLogEvent)
 		go StreamPodContainerLogs(ctx, cs, "ns", "p", "", false, ch)
@@ -85,7 +85,7 @@ func dumpGoroutines() string {
 
 func indexNthLine(s string, n int) int {
 	count := 0
-	for i := 0; i < len(s); i++ {
+	for i := range len(s) {
 		if s[i] == '\n' {
 			count++
 			if count == n {

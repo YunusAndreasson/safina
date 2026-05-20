@@ -76,10 +76,7 @@ func renderUnifiedDiff(t *theme.Theme, orig, edited []byte) string {
 	}
 	if truncated {
 		more := len(body) - diffMaxLines
-		out = append(out, lipgloss.NewStyle().
-			Foreground(t.P.Dim).
-			Italic(true).
-			Render(fmt.Sprintf("… %d more line(s)", more)))
+		out = append(out, t.Hint.Render(fmt.Sprintf("… %d more line(s)", more)))
 	}
 	return strings.Join(out, "\n")
 }

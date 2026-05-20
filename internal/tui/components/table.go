@@ -96,13 +96,6 @@ func GapTotal(numCols int) int {
 // EdgeTotal is the total width reserved for row edge padding (both sides).
 func EdgeTotal() int { return 2 * edgePad }
 
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
 // VisibleRange returns [start, end) indices given a cursor and a fixed window.
 // Keeps the cursor centered when possible.
 func VisibleRange(cursor, total, maxRows int) (int, int) {

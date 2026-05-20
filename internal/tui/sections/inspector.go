@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"image/color"
+	"strconv"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -76,6 +77,13 @@ type inspectorSnapshot struct {
 	// inspector reads as a structured card, not a flat key/value dump.
 	sections []inspectorSection
 
+	// live carries the inline CPU/MEM trend pair. Populated for Pod/App
+	// selections that have at least one buffered sample in the tree's
+	// metric history; nil otherwise (the renderer skips the block). The
+	// buffer pointers alias the tree's rolling store, so the wide
+	// sparkline always reads the freshest samples without rebuild.
+	live *inspectorLive
+
 	// loading indicates a detail fetch is in flight. The renderer adds
 	// a dim spinner suffix to the title so the operator knows
 	// enrichment is coming.
@@ -97,6 +105,24 @@ type inspectorRow struct {
 	// emphasis: "name" → bold-fg, "dim" → dim-fg, "good"/"warn"/"bad"
 	// → semantic color. Empty → plain fg.
 	emphasis string
+}
+
+// inspectorLive bundles the per-selection metric trend rendered as a
+// two-row block in the Inspector. cpuBuf / memBuf alias the tree's
+// rolling buffers so the sparkline reads live samples on every render.
+// curCPU/curMem are the latest list-call readings. cpuReqMilli /
+// cpuLimMilli / memReqBytes / memLimBytes are the configured per-pod
+// (or per-replica) requests/limits, used to annotate the spark with the
+// budget the operator set; zero means "not configured."
+type inspectorLive struct {
+	cpuBuf      *components.MetricBuffer
+	memBuf      *components.MetricBuffer
+	curCPU      int64
+	curMem      int64
+	cpuReqMilli int64
+	cpuLimMilli int64
+	memReqBytes int64
+	memLimBytes int64
 }
 
 // NewInspector constructs an empty inspector.
@@ -179,7 +205,7 @@ func (i *Inspector) View(c *tuictx.Ctx, w, h int) string {
 	body := i.renderBody(c, components.PanelContentWidth(w), h-2)
 	title := "Inspector"
 	if i.snap.loading {
-		title = "Inspector · " + c.Spinner.View() + " loading"
+		title = "Inspector · " + c.Spinner.View() + " loading…"
 	}
 	return components.PanelWithAccent(t, title, w, h, body, false, t.P.Cyan, t.P.Dim)
 }
@@ -188,6 +214,10 @@ func (i *Inspector) renderBody(c *tuictx.Ctx, innerW, innerH int) string {
 	t := c.Theme
 	s := i.snap
 
+	// Identity group: title + subtitle + status form a single visual unit —
+	// no blank lines between them. The typographic register (bold name,
+	// dim subtitle, colored status) carries the Gestalt grouping; vertical
+	// gaps would just push the eye to read them as three separate things.
 	parts := []string{
 		t.NameStrong.Render(truncate(s.title, innerW)),
 	}
@@ -198,17 +228,57 @@ func (i *Inspector) renderBody(c *tuictx.Ctx, innerW, innerH int) string {
 		parts = append(parts, statusLine(t, s.statusText, s.statusKind, innerW))
 	}
 
+	// Live trends sit immediately under the identity strip — same visual
+	// unit as "what is this thing right now." The cpu/mem row labels are
+	// self-identifying; an explicit "LIVE USAGE" header just adds noise and
+	// breaks proximity between status and trend.
+	if s.live != nil {
+		parts = append(parts, renderLiveMetric(t, "cpu", s.live, true, innerW))
+		parts = append(parts, renderLiveMetric(t, "mem", s.live, false, innerW))
+	}
+
+	// Global label width — every detail row across every section right-pads
+	// its label to the same cell count, creating a strong vertical edge
+	// where the "value column" begins. Without this, each section computed
+	// its own widestLabel and the value column zigzagged section-to-section.
+	labelW := globalInspectorLabelW(s.sections)
+
+	// Sections are appended whole — if one wouldn't fit (divider + at least
+	// one row) we skip it entirely. Truncating mid-section leaves a lonely
+	// header line that reads as a render bug rather than progressive
+	// disclosure. We reserve room at the tail for the optional error line
+	// so an enrichment failure always has space to surface.
+	errReserve := 0
+	if s.err != nil {
+		errReserve = 2 // blank + error line
+	}
+	// Sections are separated only by a blank line — Gestalt proximity does
+	// the grouping work. Headers like "rollout" / "images" / "runtime" are
+	// redundant when the rows are self-labeling (`replicas`, `image`,
+	// `pod IP` already tell the eye what group they belong to), and a
+	// dim rule on every section adds chrome that fights with the data.
+	// Whole-or-nothing: skip a section that can't fit at least one row,
+	// so the tail never lands on a stub.
 	for _, sec := range s.sections {
 		if len(sec.rows) == 0 {
 			continue
 		}
-		parts = append(parts, "")
-		if sec.title != "" {
-			parts = append(parts, t.DimBold.Render(strings.ToUpper(sec.title)))
+		need := 1 + len(sec.rows) // blank + rows
+		minNeed := 1 + 1          // blank + at least 1 row
+		remaining := innerH - len(parts) - errReserve
+		if remaining < minNeed {
+			break
 		}
-		labelW := widestLabel(sec.rows)
-		for _, r := range sec.rows {
-			parts = append(parts, renderInspectorRow(t, r, labelW, innerW))
+		parts = append(parts, "")
+		maxRows := len(sec.rows)
+		if need > remaining {
+			maxRows = remaining - 1
+		}
+		for i := range maxRows {
+			parts = append(parts, renderInspectorRow(t, sec.rows[i], labelW, innerW))
+		}
+		if maxRows < len(sec.rows) {
+			break
 		}
 	}
 
@@ -224,11 +294,17 @@ func (i *Inspector) renderBody(c *tuictx.Ctx, innerW, innerH int) string {
 	return strings.Join(parts, "\n")
 }
 
-func widestLabel(rows []inspectorRow) int {
+// globalInspectorLabelW returns the widest label across every section's
+// rows, so every value column starts at the same cell. Caps at 12 to
+// keep the value column from being pushed too far right on narrow panes
+// — same cap widestLabel used for the per-section calculation.
+func globalInspectorLabelW(secs []inspectorSection) int {
 	w := 0
-	for _, r := range rows {
-		if lw := lipgloss.Width(r.label); lw > w {
-			w = lw
+	for _, sec := range secs {
+		for _, r := range sec.rows {
+			if lw := lipgloss.Width(r.label); lw > w {
+				w = lw
+			}
 		}
 	}
 	if w > 12 {
@@ -256,9 +332,180 @@ func emphasisColor(t *theme.Theme, kind string) color.Color {
 	return t.P.FGFade
 }
 
+// statusLine paints the headline status under the identity strip. Color
+// hierarchy: the saturated colors and bold weight are reserved for warn /
+// bad — the states that *demand* eye-fall. "good" steady states are
+// rendered dim italic, mirroring the same affirmation-suppression
+// principle used for "Running" in the status glyph (the resource is fine;
+// shouting that fact every refresh just trains the eye to ignore the line).
 func statusLine(t *theme.Theme, text, kind string, innerW int) string {
-	return lipgloss.NewStyle().Foreground(emphasisColor(t, kind)).Bold(true).
-		Render(truncate(text, innerW))
+	text = truncate(text, innerW)
+	if kind == "good" {
+		return t.Hint.Render(text)
+	}
+	return lipgloss.NewStyle().Foreground(emphasisColor(t, kind)).Bold(true).Render(text)
+}
+
+// liveValueCellW is the joint width for the current-value sub-column —
+// sized for the worst typical reading across both kinds ("9999m" for
+// CPU, "1024Mi" for memory), so the cpu and mem rows share a single
+// value-edge instead of misaligning by one cell.
+const liveValueCellW = 6
+
+// liveValueAnnoGap is the breathing room between the current value and
+// the req/lim annotation. Wider than a single space so the eye reads
+// "value" and "[config]" as two separate sub-columns instead of one
+// dotted chain ("9m · 5m req · 20m lim" was unreadable as a hierarchy).
+const liveValueAnnoGap = 4
+
+// liveRightBlockW is the *fixed* cell budget reserved for the right side
+// (value + optional " · req · lim" annotation) of every LIVE USAGE row.
+// Chosen to fit the common case without grow-shrink across selections:
+//
+//	"1024Mi · 1024Mi req · 2048Mi lim"  → 31 cells
+//
+// Always returning a constant guarantees the sparkline width is invariant
+// across cpu↔mem rows, across resources (with vs without configured
+// req/lim), and across refreshes (no digits-change shift). Resources
+// whose req/lim string doesn't fit are truncated rather than allowed to
+// push the spark inward — keeping the spark stable wins over preserving
+// every character of static config text (the same numbers also appear
+// uncut in the "resources (configured)" section below).
+const liveRightBlockW = 32
+
+// renderLiveMetric paints one row of the LIVE USAGE block: label, wide
+// history sparkline, current value, optional req/limit annotation. The
+// sparkline width is derived from the *constant* liveRightBlockW — never
+// from this frame's content — so the spark edge is invariant across:
+//
+//   - refreshes (value digit changes don't shift it)
+//   - rows (cpu ↔ mem stay column-aligned)
+//   - selections (a pod with no configured req/lim shows the same spark
+//     width as one with budgets configured)
+//
+// Resources whose req/lim text would overflow the budget get truncated
+// with an ellipsis — the same numbers appear uncut in the "resources
+// (configured)" section a few lines down, so we don't lose information.
+// The trend window adapts to retained history via SparklineFull's
+// bucket-aggregation: a fresh session shows minutes; one left running
+// shows hours.
+func renderLiveMetric(t *theme.Theme, kind string, live *inspectorLive, isCPU bool, innerW int) string {
+	const labelW = 4 // "cpu " / "mem "
+	const gap = 1
+	label := t.DimTxt.Width(labelW).Render(kind)
+
+	var buf *components.MetricBuffer
+	var cur int64
+	var reqLim string
+	var curStr string
+	if isCPU {
+		buf, cur = live.cpuBuf, live.curCPU
+		curStr = k8s.FormatCPU(cur)
+		if live.cpuReqMilli > 0 || live.cpuLimMilli > 0 {
+			reqLim = formatReqLim(live.cpuReqMilli, live.cpuLimMilli, "cpu")
+		}
+	} else {
+		buf, cur = live.memBuf, live.curMem
+		curStr = k8s.FormatMem(cur)
+		if live.memReqBytes > 0 || live.memLimBytes > 0 {
+			reqLim = formatReqLim(live.memReqBytes, live.memLimBytes, "mem")
+		}
+	}
+
+	// The right block is two sub-columns: the value (worst-case-padded so
+	// cpu↔mem rows share an edge) and the req/lim annotation, separated
+	// by a fixed whitespace gap. No "·" between them — the gap is a
+	// stronger Gestalt separator than a dotted character, and reads as
+	// "headline value [config context]" instead of one number chain.
+	valPad := liveValueCellW - lipgloss.Width(curStr)
+	if valPad < 0 {
+		valPad = 0
+	}
+	valStyled := lipgloss.NewStyle().Foreground(t.P.FG).Render(curStr)
+	valSlot := strings.Repeat(" ", valPad) + valStyled
+
+	// Annotation sub-column: liveRightBlockW − value − gap, right-aligned
+	// inside its own slot so its right edge lands at the panel's right
+	// edge regardless of req/lim content length.
+	annoSlotW := liveRightBlockW - liveValueCellW - liveValueAnnoGap
+	if annoSlotW < 0 {
+		annoSlotW = 0
+	}
+	var annoSlot string
+	if reqLim != "" && annoSlotW > 0 {
+		annotation := reqLim
+		if lipgloss.Width(annotation) > annoSlotW {
+			annotation = truncate(annotation, annoSlotW)
+		}
+		pad := annoSlotW - lipgloss.Width(annotation)
+		if pad < 0 {
+			pad = 0
+		}
+		annoSlot = strings.Repeat(" ", pad) + t.DimTxt.Render(annotation)
+	} else {
+		annoSlot = strings.Repeat(" ", annoSlotW)
+	}
+
+	right := valSlot + strings.Repeat(" ", liveValueAnnoGap) + annoSlot
+
+	sparkW := innerW - labelW - gap - liveRightBlockW - gap
+	if sparkW < 8 {
+		sparkW = 8
+	}
+	spark := components.SparklineFull(t, buf, sparkW, lipgloss.NewStyle())
+
+	return label + spark + strings.Repeat(" ", gap) + right
+}
+
+// attachPodLive populates the LIVE USAGE block for a pod selection.
+// Pulls the live sparkline buffer from the tree (shared pointer — keeps
+// updating on subsequent refreshes) and the configured requests/limits
+// from the detail fetch when it has landed. No-op when no samples yet.
+func attachPodLive(s *inspectorSnapshot, tr *Tree, p k8s.PodInfo, det *inspectorDetail) {
+	cpuBuf, memBuf := tr.MetricSeriesFor(k8s.KindPod, p.Namespace, p.Name)
+	if cpuBuf == nil && memBuf == nil {
+		return
+	}
+	live := &inspectorLive{
+		cpuBuf: cpuBuf,
+		memBuf: memBuf,
+		curCPU: p.CPU,
+		curMem: p.Memory,
+	}
+	if det != nil && det.pod != nil {
+		d := det.pod
+		live.cpuReqMilli = d.CPURequestMilli
+		live.cpuLimMilli = d.CPULimitMilli
+		live.memReqBytes = d.MemRequestBytes
+		live.memLimBytes = d.MemLimitBytes
+	}
+	s.live = live
+}
+
+// attachAppLive populates the LIVE USAGE block for an App selection. The
+// row's CPU/Memory are a sum across the workload's pods; the configured
+// per-replica request/limit (when the detail fetch returned) is reported
+// next to the current value so the operator reads "we're at X, replica
+// budget is Y" without leaving the panel.
+func attachAppLive(s *inspectorSnapshot, tr *Tree, a k8s.AppInfo, det *inspectorDetail) {
+	cpuBuf, memBuf := tr.MetricSeriesFor(k8s.KindApp, a.Namespace, a.Name)
+	if cpuBuf == nil && memBuf == nil {
+		return
+	}
+	live := &inspectorLive{
+		cpuBuf: cpuBuf,
+		memBuf: memBuf,
+		curCPU: a.CPU,
+		curMem: a.Memory,
+	}
+	if det != nil && det.app != nil {
+		d := det.app
+		live.cpuReqMilli = d.CPURequestMilli
+		live.cpuLimMilli = d.CPULimitMilli
+		live.memReqBytes = d.MemRequestBytes
+		live.memLimBytes = d.MemLimitBytes
+	}
+	s.live = live
 }
 
 func renderInspectorRow(t *theme.Theme, r inspectorRow, labelW, innerW int) string {
@@ -268,14 +515,14 @@ func renderInspectorRow(t *theme.Theme, r inspectorRow, labelW, innerW int) stri
 		valueW = 4
 	}
 	valStyle := lipgloss.NewStyle().Foreground(emphasisColor(t, r.emphasis))
-	// "name" is the only emphasis that pulls bold; everything else (including
-	// the default plain-FG path) reads at normal weight so emphasised values
-	// don't fight the row label.
+	// Bold is reserved for outlier states only. "name" emphasis appears 30+
+	// times across a typical Pod/Deployment inspector — making each one bold
+	// trains the eye to ignore the weight, defeating its purpose. The FG vs
+	// Dim contrast against the label column already distinguishes "value"
+	// from "label"; bold is held in reserve for warn/bad rows.
 	switch r.emphasis {
-	case "name":
+	case "warn", "bad":
 		valStyle = valStyle.Bold(true)
-	case "", "good", "warn", "bad", "dim":
-		// no extra weight; emphasisColor already picked the right hue.
 	}
 	// Plain default needs a real FG (emphasisColor returns FGFade for unknown
 	// kinds, which is the headline default but too soft for row values).
@@ -303,11 +550,15 @@ func (i *Inspector) buildSnapshot(tr *Tree, ref NodeRef, det *inspectorDetail) *
 	switch ref.Kind {
 	case k8s.KindApp:
 		if a, ok := tr.SelectedAppInfo(); ok {
-			return inspectAppSnap(a, det)
+			snap := inspectAppSnap(a, det)
+			attachAppLive(snap, tr, a, det)
+			return snap
 		}
 	case k8s.KindPod:
 		if p, ok := tr.SelectedPodInfo(); ok {
-			return inspectPodSnap(p, det)
+			snap := inspectPodSnap(p, det)
+			attachPodLive(snap, tr, p, det)
+			return snap
 		}
 	case k8s.KindNode:
 		if n, ok := tr.SelectedNodeInfo(); ok {
@@ -571,12 +822,13 @@ func inspectServiceSnap(svc k8s.ServiceInfo, det *inspectorDetail) *inspectorSna
 		} else {
 			rows = append(rows, inspectorRow{label: "selector", value: "(none)", emphasis: "dim"})
 		}
-		endpointKind := ""
-		if d.EndpointCount == 0 {
+		var endpointKind string
+		switch {
+		case d.EndpointCount == 0:
 			endpointKind = "bad"
-		} else if d.ReadyEndpointCount < d.EndpointCount {
+		case d.ReadyEndpointCount < d.EndpointCount:
 			endpointKind = "warn"
-		} else {
+		default:
 			endpointKind = "good"
 		}
 		rows = append(rows, inspectorRow{
@@ -611,7 +863,7 @@ func inspectIngressSnap(ing k8s.IngressInfo, det *inspectorDetail) *inspectorSna
 	if det != nil && det.ingress != nil {
 		d := det.ingress
 		rows := []inspectorRow{
-			{label: "rules", value: fmt.Sprintf("%d", d.Rules)},
+			{label: "rules", value: strconv.Itoa(d.Rules)},
 		}
 		if len(d.TLSHosts) > 0 {
 			rows = append(rows, inspectorRow{
@@ -828,14 +1080,14 @@ func rolloutRows(d *k8s.AppDetail) []inspectorRow {
 		}
 	case k8s.AppKindJob:
 		rows = append(rows, inspectorRow{
-			label: "active", value: fmt.Sprintf("%d", d.JobActive),
+			label: "active", value: strconv.Itoa(int(d.JobActive)),
 		})
 		rows = append(rows, inspectorRow{
-			label: "succeeded", value: fmt.Sprintf("%d", d.JobSucceeded), emphasis: "good",
+			label: "succeeded", value: strconv.Itoa(int(d.JobSucceeded)), emphasis: "good",
 		})
 		if d.JobFailed > 0 {
 			rows = append(rows, inspectorRow{
-				label: "failed", value: fmt.Sprintf("%d", d.JobFailed), emphasis: "bad",
+				label: "failed", value: strconv.Itoa(int(d.JobFailed)), emphasis: "bad",
 			})
 		}
 	default:
@@ -949,8 +1201,11 @@ func healthKind(h k8s.Health) string {
 		return "warn"
 	case k8s.HealthFailing:
 		return "bad"
+	case k8s.HealthUnknown:
+		return ""
+	default:
+		return ""
 	}
-	return ""
 }
 
 func healthWord(h k8s.Health) string {
@@ -963,8 +1218,11 @@ func healthWord(h k8s.Health) string {
 		return "Degraded"
 	case k8s.HealthFailing:
 		return "Failing"
+	case k8s.HealthUnknown:
+		return ""
+	default:
+		return ""
 	}
-	return ""
 }
 
 // ── tiny helpers ────────────────────────────────────────────────────

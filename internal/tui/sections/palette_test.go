@@ -296,7 +296,7 @@ func TestPalette_CursorClampsToBounds(t *testing.T) {
 	p.CursorUp()
 	assert.Equal(t, 0, p.cursor)
 	// Down past bottom clamps to last.
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		p.CursorDown()
 	}
 	assert.Equal(t, len(p.matches)-1, p.cursor)
@@ -332,7 +332,7 @@ func TestPalette_HeadCapEmptyQuery(t *testing.T) {
 	// Empty query mode shows at most 50 entries (per the head constant) so
 	// the modal doesn't try to render thousands of rows pre-filter.
 	many := make([]PaletteEntry, 0, 120)
-	for i := 0; i < 120; i++ {
+	for range 120 {
 		many = append(many, PaletteEntry{Kind: k8s.KindPod, Name: "p"})
 	}
 	p := NewPalette()
@@ -413,6 +413,7 @@ func TestPaletteVerbsFor_LowercaseAreReadUppercaseMutate(t *testing.T) {
 	// Per the keymap convention. A row that mixed cases incorrectly would
 	// fire a mutation on a key the user expected to be safe.
 	checkConvention := func(t *testing.T, verbs []PaletteVerb) {
+		t.Helper()
 		for _, v := range verbs {
 			require.NotEmpty(t, v.Letter)
 			lower := v.Letter[0] >= 'a' && v.Letter[0] <= 'z'

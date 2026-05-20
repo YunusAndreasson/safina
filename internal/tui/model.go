@@ -376,11 +376,10 @@ func NewModel(mgr *k8s.Manager, cfg *config.AppConfig) Model {
 // tiles; callers that need those should use syncSelection.
 func (m *Model) syncChatContext() {
 	snap := sections.BuildContextSnapshot(&m.tree, m.ctx.ActiveContext)
-	suggested := []string{}
 	// The chat shows starter chips only at the cluster picker (no resource
 	// yet) and on unhealthy selections — we centralise that gate in
 	// chat_suggestions.go so the chat doesn't need to know k8s health.
-	suggested = append(suggested, sections.ChatSuggestionsForRef(m.tree.SelectedRef())...)
+	suggested := sections.ChatSuggestionsForRef(m.tree.SelectedRef())
 	m.chat.SetCrumbs(snap.Crumbs, suggested)
 }
 
@@ -598,7 +597,7 @@ func (m *Model) loadClusterHealth() tea.Cmd {
 // identify which cluster (and which resource within it) a tab is pointed at.
 // Cluster, then drilled segments — capped so window-list flyouts stay legible.
 //
-// Truncation strategy: when the full string exceeds max, keep the first
+// Truncation strategy: when the full string exceeds maxLen, keep the first
 // crumb (cluster — answers "where am I") and the last crumb (leaf —
 // answers "looking at what") and ellipsise the middle. A trailing-cut
 // would drop the leaf, which is the most specific identifier and the one
@@ -609,7 +608,7 @@ func windowTitleFor(crumbs []components.Crumb) string {
 		// to surface beyond the app name itself.
 		return "safina"
 	}
-	const max = 60
+	const maxLen = 60
 	parts := make([]string, 0, len(crumbs))
 	for _, c := range crumbs {
 		if c.Label != "" {
@@ -617,28 +616,28 @@ func windowTitleFor(crumbs []components.Crumb) string {
 		}
 	}
 	full := "safina · " + strings.Join(parts, " · ")
-	if len(full) <= max {
+	if len(full) <= maxLen {
 		return full
 	}
 	// Two-or-fewer crumbs already cooperate with a trailing cut.
 	if len(parts) <= 2 {
-		return full[:max-3] + "…"
+		return full[:maxLen-3] + "…"
 	}
 	first, last := parts[0], parts[len(parts)-1]
 	short := "safina · " + first + " · … · " + last
-	if len(short) <= max {
+	if len(short) <= maxLen {
 		return short
 	}
 	// Leaf alone is more useful than cluster alone when even the short
 	// form overflows (deep cluster names + deep leaf names). Keep the
 	// leaf, drop the cluster.
 	short = "safina · … · " + last
-	if len(short) <= max {
+	if len(short) <= maxLen {
 		return short
 	}
 	// Final fallback: cut the leaf itself. We've done our best to keep
 	// something readable.
-	return short[:max-3] + "…"
+	return short[:maxLen-3] + "…"
 }
 
 // clockTick emits one clockMsg per second.

@@ -19,11 +19,11 @@ import (
 // Used to exercise scenarios offline.
 func fakeClusterWith(t *testing.T) *fake.Clientset {
 	t.Helper()
-	var objs []runtime.Object
-	for i := 0; i < 10; i++ {
+	objs := make([]runtime.Object, 0, 160)
+	for i := range 10 {
 		ns := "bench-" + itoa(i)
 		objs = append(objs, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
-		for d := 0; d < 5; d++ {
+		for d := range 5 {
 			objs = append(objs,
 				&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
 					Name: "app-" + itoa(d), Namespace: ns,

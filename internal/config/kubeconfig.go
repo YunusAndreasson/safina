@@ -1,7 +1,7 @@
 package config
 
 import (
-	"fmt"
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
@@ -34,7 +34,7 @@ func resolveKubeconfigPath(explicitPath string) string {
 func LoadKubeConfig(explicitPath string) (*clientcmdapi.Config, error) {
 	path := resolveKubeconfigPath(explicitPath)
 	if path == "" {
-		return nil, fmt.Errorf("no kubeconfig path resolved")
+		return nil, errors.New("no kubeconfig path resolved")
 	}
 
 	paths := strings.Split(path, string(os.PathListSeparator))
@@ -67,7 +67,7 @@ func LoadKubeConfig(explicitPath string) (*clientcmdapi.Config, error) {
 	}
 
 	if len(merged.Contexts) == 0 {
-		return nil, fmt.Errorf("no contexts found in kubeconfig")
+		return nil, errors.New("no contexts found in kubeconfig")
 	}
 
 	return merged, nil

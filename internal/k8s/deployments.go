@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -89,7 +90,7 @@ func RollbackDeployment(ctx context.Context, cs kubernetes.Interface, namespace,
 	}
 
 	if targetRSName == "" {
-		return fmt.Errorf("no previous revision found to rollback to")
+		return errors.New("no previous revision found to rollback to")
 	}
 
 	targetRS, err := cs.AppsV1().ReplicaSets(namespace).Get(ctx, targetRSName, metav1.GetOptions{})

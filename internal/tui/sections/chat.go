@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"image/color"
+	"strconv"
 	"strings"
 	"time"
 
@@ -113,7 +114,7 @@ func NewChat(c *tuictx.Ctx, svc *claude.Service) Chat {
 	taStyles.Focused.CursorLine = lipgloss.NewStyle()
 	taStyles.Blurred.Prompt = lipgloss.NewStyle().Foreground(t.P.Dim)
 	taStyles.Blurred.Text = lipgloss.NewStyle().Foreground(t.P.FGFade)
-	taStyles.Blurred.Placeholder = lipgloss.NewStyle().Foreground(t.P.Dim).Italic(true)
+	taStyles.Blurred.Placeholder = t.Hint
 	taStyles.Focused.Placeholder = taStyles.Blurred.Placeholder
 	taStyles.Cursor.Shape = tea.CursorBar
 	taStyles.Cursor.Blink = true
@@ -307,10 +308,11 @@ func NextChatEvent(ch <-chan claude.Event) tea.Cmd {
 			}
 		case claude.KindDone:
 			return ChatTurnDoneMsg{Err: ev.Err}
+		default:
+			// Init events carry the session id but the Service tracks that
+			// internally; nothing for the UI to do — recurse and read again.
+			return NextChatEvent(ch)()
 		}
-		// Init events carry the session id but the Service tracks that
-		// internally; nothing for the UI to do — recurse and read again.
-		return NextChatEvent(ch)()
 	}
 }
 
@@ -575,18 +577,18 @@ func (c *Chat) renderTurnHeader(turn chatTurn) string {
 	case "assistant":
 		head := lipgloss.NewStyle().Foreground(p.Pink).Bold(true).Render("◆ ai")
 		if turn.pending {
-			head += "  " + lipgloss.NewStyle().Foreground(p.Dim).Italic(true).Render("…")
+			head += "  " + c.t.Hint.Render("…")
 		}
 		return head
 	default:
-		return lipgloss.NewStyle().Foreground(p.Dim).Italic(true).Render(turn.text)
+		return c.t.Hint.Render(turn.text)
 	}
 }
 
 func (c *Chat) renderTurnBody(turn chatTurn) string {
 	if turn.role == "assistant" {
 		if turn.pending && turn.text == "" {
-			return lipgloss.NewStyle().Foreground(c.t.P.Dim).Italic(true).Render("  thinking…")
+			return c.t.Hint.Render("  thinking…")
 		}
 		body := c.renderMarkdown(turn.text)
 		if turn.pending {
@@ -720,7 +722,7 @@ func (c *Chat) renderChips(t *theme.Theme) string {
 
 	chips := make([]string, 0, len(c.suggested))
 	for i, s := range c.suggested {
-		chips = append(chips, keyStyle.Render(fmt.Sprintf("%d", i+1))+chipStyle.Render(" "+s))
+		chips = append(chips, keyStyle.Render(strconv.Itoa(i+1))+chipStyle.Render(" "+s))
 	}
 	return hint + strings.Join(chips, sep)
 }
@@ -774,7 +776,7 @@ func (c *Chat) renderInstallCard(t *theme.Theme) string {
 		step.Render(" 2  ") + cmd.Render("claude") + dim.Render("  → ") + cmd.Render("/login"),
 		step.Render(" 3  ") + cmd.Render("relaunch safina"),
 		"",
-		dim.Italic(true).Render("uses your Pro/Max subscription — no API key needed."),
+		t.Hint.Render("uses your Pro/Max subscription — no API key needed."),
 	}, "\n")
 	return c.padToHeight(body)
 }

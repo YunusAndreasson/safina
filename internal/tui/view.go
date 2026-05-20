@@ -109,8 +109,10 @@ func (m *Model) render() string {
 			subj = fmt.Sprintf("%s · evicts %d pods", m.nodeTarget.Name, m.drainConfirmPods)
 		}
 		return m.composeCard(base, m.renderConfirmModal("drain node", subj))
+	default:
+		// stateMain + immersive workspace tabs — no overlay; the base render is final.
+		return base
 	}
-	return base
 }
 
 // composeOverlay layers an overlay (palette / browser / cluster switcher)
@@ -312,8 +314,9 @@ func (m *Model) workspaceOwnsFocus() bool {
 		stateHotView, stateForwardsList, stateDrainProgress,
 		stateChatView:
 		return true
+	default:
+		return false
 	}
-	return false
 }
 
 // activeWorkspaceTab derives which tab the workspace should display from
@@ -336,8 +339,9 @@ func (m *Model) activeWorkspaceTab() sections.WorkspaceTab {
 		return sections.WSTabForwards
 	case stateDrainProgress:
 		return sections.WSTabDrain
+	default:
+		return sections.WSTabInspector
 	}
-	return sections.WSTabInspector
 }
 
 // workspaceTabAvailability returns which tabs are exposed in the strip
@@ -373,6 +377,8 @@ func (m *Model) workspaceTabAvailability() sections.WSTabAvailability {
 		av.Forwards = true
 	case stateDrainProgress:
 		av.Drain = true
+	default:
+		// No pinned tab for non-immersive states.
 	}
 	return av
 }
@@ -396,6 +402,9 @@ func (m *Model) workspaceTitle(tab sections.WorkspaceTab) string {
 		return m.forwards.PaneTitle()
 	case sections.WSTabDrain:
 		return m.drain.PaneTitle()
+	case sections.WSTabInspector:
+		// Falls through to the breadcrumb path below.
+	default:
 	}
 	// Inspector: leaf of the breadcrumb (the operator's current focus).
 	crumbs := m.tree.BreadcrumbCrumbs()
@@ -429,6 +438,9 @@ func (m *Model) renderTabBody(tab sections.WorkspaceTab, w, h int) string {
 		return m.forwards.Body(w)
 	case sections.WSTabDrain:
 		return m.drain.Body(w)
+	case sections.WSTabInspector:
+		// Falls through to the Inspector default below.
+	default:
 	}
 	// Default: Inspector tab — selection summary stack.
 	if m.ctx.ActiveContext == "" {
@@ -582,7 +594,7 @@ func (m *Model) renderTreeFooter() string {
 			parts = append(parts, t.HelpKey.Render(h.Key)+" "+t.HelpDesc.Render(h.Desc))
 		}
 	}
-	sep := lipgloss.NewStyle().Foreground(t.P.Dim).Render(" · ")
+	sep := t.DimTxt.Render(" · ")
 	return strings.Join(parts, sep)
 }
 
@@ -766,7 +778,7 @@ func (m *Model) renderPortForwardModal() string {
 		"",
 		m.pfInput.View(),
 		"",
-		t.DimTxt.Italic(true).Render("L:R or single port (same on both sides)"),
+		t.Hint.Render("L:R or single port (same on both sides)"),
 		components.RenderHintRow(t, []components.KeyDesc{
 			{Key: "↵", Desc: "confirm"},
 			{Key: "esc", Desc: "cancel"},
@@ -853,10 +865,11 @@ func (m *Model) renderHelpModal() string {
 
 func renderHelpGroup(t *theme.Theme, g keys.Group) string {
 	keyW := widestKey(g)
-	lines := []string{
+	lines := make([]string, 0, 2+len(g.Pairs)+len(g.Bindings))
+	lines = append(lines,
 		t.CyanBold.Render(g.Title),
 		t.DimTxt.Render(strings.Repeat("─", 8)),
-	}
+	)
 	for _, p := range g.Pairs {
 		lines = append(lines, helpRow(t, keyW, p.Key, p.Desc))
 	}

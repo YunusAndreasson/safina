@@ -3,6 +3,7 @@ package sections
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -78,6 +79,12 @@ type Tree struct {
 	// knows data is updating without losing visual continuity. Cleared by
 	// SetChildren / load error handler, same as Loading.
 	Refreshing bool
+
+	// refreshGate suppresses the title-spinner flicker on fast refreshes
+	// (informer-cached reads finish in <50ms; without a gate the spinner
+	// flashed in/out every auto-refresh tick at 5s cadence). Spinner only
+	// appears when the load is slow enough to register perceptually.
+	refreshGate components.LoadGate
 
 	// LoadErr is the last error from the loader for the current focus.
 	// Distinguishes "API call failed" from "API returned zero items" so the
@@ -171,9 +178,14 @@ type metricSeries struct {
 // gets the absolute reading at a glance.
 const sparkWidth = 4
 
-// metricsHistCap is the per-resource sample retention. Capped so an
-// always-running tree section doesn't grow unbounded across long sessions.
-const metricsHistCap = 32
+// metricsHistCap is the per-resource sample retention. At a 5s auto-refresh
+// cadence (refreshInterval), this buffer length covers ~6 hours of history
+// when a resource stays in view continuously. The tree row's narrow
+// sparkline still reads only the most recent samples (so scan latency is
+// unaffected), while the Inspector's wide sparkline downsamples the full
+// buffer via max-bucket aggregation to expose long-term shape on the
+// right pane. Per-resource memory: ~6h × 2 series × 8B ≈ 70KB.
+const metricsHistCap = 4320
 
 // Domain-aware floor ceilings for the rolling buffers. Picked so a pod
 // stable at 1 millicore / 2 MiB renders as a near-zero floor line in
@@ -390,7 +402,7 @@ func (t *Tree) foldDisplay(label, foldKind, gvr string) string {
 	childPath = append(childPath, NodeRef{Kind: foldKind, Name: label, Display: label, GVR: gvr})
 	ch := t.cache[pathKeyFor(childPath)]
 	if ch == nil {
-		return fmt.Sprintf("%s (?)", label)
+		return label + " (?)"
 	}
 	n := len(ch.ConfigMaps) + len(ch.Secrets) + len(ch.Services) + len(ch.Ingresses) + len(ch.PVCs) + len(ch.Pools) + len(ch.Generic)
 	return fmt.Sprintf("%s (%d)", label, n)
@@ -453,6 +465,20 @@ func (t *Tree) metricSeriesFor(kind, namespace, name string) (*components.Metric
 		return nil, nil
 	}
 	return s.cpu, s.mem
+}
+
+// StartRefresh marks a background reload as in flight and arms the gate so
+// the title spinner only appears for slow loads. Idempotent.
+func (t *Tree) StartRefresh() {
+	t.Refreshing = true
+	t.refreshGate.Start()
+}
+
+// FinishRefresh clears the in-flight flag and releases the gate. Safe to
+// call without a matching StartRefresh.
+func (t *Tree) FinishRefresh() {
+	t.Refreshing = false
+	t.refreshGate.Stop()
 }
 
 // MetricSeriesFor is the exported counterpart used by the Inspector tile so
@@ -899,7 +925,7 @@ func (t *Tree) View(c *tuictx.Ctx, w, h int) string {
 	// updating" without losing context. The PanelWithAccent loader-state
 	// branch (Loading=true && children==nil) still owns the empty-screen
 	// case; this is for the "we have data, refreshing it" case.
-	if t.Refreshing && t.children != nil {
+	if t.refreshGate.Visible() && t.children != nil {
 		title = title + " " + c.Spinner.View()
 	}
 
@@ -1099,7 +1125,7 @@ func (t *Tree) renderBody(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	// this branch, an unreachable cluster falls through to a silent ellipsis
 	// while the operator wonders whether the tree is just slow or broken.
 	if t.children == nil && t.LoadErr != nil {
-		hint := th.DimTxt.Italic(true).Render("press R to retry")
+		hint := th.Hint.Render("press R to retry")
 		return lipgloss.JoinVertical(lipgloss.Left,
 			lipgloss.NewStyle().Foreground(th.P.Red).Render("✗ "+t.LoadErr.Error()),
 			"",
@@ -1395,23 +1421,25 @@ func (t *Tree) renderAppRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 
 	// Progressive disclosure of columns: NS only when there's more than one
 	// distinct user namespace on screen (no point showing "default" 50×);
-	// CPU/MEM only when at least one row has a real value (drops the column
-	// entirely on clusters where metrics-server is absent — replacing 20 rows
-	// of "—" with extra width for NAME). Reclaimed cells flow into NAME so
-	// long deployment names stop truncating.
+	// HPA only when at least one app is autoscaled (drops the column when
+	// every row would be empty, eliminating the gap between health and the
+	// metric sparks); CPU/MEM only when at least one row has a real value
+	// (drops the column entirely on clusters where metrics-server is absent).
+	// Reclaimed cells flow into NAME so long deployment names stop truncating.
 	showNS := distinctAppNamespaces(apps) > 1
+	showHPA := anyAppHPA(apps)
 	showMetrics := anyAppMetrics(apps)
 
 	tableW := innerW - components.EdgeTotal()
 	const (
 		kW = 1
 		hW = 1
-		// cpuW / memW hold the sparkline (4 cells) + a single space + the
-		// numeric value (formatted to 5 cells). Slightly wider than the
-		// pre-sparkline columns; reclaimed from NAME if the terminal is
-		// tight via the loop below.
-		cpuW    = sparkWidth + 1 + 5 // 10
-		memW    = sparkWidth + 1 + 6 // 11 (mem can be "1024Mi")
+		// cpuW / memW hold only the sparkline now — the numeric tail moved
+		// to the Inspector tile, where the right pane has room for the
+		// precise current value plus configured requests/limits. The
+		// per-row spark stays narrow so the list scans fast.
+		cpuW    = sparkWidth
+		memW    = sparkWidth
 		agW     = 5
 		nameMin = 10
 	)
@@ -1420,8 +1448,14 @@ func (t *Tree) renderAppRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	if !showNS {
 		nsW = 0
 	}
-	colsCount := 5 // K, NAME, H, HPA, AGE — always
+	if !showHPA {
+		hpaW = 0
+	}
+	colsCount := 4 // K, NAME, H, AGE — always
 	if showNS {
+		colsCount++
+	}
+	if showHPA {
 		colsCount++
 	}
 	if showMetrics {
@@ -1442,7 +1476,7 @@ func (t *Tree) renderAppRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 			nsW--
 			continue
 		}
-		if hpaW > 4 {
+		if showHPA && hpaW > 4 {
 			hpaW--
 			continue
 		}
@@ -1454,7 +1488,7 @@ func (t *Tree) renderAppRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 		nW = nameMin
 	}
 
-	// Column order: K · NAME · NS? · H · HPA · CPU? · MEM? · AGE.
+	// Column order: K · NAME · NS? · H · HPA? · CPU? · MEM? · AGE.
 	cols := []int{kW, nW}
 	aligns := []components.Align{components.AlignLeft, components.AlignLeft}
 	headerLabels := []string{"", "NAME"}
@@ -1463,9 +1497,14 @@ func (t *Tree) renderAppRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 		aligns = append(aligns, components.AlignLeft)
 		headerLabels = append(headerLabels, "NS")
 	}
-	cols = append(cols, hW, hpaW)
-	aligns = append(aligns, components.AlignLeft, components.AlignLeft)
-	headerLabels = append(headerLabels, "", "HPA")
+	cols = append(cols, hW)
+	aligns = append(aligns, components.AlignLeft)
+	headerLabels = append(headerLabels, "")
+	if showHPA {
+		cols = append(cols, hpaW)
+		aligns = append(aligns, components.AlignLeft)
+		headerLabels = append(headerLabels, "HPA")
+	}
 	if showMetrics {
 		cols = append(cols, usedCpuW, usedMemW)
 		aligns = append(aligns, components.AlignRight, components.AlignRight)
@@ -1526,12 +1565,15 @@ func (t *Tree) renderAppRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 		if showNS {
 			vals = append(vals, th.MetaOn(components.TruncPad(a.Namespace, nsW), bg))
 		}
-		vals = append(vals, health, hpaCell)
+		vals = append(vals, health)
+		if showHPA {
+			vals = append(vals, hpaCell)
+		}
 		if showMetrics {
 			cpuBuf, memBuf := t.metricSeriesFor(k8s.KindApp, a.Namespace, a.Name)
 			vals = append(vals,
-				renderMetricCell(th, cpuBuf, k8s.FormatCPU(a.CPU), 5, bg),
-				renderMetricCell(th, memBuf, k8s.FormatMem(a.Memory), 6, bg),
+				renderMetricCell(th, cpuBuf, bg),
+				renderMetricCell(th, memBuf, bg),
 			)
 		}
 		vals = append(vals, ageCell)
@@ -1541,17 +1583,16 @@ func (t *Tree) renderAppRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	return strings.Join(out, "\n")
 }
 
-// renderMetricCell composes one column of the metric pair: sparkline on
-// the left (gradient by relative magnitude), one-cell gap, then the
-// human-formatted value right-padded to numW. The row's bg style is
-// threaded into the sparkline so every cell inherits the stripe / select
-// background — without this the spark cells render with the terminal's
-// default bg and look like a column gap on striped rows.
-func renderMetricCell(th *theme.Theme, buf *components.MetricBuffer, value string, numW int, bg lipgloss.Style) string {
-	spark := components.Sparkline(th, buf, sparkWidth, bg)
-	val := th.MetaOn(components.TruncPad(value, numW), bg)
-	gap := bg.Render(" ")
-	return spark + gap + val
+// renderMetricCell renders the per-row CPU/MEM sparkline. The absolute
+// value used to sit next to the spark, but the left pane is the φ-small
+// side and a 4-cell spark already encodes the signal a list-scan needs
+// ("which app is hot?"). The Inspector tile carries the precise current
+// value (and requests/limits) for whichever row the cursor's on — that's
+// where you go for "how hot, exactly." The row's bg style threads through
+// so the spark inherits stripe/select painting rather than punching a
+// terminal-default gap into the column.
+func renderMetricCell(th *theme.Theme, buf *components.MetricBuffer, bg lipgloss.Style) string {
+	return components.Sparkline(th, buf, sparkWidth, bg)
 }
 
 // renderUtilMetricCell is the percentage-shaped sibling of renderMetricCell:
@@ -1560,9 +1601,9 @@ func renderMetricCell(th *theme.Theme, buf *components.MetricBuffer, value strin
 // instead of "red bars next to a dim 92%". `frac` is the utilization in
 // [0,1]; values outside the range still color sensibly (clamped via
 // theme.UtilColor's gradient).
-func renderUtilMetricCell(th *theme.Theme, buf *components.MetricBuffer, value string, frac float64, numW int, bg lipgloss.Style) string {
+func renderUtilMetricCell(th *theme.Theme, buf *components.MetricBuffer, value string, frac float64, bg lipgloss.Style) string {
 	spark := components.Sparkline(th, buf, sparkWidth, bg)
-	val := bg.Foreground(th.UtilColor(frac)).Bold(true).Render(components.TruncPad(value, numW))
+	val := bg.Foreground(th.UtilColor(frac)).Bold(true).Render(components.TruncPad(value, 4))
 	gap := bg.Render(" ")
 	return spark + gap + val
 }
@@ -1592,46 +1633,114 @@ func anyAppMetrics(apps []k8s.AppInfo) bool {
 	return false
 }
 
+// anyAppHPA reports whether at least one app is autoscaled. The HPA column
+// is hidden when the entire visible set is statically-replica'd — otherwise
+// the 11-cell column sits empty between the health glyph and the metric
+// sparklines, reading as a misalignment rather than reserved space.
+func anyAppHPA(apps []k8s.AppInfo) bool {
+	for _, a := range apps {
+		if a.HPA != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// renderPodRows mirrors renderAppRows' column shape so the eye doesn't
+// have to relearn the table on every drill — same K · NAME · NS? · H ·
+// CPU? · MEM? · RST? · AGE layout, with progressive disclosure for NS,
+// metrics, and restarts. The 18-cell STATUS text column was retired in
+// favour of the 1-cell H glyph (Running collapses to a quiet green dot;
+// abnormal states paint a colored glyph instead — operators drill into
+// the Inspector for the full status label like "ImagePullBackOff").
 func (t *Tree) renderPodRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	th := c.Theme
 	pods := t.filteredPods()
 	if len(pods) == 0 {
 		return t.treeEmpty(c, "pods")
 	}
+	showNS := distinctPodNamespaces(pods) > 1
 	showMetrics := anyPodMetrics(pods)
+	showRST := anyPodRestarts(pods)
 
 	tableW := innerW - components.EdgeTotal()
 	const (
-		kW   = 1
-		stW  = 18
-		cpuW = sparkWidth + 1 + 5 // sparkline + space + 5-char number
-		memW = sparkWidth + 1 + 6 // sparkline + space + 6-char number
-		rsW  = 4
-		agW  = 5
+		kW = 1
+		hW = 1
+		// Spark-only — see renderMetricCell. The precise current value
+		// (and configured req/limit) lives in the Inspector tile.
+		cpuW    = sparkWidth
+		memW    = sparkWidth
+		rsW     = 4
+		agW     = 5
+		nameMin = 10
 	)
-	colsCount := 5 // K, NAME, STATUS, RST, AGE
-	usedCpuW, usedMemW := 0, 0
+	nsW := 10
+	if !showNS {
+		nsW = 0
+	}
+	colsCount := 4 // K, NAME, H, AGE — always
+	if showNS {
+		colsCount++
+	}
 	if showMetrics {
 		colsCount += 2
-		usedCpuW, usedMemW = cpuW, memW
+	}
+	if showRST {
+		colsCount++
+	}
+	usedCpuW, usedMemW := 0, 0
+	if showMetrics {
+		usedCpuW = cpuW
+		usedMemW = memW
+	}
+	usedRsW := 0
+	if showRST {
+		usedRsW = rsW
+	}
+	for {
+		gaps := components.GapTotal(colsCount)
+		nW := tableW - kW - nsW - hW - usedCpuW - usedMemW - usedRsW - agW - gaps
+		if nW >= nameMin {
+			break
+		}
+		if showNS && nsW > 4 {
+			nsW--
+			continue
+		}
+		break
 	}
 	gaps := components.GapTotal(colsCount)
-	nW := tableW - kW - stW - usedCpuW - usedMemW - rsW - agW - gaps
-	if nW < 10 {
-		nW = 10
+	nW := tableW - kW - nsW - hW - usedCpuW - usedMemW - usedRsW - agW - gaps
+	if nW < nameMin {
+		nW = nameMin
 	}
 
+	// Column order: K · NAME · NS? · H · CPU? · MEM? · RST? · AGE.
 	cols := []int{kW, nW}
 	aligns := []components.Align{components.AlignLeft, components.AlignLeft}
 	headerLabels := []string{"", "NAME"}
+	if showNS {
+		cols = append(cols, nsW)
+		aligns = append(aligns, components.AlignLeft)
+		headerLabels = append(headerLabels, "NS")
+	}
+	cols = append(cols, hW)
+	aligns = append(aligns, components.AlignLeft)
+	headerLabels = append(headerLabels, "")
 	if showMetrics {
 		cols = append(cols, usedCpuW, usedMemW)
 		aligns = append(aligns, components.AlignRight, components.AlignRight)
 		headerLabels = append(headerLabels, "CPU", "MEM")
 	}
-	cols = append(cols, stW, rsW, agW)
-	aligns = append(aligns, components.AlignLeft, components.AlignRight, components.AlignRight)
-	headerLabels = append(headerLabels, "STATUS", "RST", "AGE")
+	if showRST {
+		cols = append(cols, usedRsW)
+		aligns = append(aligns, components.AlignRight)
+		headerLabels = append(headerLabels, "RST")
+	}
+	cols = append(cols, agW)
+	aligns = append(aligns, components.AlignRight)
+	headerLabels = append(headerLabels, "AGE")
 	header := components.Header(th, headerLabels, cols, aligns)
 
 	start, end := components.VisibleRange(t.cursor, len(pods), rowsAvail-1)
@@ -1641,19 +1750,28 @@ func (t *Tree) renderPodRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 		selected := i == t.cursor && t.Focused
 		bg := th.RowBgFor(i, selected)
 		nameCell := th.NameStrongOn(components.TruncPad(p.Name, nW), bg)
-		statusCell := th.StatusGlyph(p.Status, stW, bg)
+		// StatusGlyph at maxW=1 collapses to just the colored dot (the
+		// abnormal-state word is dropped). Same shape Apps use for H.
+		statusCell := th.StatusGlyph(p.Status, 1, bg)
 		rstCell := th.RestartCount(int(p.Restarts), bg)
 		ageCell := th.Age(p.Age, bg)
 
 		vals := []string{kindGlyph(k8s.KindPod, ""), nameCell}
+		if showNS {
+			vals = append(vals, th.MetaOn(components.TruncPad(p.Namespace, nsW), bg))
+		}
+		vals = append(vals, statusCell)
 		if showMetrics {
 			cpuBuf, memBuf := t.metricSeriesFor(k8s.KindPod, p.Namespace, p.Name)
 			vals = append(vals,
-				renderMetricCell(th, cpuBuf, k8s.FormatCPU(p.CPU), 5, bg),
-				renderMetricCell(th, memBuf, k8s.FormatMem(p.Memory), 6, bg),
+				renderMetricCell(th, cpuBuf, bg),
+				renderMetricCell(th, memBuf, bg),
 			)
 		}
-		vals = append(vals, statusCell, rstCell, ageCell)
+		if showRST {
+			vals = append(vals, rstCell)
+		}
+		vals = append(vals, ageCell)
 		out = append(out, components.Row(th, vals, cols, aligns, selected, i))
 	}
 	return strings.Join(out, "\n")
@@ -1662,6 +1780,34 @@ func (t *Tree) renderPodRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 func anyPodMetrics(pods []k8s.PodInfo) bool {
 	for _, p := range pods {
 		if p.CPU > 0 || p.Memory > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// distinctPodNamespaces counts the unique namespaces in the visible pod
+// list. The NS column kicks in only when pods span more than one — a
+// single-namespace drill (e.g. all pods of one deployment) suppresses
+// the column so NAME inherits the cells.
+func distinctPodNamespaces(pods []k8s.PodInfo) int {
+	if len(pods) == 0 {
+		return 0
+	}
+	seen := make(map[string]struct{}, len(pods))
+	for _, p := range pods {
+		seen[p.Namespace] = struct{}{}
+	}
+	return len(seen)
+}
+
+// anyPodRestarts reports whether at least one pod has restarted. RST is
+// the textbook "watch for outliers" column — when every pod is at 0,
+// suppressing the column reclaims width and matches the affordance
+// (absence is the affirmation) the H column already uses.
+func anyPodRestarts(pods []k8s.PodInfo) bool {
+	for _, p := range pods {
+		if p.Restarts > 0 {
 			return true
 		}
 	}
@@ -1781,10 +1927,10 @@ func (t *Tree) renderPoolRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 		bg := th.RowBgFor(i, selected)
 		health := healthGlyphColored(th, p.Health, bg)
 		nameCell := th.NameStrongOn(components.TruncPad(p.Name, nW), bg)
-		nodesCell := fmt.Sprintf("%d", p.Nodes)
+		nodesCell := strconv.Itoa(p.Nodes)
 		cpuBuf, memBuf := t.metricSeriesFor(k8s.KindNodePool, "", p.Name)
-		cpuCell := renderUtilMetricCell(th, cpuBuf, pctOf(p.CPUUsed, p.CPUAlloc), fracOf(p.CPUUsed, p.CPUAlloc), 4, bg)
-		memCell := renderUtilMetricCell(th, memBuf, pctOf(p.MemUsed, p.MemAlloc), fracOf(p.MemUsed, p.MemAlloc), 4, bg)
+		cpuCell := renderUtilMetricCell(th, cpuBuf, pctOf(p.CPUUsed, p.CPUAlloc), fracOf(p.CPUUsed, p.CPUAlloc), bg)
+		memCell := renderUtilMetricCell(th, memBuf, pctOf(p.MemUsed, p.MemAlloc), fracOf(p.MemUsed, p.MemAlloc), bg)
 		pods := fmt.Sprintf("%d/%d", p.PodsCurrent, p.PodsMax)
 		out = append(out, components.Row(th,
 			[]string{kindGlyph(k8s.KindNodePool, ""), health, nameCell, nodesCell, cpuCell, memCell, pods},
@@ -1836,8 +1982,8 @@ func (t *Tree) renderNodeRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 		statusCell := th.StatusGlyph(n.Status, stW, bg)
 		pressureCell := renderPressureCell(th, n.Pressures, prW, bg)
 		cpuBuf, memBuf := t.metricSeriesFor(k8s.KindNode, "", n.Name)
-		cpuCell := renderUtilMetricCell(th, cpuBuf, pctOf(n.CPUUsed, n.CPUAlloc), fracOf(n.CPUUsed, n.CPUAlloc), 4, bg)
-		memCell := renderUtilMetricCell(th, memBuf, pctOf(n.MemUsed, n.MemAlloc), fracOf(n.MemUsed, n.MemAlloc), 4, bg)
+		cpuCell := renderUtilMetricCell(th, cpuBuf, pctOf(n.CPUUsed, n.CPUAlloc), fracOf(n.CPUUsed, n.CPUAlloc), bg)
+		memCell := renderUtilMetricCell(th, memBuf, pctOf(n.MemUsed, n.MemAlloc), fracOf(n.MemUsed, n.MemAlloc), bg)
 		pods := fmt.Sprintf("%d/%d", n.PodsCurrent, n.PodsMax)
 		out = append(out, components.Row(th,
 			[]string{kindGlyph(k8s.KindNode, ""), health, nameCell, statusCell, pressureCell, cpuCell, memCell, pods},
@@ -1915,7 +2061,7 @@ func (t *Tree) renderConfigMapRows(c *tuictx.Ctx, innerW, rowsAvail int) string 
 		selected := i == t.cursor && t.Focused
 		bg := th.RowBgFor(i, selected)
 		nameCell := th.NameStrongOn(components.TruncPad(cm.Name, nW), bg)
-		keysCell := th.MetaOn(fmt.Sprintf("%d", cm.Keys), bg)
+		keysCell := th.MetaOn(strconv.Itoa(cm.Keys), bg)
 		ageCell := th.Age(cm.Age, bg)
 		out = append(out, components.Row(th,
 			[]string{kindGlyph(k8s.KindConfigMap, ""), nameCell, keysCell, ageCell},
@@ -2030,7 +2176,7 @@ func (t *Tree) renderSecretRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 		bg := th.RowBgFor(i, selected)
 		nameCell := th.NameStrongOn(components.TruncPad(s.Name, nW), bg)
 		typeCell := th.MetaOn(components.TruncPad(shortSecretType(s.Type), typW), bg)
-		keysCell := th.MetaOn(fmt.Sprintf("%d", s.Keys), bg)
+		keysCell := th.MetaOn(strconv.Itoa(s.Keys), bg)
 		ageCell := th.Age(s.Age, bg)
 		out = append(out, components.Row(th,
 			[]string{kindGlyph(k8s.KindSecret, ""), nameCell, typeCell, keysCell, ageCell},
@@ -2352,9 +2498,11 @@ func nsHealthCells(th *theme.Theme, summary nsHealthSummary, bg lipgloss.Style) 
 		col = th.P.Yellow
 	case k8s.HealthUnknown:
 		col = th.P.Dim
+	default:
+		// HealthHealthy keeps the green default.
 	}
 	pip = bg.Foreground(col).Bold(true).Render("●")
-	count = bg.Foreground(th.P.Dim).Render(fmt.Sprintf("%d", summary.total))
+	count = bg.Foreground(th.P.Dim).Render(strconv.Itoa(summary.total))
 	return pip, count
 }
 
@@ -2445,7 +2593,7 @@ func (t *Tree) renderContextRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	// say what to *do*; new users land on a list of names and have to guess
 	// that ↵ drills in. One dim-italic line above the header carries that
 	// instruction without competing visually with the rows.
-	hint := th.DimTxt.Italic(true).Render("pick a cluster to begin · ↵ open")
+	hint := th.Hint.Render("pick a cluster to begin · ↵ open")
 
 	start, end := components.VisibleRange(t.cursor, len(ctxs), rowsAvail-2)
 	out := []string{hint, header}
@@ -2980,6 +3128,17 @@ func healthGlyphColored(t *theme.Theme, h k8s.Health, bg lipgloss.Style) string 
 // after pulseDuration; the renderer simply asks the tree if a row is
 // pulsing on each frame.
 func healthGlyphStyled(t *theme.Theme, h k8s.Health, bg lipgloss.Style, pulsing bool) string {
+	// Suppress the affirmation glyph on healthy rows. On a calm cluster
+	// that's ~every row, and a column full of green ✓'s reads as visual
+	// noise rather than signal — exactly the rationale behind suppressing
+	// "Running" on the status glyph. The H column stays mostly empty; any
+	// shape that appears (✗ ⚠ ⏵ …) is, by definition, an outlier worth
+	// landing the eye on. The bg-painted blank preserves the row stripe.
+	// Pulse still fires on Healthy so a *transition* into healthy briefly
+	// flashes — operators see the "it came back" moment.
+	if h == k8s.HealthHealthy && !pulsing {
+		return bg.Render(" ")
+	}
 	g := h.Glyph()
 	var style lipgloss.Style
 	switch h {

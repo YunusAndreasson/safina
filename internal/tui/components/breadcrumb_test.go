@@ -21,7 +21,7 @@ func TestBreadcrumbRamped_NeverExceedsWidth(t *testing.T) {
 	for _, w := range []int{1, 2, 3, 4, 5, 10, 20, 50, 100} {
 		for n := 1; n <= 5; n++ {
 			crumbs := make([]Crumb, n)
-			for i := 0; i < n; i++ {
+			for i := range n {
 				crumbs[i] = Crumb{Label: pieces[(i+w)%len(pieces)]}
 			}
 			out := BreadcrumbRamped(crumbs, w, ramp, sep)

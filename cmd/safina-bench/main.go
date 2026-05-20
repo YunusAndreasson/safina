@@ -30,6 +30,10 @@ import (
 )
 
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	var (
 		kubeconfig     string
 		kubeContext    string
@@ -144,8 +148,9 @@ func main() {
 	}
 
 	if quick {
-		os.Exit(quickGate(res, baselinePath, tolerancePct))
+		return quickGate(res, baselinePath, tolerancePct)
 	}
+	return 0
 }
 
 func quickGate(res *bench.Result, baselinePath string, tolerancePct float64) int {

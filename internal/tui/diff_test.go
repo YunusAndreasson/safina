@@ -71,7 +71,7 @@ func TestRenderUnifiedDiff_TruncatesPastMaxLines(t *testing.T) {
 	// and emits a "… N more line(s)" trailer. Without the cap a malicious
 	// or accidental huge YAML edit would push the modal off-screen.
 	var orig, edited strings.Builder
-	for i := 0; i < 60; i++ {
+	for range 60 {
 		orig.WriteString("a\n")
 		edited.WriteString("b\n")
 	}

@@ -230,7 +230,7 @@ func colorizeYAMLLine(line string, t *theme.Theme) string {
 	rest := line[i:]
 
 	dim := lipgloss.NewStyle().Foreground(t.P.Dim)
-	dimItalic := dim.Italic(true)
+	dimItalic := t.Hint
 	keyStyle := lipgloss.NewStyle().Foreground(t.P.Cyan).Bold(true)
 
 	// Whole-line comment.

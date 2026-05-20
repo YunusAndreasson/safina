@@ -78,7 +78,7 @@ func runColdListPods(ctx context.Context, cs kubernetes.Interface, opts *Options
 // fired 10 times in close succession. Surfaces the informer-cache win
 // vs. raw List most clearly.
 func runRepeatListPods(ctx context.Context, cs kubernetes.Interface, opts *Options) error {
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		if err := runColdListPods(ctx, cs, opts); err != nil {
 			return err
 		}
@@ -167,7 +167,7 @@ func runClusterHealth(ctx context.Context, cs kubernetes.Interface, opts *Option
 func runResourcesPerNS(ctx context.Context, cs kubernetes.Interface, opts *Options) error {
 	const nsCount = 10
 	namespaces := make([]string, nsCount)
-	for i := 0; i < nsCount; i++ {
+	for i := range nsCount {
 		namespaces[i] = fmt.Sprintf("bench-%d", i)
 	}
 	lo := opts.ListOptions

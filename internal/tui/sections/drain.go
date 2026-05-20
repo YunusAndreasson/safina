@@ -105,7 +105,7 @@ func (d *Drain) View(w int) string {
 		}
 		remain = strings.Join(preview, "\n")
 		if more > 0 {
-			remain = remain + lipgloss.NewStyle().Foreground(t.P.Dim).Render(fmt.Sprintf("\n…and %d more", more))
+			remain += lipgloss.NewStyle().Foreground(t.P.Dim).Render(fmt.Sprintf("\n…and %d more", more))
 		}
 		remain = lipgloss.NewStyle().Foreground(t.P.FGFade).Render(remain)
 	}
@@ -115,7 +115,7 @@ func (d *Drain) View(w int) string {
 		elapsed = lipgloss.NewStyle().Foreground(t.P.Dim).Render(fmt.Sprintf("elapsed %ds", int(time.Since(d.latest.StartTimestamp).Seconds())))
 	}
 
-	footer := t.DimTxt.Italic(true).Render("ctrl+c cancel (uncordons before exit)")
+	footer := t.Hint.Render("ctrl+c cancel (uncordons before exit)")
 
 	parts := []string{title, "", phaseLine, statsLine}
 	if remain != "" {

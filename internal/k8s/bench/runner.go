@@ -2,6 +2,7 @@ package bench
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"net/http"
@@ -75,13 +76,13 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 		cfg.IterTimeout = 30 * time.Second
 	}
 	if cfg.BaseConfigFactory == nil {
-		return nil, fmt.Errorf("BaseConfigFactory is required")
+		return nil, errors.New("BaseConfigFactory is required")
 	}
 	if len(cfg.Variants) == 0 {
-		return nil, fmt.Errorf("at least one variant required")
+		return nil, errors.New("at least one variant required")
 	}
 	if len(cfg.Scenarios) == 0 {
-		return nil, fmt.Errorf("at least one scenario required")
+		return nil, errors.New("at least one scenario required")
 	}
 
 	res := &Result{StartedAt: time.Now(), Seed: cfg.Seed}
@@ -134,7 +135,7 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 				cleanup()
 				return nil, err
 			}
-			for i := 0; i < cfg.WarmupIters; i++ {
+			for i := range cfg.WarmupIters {
 				if err := runOnce(ctx, cfg.IterTimeout, cs, opts, s0); err != nil {
 					cleanup()
 					return nil, fmt.Errorf("warmup %s/%s iter %d: %w", vid, s0.ID, i, err)
@@ -146,7 +147,7 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 		// but never N in a row, so transient API-server cache state can't
 		// bias one scenario over another.
 		schedule := make([]ScenarioID, 0, cfg.Iterations*len(cfg.Scenarios))
-		for i := 0; i < cfg.Iterations; i++ {
+		for range cfg.Iterations {
 			schedule = append(schedule, cfg.Scenarios...)
 		}
 		rng.Shuffle(len(schedule), func(i, j int) {
@@ -228,7 +229,7 @@ func simplifyContentType(s string) string {
 }
 
 func indexByte(s string, c byte) int {
-	for i := 0; i < len(s); i++ {
+	for i := range len(s) {
 		if s[i] == c {
 			return i
 		}

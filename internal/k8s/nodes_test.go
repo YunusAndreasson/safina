@@ -137,7 +137,7 @@ func TestListDrainablePods_FiltersDaemonSetAndMirror(t *testing.T) {
 	// works *for the fields we care about* by counting what we get.
 	pods, err := listDrainablePods(ctx, cs, "n1", DefaultDrainOptions())
 	require.NoError(t, err)
-	names := []string{}
+	names := make([]string, 0, len(pods))
 	for _, p := range pods {
 		names = append(names, p.Namespace+"/"+p.Name)
 	}

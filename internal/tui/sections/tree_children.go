@@ -21,7 +21,7 @@ import (
 func LoadTreeChildren(ctx context.Context, mgr *k8s.Manager, contextName string, path []NodeRef, userNS, systemNS []string) tea.Cmd {
 	return func() tea.Msg {
 		focus := path[len(path)-1]
-		defer debug.Track("k8s.load_children", "context", contextName, "kind", string(focus.Kind), "name", focus.Name)()
+		defer debug.Track("k8s.load_children", "context", contextName, "kind", focus.Kind, "name", focus.Name)()
 		client, ok := mgr.GetClient(contextName)
 		if !ok {
 			return TreeChildrenLoadedMsg{Path: path, Err: errContextNotFound}

@@ -15,7 +15,7 @@ import (
 
 var evtSeq int
 
-func newEvent(ns, name, kind, reason, msg string, lastSeen, eventTime, created time.Time, count int32, typ string) *corev1.Event {
+func newEvent(ns, name, reason, msg string, lastSeen, eventTime, created time.Time, count int32, typ string) *corev1.Event {
 	evtSeq++
 	return &corev1.Event{
 		ObjectMeta: metav1.ObjectMeta{
@@ -24,7 +24,7 @@ func newEvent(ns, name, kind, reason, msg string, lastSeen, eventTime, created t
 			CreationTimestamp: metav1.NewTime(created),
 		},
 		InvolvedObject: corev1.ObjectReference{
-			Kind:      kind,
+			Kind:      "Pod",
 			Name:      name,
 			Namespace: ns,
 		},
@@ -39,9 +39,9 @@ func newEvent(ns, name, kind, reason, msg string, lastSeen, eventTime, created t
 
 func TestListEvents_NewestFirstByLastSeen(t *testing.T) {
 	now := time.Now()
-	older := newEvent("default", "p1", "Pod", "Failed", "old",
+	older := newEvent("default", "p1", "Failed", "old",
 		now.Add(-10*time.Minute), time.Time{}, now.Add(-15*time.Minute), 1, "Warning")
-	newer := newEvent("default", "p1", "Pod", "BackOff", "new",
+	newer := newEvent("default", "p1", "BackOff", "new",
 		now.Add(-1*time.Minute), time.Time{}, now.Add(-5*time.Minute), 3, "Warning")
 	cs := fake.NewSimpleClientset(older, newer)
 
@@ -60,7 +60,7 @@ func TestListEvents_FallsBackToEventTimeWhenLastTimestampZero(t *testing.T) {
 	// would all sort as "epoch 0" and the user sees garbled ordering.
 	now := time.Now()
 	created := now.Add(-30 * time.Minute)
-	evt := newEvent("default", "p2", "Pod", "Pulled", "image pulled",
+	evt := newEvent("default", "p2", "Pulled", "image pulled",
 		time.Time{}, now.Add(-5*time.Minute), created, 1, "Normal")
 	cs := fake.NewSimpleClientset(evt)
 
@@ -78,7 +78,7 @@ func TestListEvents_FallsBackToCreationWhenBothEventTimesZero(t *testing.T) {
 	// have garbage Age.
 	now := time.Now()
 	created := now.Add(-1 * time.Hour)
-	evt := newEvent("default", "p3", "Pod", "Created", "container created",
+	evt := newEvent("default", "p3", "Created", "container created",
 		time.Time{}, time.Time{}, created, 1, "Normal")
 	cs := fake.NewSimpleClientset(evt)
 
@@ -90,7 +90,7 @@ func TestListEvents_FallsBackToCreationWhenBothEventTimesZero(t *testing.T) {
 
 func TestListEvents_PreservesTypeReasonMessageCount(t *testing.T) {
 	now := time.Now()
-	evt := newEvent("ns", "thing", "Pod", "BackOff", "Back-off restarting failed container",
+	evt := newEvent("ns", "thing", "BackOff", "Back-off restarting failed container",
 		now.Add(-2*time.Minute), time.Time{}, now.Add(-3*time.Minute), 12, "Warning")
 	cs := fake.NewSimpleClientset(evt)
 

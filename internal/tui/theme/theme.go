@@ -74,7 +74,8 @@ type Theme struct {
 	DimTxt   lipgloss.Style
 	DimBold  lipgloss.Style
 	DimPad   lipgloss.Style
-	Idle     lipgloss.Style // italic muted — for "loading…", "no matches", "select a cluster"
+	Hint     lipgloss.Style // italic muted, no padding — inline hints, placeholders, empty captions
+	Idle     lipgloss.Style // Hint + 1-cell horizontal padding — for use in framed loader / empty states
 	GreenTxt lipgloss.Style
 	CyanBold lipgloss.Style
 	BlueBold lipgloss.Style
@@ -121,7 +122,8 @@ func New(p Palette) *Theme {
 	t.DimPad = lipgloss.NewStyle().Foreground(p.Dim).Padding(0, 1)
 	// Italic adds a real typographic register for non-data text — empty
 	// states, loaders, hints — so they don't compete with names and counts.
-	t.Idle = lipgloss.NewStyle().Foreground(p.Dim).Italic(true).Padding(0, 1)
+	t.Hint = lipgloss.NewStyle().Foreground(p.Dim).Italic(true)
+	t.Idle = t.Hint.Padding(0, 1)
 	t.GreenTxt = lipgloss.NewStyle().Foreground(p.Green).Bold(true)
 	t.CyanBold = lipgloss.NewStyle().Foreground(p.Cyan).Bold(true)
 	t.BlueBold = lipgloss.NewStyle().Foreground(p.Blue).Bold(true)
@@ -306,6 +308,26 @@ func (t *Theme) FocusGradient(base color.Color, n int) []color.Color {
 	return lipgloss.Blend1D(n, t.P.Blue, base, t.P.Pink)
 }
 
+// SectionRule renders a quiet section heading for in-panel use:
+//
+//	── title ──
+//
+// Everything is Dim — rules, title, no colored glyphs. Recurring section
+// boundaries inside a panel (Inspector's rollout/images/runtime/conditions)
+// must read as structure, not chrome. Loud headings (cyan title + pink
+// glyphs) are reserved for Divider() at modal-headline scale, where
+// they're once-off attention beats rather than every-section dressing.
+func (t *Theme) SectionRule(title string, width int) string {
+	titleSeg := t.DimTxt.Render(strings.TrimSpace(title))
+	titleW := lipgloss.Width(titleSeg)
+	if width <= titleW+4 {
+		return titleSeg
+	}
+	half := (width - titleW - 2) / 2
+	rule := t.DimTxt.Render(strings.Repeat("─", half))
+	return rule + " " + titleSeg + " " + rule
+}
+
 // Divider returns a typographic section heading sized to `width` cells:
 //
 //	── ◇ Title ◇ ──
@@ -313,7 +335,9 @@ func (t *Theme) FocusGradient(base color.Color, n int) []color.Color {
 // Rules render in Dim, glyphs in Pink, the title in CyanBold — three weights
 // the eye reads as "this is a heading," not just "this is bold text on its
 // own line." When width is too small to fit the rules we drop them and just
-// return the inner `◇ Title ◇` cluster.
+// return the inner `◇ Title ◇` cluster. Use this for modal headlines /
+// once-off attention beats; for in-panel recurring section headers, use
+// SectionRule instead.
 func (t *Theme) Divider(title string, width int) string {
 	glyph := lipgloss.NewStyle().Foreground(t.P.Pink).Render("◇")
 	titleSeg := t.CyanBold.Render(strings.TrimSpace(title))
