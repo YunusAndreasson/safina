@@ -1,0 +1,44 @@
+{
+  "apiVersion": "v1",
+  "kind": "Pod",
+  "metadata": {
+    "name": "api-7d4f5-old",
+    "namespace": "shop",
+    "uid": "9c5a5f48-2b3e-4f1b-a4f6-2c5e88a3a0b2",
+    "creationTimestamp": "2026-05-19T11:00:00Z",
+    "deletionTimestamp": "2026-05-19T12:14:30Z",
+    "deletionGracePeriodSeconds": 30,
+    "labels": {"app": "api"},
+    "ownerReferences": [
+      {
+        "apiVersion": "apps/v1",
+        "kind": "ReplicaSet",
+        "name": "api-7d4f5",
+        "uid": "1d8f0d2a-7ad9-4c81-9b59-2dfb6d54a4a1",
+        "controller": true,
+        "blockOwnerDeletion": true
+      }
+    ]
+  },
+  "spec": {
+    "nodeName": "node-1",
+    "containers": [
+      {"name": "api", "image": "ghcr.io/example/api:v1.2.2"}
+    ]
+  },
+  "status": {
+    "phase": "Running",
+    "conditions": [
+      {"type": "Ready", "status": "False", "lastTransitionTime": "2026-05-19T12:14:31Z"}
+    ],
+    "containerStatuses": [
+      {
+        "name": "api",
+        "ready": false,
+        "restartCount": 0,
+        "image": "ghcr.io/example/api:v1.2.2",
+        "state": {"running": {"startedAt": "2026-05-19T11:00:05Z"}}
+      }
+    ]
+  }
+}

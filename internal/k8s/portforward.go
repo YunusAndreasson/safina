@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -240,7 +241,7 @@ func (fm *ForwardManager) StartPortForward(
 		return nil, ctx.Err()
 	case <-time.After(10 * time.Second):
 		close(stop)
-		return nil, fmt.Errorf("forward did not become ready within 10s")
+		return nil, errors.New("forward did not become ready within 10s")
 	}
 
 	fm.mu.Lock()
@@ -348,13 +349,13 @@ func (fm *ForwardManager) Count() int {
 func ParsePortPair(s string) (local, remote int, err error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
-		return 0, 0, fmt.Errorf("empty port pair")
+		return 0, 0, errors.New("empty port pair")
 	}
 	parts := strings.SplitN(s, ":", 2)
 	parseOne := func(p string) (int, error) {
 		p = strings.TrimSpace(p)
 		if p == "" {
-			return 0, fmt.Errorf("empty port")
+			return 0, errors.New("empty port")
 		}
 		v := 0
 		for _, r := range p {

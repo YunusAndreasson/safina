@@ -1,0 +1,56 @@
+{
+  "apiVersion": "v1",
+  "kind": "Pod",
+  "metadata": {
+    "name": "broken-7d4f5",
+    "namespace": "shop",
+    "uid": "3c5a5f48-2b3e-4f1b-a4f6-2c5e88a3a0b3",
+    "creationTimestamp": "2026-05-19T12:00:00Z",
+    "labels": {"app": "broken"},
+    "ownerReferences": [
+      {
+        "apiVersion": "apps/v1",
+        "kind": "ReplicaSet",
+        "name": "broken-7d4f5",
+        "uid": "2d8f0d2a-7ad9-4c81-9b59-2dfb6d54a4a2",
+        "controller": true,
+        "blockOwnerDeletion": true
+      }
+    ]
+  },
+  "spec": {
+    "nodeName": "node-1",
+    "containers": [
+      {"name": "broken", "image": "ghcr.io/example/broken:bad"}
+    ]
+  },
+  "status": {
+    "phase": "Running",
+    "conditions": [
+      {"type": "Ready", "status": "False"},
+      {"type": "ContainersReady", "status": "False"}
+    ],
+    "containerStatuses": [
+      {
+        "name": "broken",
+        "ready": false,
+        "restartCount": 7,
+        "image": "ghcr.io/example/broken:bad",
+        "state": {
+          "waiting": {
+            "reason": "CrashLoopBackOff",
+            "message": "back-off 5m0s restarting failed container"
+          }
+        },
+        "lastState": {
+          "terminated": {
+            "exitCode": 1,
+            "reason": "Error",
+            "startedAt": "2026-05-19T12:08:00Z",
+            "finishedAt": "2026-05-19T12:08:02Z"
+          }
+        }
+      }
+    ]
+  }
+}

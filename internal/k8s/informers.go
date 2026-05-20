@@ -23,14 +23,21 @@ type informerSet struct {
 	stop       chan struct{}
 }
 
+// startInformersSyncTimeout bounds how long startInformers will block
+// on initial WaitForCacheSync. Five seconds is enough headroom for any
+// real cluster the operator is connecting to (the slow case is API
+// server cold starts) while keeping a misconfigured / unreachable
+// cluster from hanging the launch indefinitely.
+const startInformersSyncTimeout = 5 * time.Second
+
 // startInformers builds the factory, registers Pod + Node informers, starts
-// them, and blocks until both initial syncs complete or syncTimeout fires.
+// them, and blocks until both initial syncs complete or the timeout fires.
 //
 // Returns nil when the cache fails to sync within the deadline. The most
 // likely cause in the field is RBAC denying Watch on Pods or Nodes; degrading
 // to direct-API reads is preferable to refusing the cluster outright, so
 // callers treat nil as "fall back to the uncached path."
-func startInformers(cs kubernetes.Interface, syncTimeout time.Duration) *informerSet {
+func startInformers(cs kubernetes.Interface) *informerSet {
 	factory := informers.NewSharedInformerFactory(cs, 0)
 	podInf := factory.Core().V1().Pods()
 	nodeInf := factory.Core().V1().Nodes()
@@ -42,7 +49,7 @@ func startInformers(cs kubernetes.Interface, syncTimeout time.Duration) *informe
 	}
 	factory.Start(set.stop)
 
-	syncCtx, cancel := context.WithTimeout(context.Background(), syncTimeout)
+	syncCtx, cancel := context.WithTimeout(context.Background(), startInformersSyncTimeout)
 	defer cancel()
 	if !cache.WaitForCacheSync(syncCtx.Done(),
 		podInf.Informer().HasSynced,

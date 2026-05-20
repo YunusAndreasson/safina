@@ -147,8 +147,9 @@ func TestForwardManager_Count_MatchesActiveAfterMixedOps(t *testing.T) {
 	// List length must match Count exactly (no leak).
 	assert.Len(t, fm.List(), fm.Count())
 
-	ids := []string{}
-	for _, s := range fm.List() {
+	list := fm.List()
+	ids := make([]string, 0, len(list))
+	for _, s := range list {
 		ids = append(ids, s.ID)
 	}
 	sort.Strings(ids)
@@ -286,8 +287,8 @@ func TestResolvePodForService_DropsNamedTargetPorts(t *testing.T) {
 
 // ── small testing helpers ─────────────────────────────────────────────
 
-func assertError(s string) error { return &simpleErr{s: s} }
+func assertError(s string) error { return &simpleError{s: s} }
 
-type simpleErr struct{ s string }
+type simpleError struct{ s string }
 
-func (e *simpleErr) Error() string { return e.s }
+func (e *simpleError) Error() string { return e.s }

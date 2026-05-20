@@ -1,6 +1,7 @@
 package k8s
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -118,7 +119,7 @@ func NewClient(rawCfg *clientcmdapi.Config, ctxName string) (*Client, error) {
 	// contexts so total launch cost is bounded by the slowest cluster, not
 	// the sum. Failure (timeout or RBAC-denied Watch) leaves informers=nil,
 	// and the cache-aware methods fall back to direct API reads.
-	inf := startInformers(cs, 5*time.Second)
+	inf := startInformers(cs)
 
 	return &Client{
 		Clientset:  cs,
@@ -184,7 +185,7 @@ func NewManager(rawCfg *clientcmdapi.Config) (*Manager, error) {
 	}
 
 	if len(m.Clients) == 0 {
-		return nil, fmt.Errorf("no reachable contexts found")
+		return nil, errors.New("no reachable contexts found")
 	}
 
 	return m, nil

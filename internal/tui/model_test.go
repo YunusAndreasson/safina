@@ -91,7 +91,7 @@ func TestWindowTitleFor(t *testing.T) {
 		got := windowTitleFor(crumbs)
 		assert.LessOrEqual(t, len(got), 60, "should be truncated to max 60")
 		if len(got) >= 3 {
-			assert.Equal(t, "…", string(got[len(got)-3:]))
+			assert.Equal(t, "…", got[len(got)-3:])
 		}
 	})
 
@@ -425,4 +425,132 @@ func TestHandleScaleInput_EscCancels(t *testing.T) {
 	_, cmd := m.handleScaleInput(tea.KeyPressMsg{Code: tea.KeyEscape})
 	assert.Nil(t, cmd)
 	assert.Equal(t, stateMain, m.state)
+}
+
+// ── Confirm-state escape contract ─────────────────────────────────────
+//
+// update.go dispatches seven different confirm states (Delete, Rollback,
+// Restart, RestartPod, Edit, Cordon, Drain) to the same handleConfirm
+// path. Today only Delete + Edit cancellation are covered. If a future
+// refactor adds an eighth state but forgets to wire it into
+// handleConfirm — or breaks one of the existing five — esc would
+// silently stop returning the operator to stateMain and they'd be stuck
+// inside a modal with no obvious way out. This table pins all seven.
+
+func TestHandleConfirm_EscFromEveryConfirmState_ReturnsToMain(t *testing.T) {
+	cases := map[string]state{
+		"delete":      stateDeleteConfirm,
+		"rollback":    stateRollbackConfirm,
+		"restart":     stateRestartConfirm,
+		"restart_pod": stateRestartPodConfirm,
+		"edit":        stateEditConfirm,
+		"cordon":      stateCordonConfirm,
+		"drain":       stateDrainConfirm,
+	}
+	for name, st := range cases {
+		t.Run(name, func(t *testing.T) {
+			m := setupModel()
+			m.state = st
+			cmd := m.handleConfirm(tea.KeyPressMsg{Code: tea.KeyEscape})
+			assert.Nil(t, cmd, "esc must not emit a command")
+			assert.Equal(t, stateMain, m.state, "esc must return to stateMain from %v", st)
+		})
+	}
+}
+
+func TestHandleConfirm_NFromEveryConfirmState_ReturnsToMain(t *testing.T) {
+	// Same contract, lowercase n. Cancel verb parity matters because the
+	// modal footer teaches "y/n" — if n stops working in (say) the Drain
+	// modal, the operator must escape the entire app to get out.
+	cases := map[string]state{
+		"delete":      stateDeleteConfirm,
+		"rollback":    stateRollbackConfirm,
+		"restart":     stateRestartConfirm,
+		"restart_pod": stateRestartPodConfirm,
+		"edit":        stateEditConfirm,
+		"cordon":      stateCordonConfirm,
+		"drain":       stateDrainConfirm,
+	}
+	for name, st := range cases {
+		t.Run(name, func(t *testing.T) {
+			m := setupModel()
+			m.state = st
+			cmd := m.handleConfirm(tea.KeyPressMsg{Text: "n", Code: 'n'})
+			assert.Nil(t, cmd, "n must not emit a command")
+			assert.Equal(t, stateMain, m.state, "n must return to stateMain from %v", st)
+		})
+	}
+}
+
+// TestHandleConfirm_EditEscClearsSession pins that *esc* (not just 'n')
+// runs cleanupEdit. The existing TestHandleConfirm_EditCancelClearsSession
+// only covers the 'n' path; an asymmetry where esc skipped the cleanup
+// would leak a tempfile and leave m.edit pointing at stale bytes that
+// would re-appear if the user re-entered the edit flow.
+func TestHandleConfirm_EditEscClearsSession(t *testing.T) {
+	m := setupModel()
+	m.state = stateEditConfirm
+	m.edit = &editSession{Kind: "ConfigMap", Name: "x", Namespace: "ns"}
+	cmd := m.handleConfirm(tea.KeyPressMsg{Code: tea.KeyEscape})
+	assert.Nil(t, cmd)
+	assert.Equal(t, stateMain, m.state)
+	assert.Nil(t, m.edit, "esc from stateEditConfirm must run cleanupEdit (parity with 'n')")
+}
+
+// ── Scale input sequence ─────────────────────────────────────────────
+//
+// Tests that drive the scale input through multiple Update calls and
+// assert the running state evolves correctly. These probe routing +
+// handler interaction in a way the existing single-message tests don't.
+
+func TestHandleScaleInput_DigitsAccepted_NonDigitsRejected_EscRestoresMain(t *testing.T) {
+	m := setupModel()
+	m.state = stateScaleInput
+
+	// Digit accepted — handler routes through bubble's textinput Update
+	// and returns its cmd (timer / blink — non-nil is fine, we don't
+	// assert the cmd shape here, only state continuity).
+	_, _ = m.handleScaleInput(tea.KeyPressMsg{Text: "5", Code: '5'})
+	assert.Equal(t, stateScaleInput, m.state, "digit must keep us in scale-input mode")
+
+	// Non-digit dropped silently — no state change, no command.
+	_, cmd := m.handleScaleInput(tea.KeyPressMsg{Text: "a", Code: 'a'})
+	assert.Nil(t, cmd, "non-digit input must be silently dropped")
+	assert.Equal(t, stateScaleInput, m.state, "non-digit must NOT bounce out of scale-input mode")
+
+	// Esc returns to main.
+	_, cmd = m.handleScaleInput(tea.KeyPressMsg{Code: tea.KeyEscape})
+	assert.Nil(t, cmd)
+	assert.Equal(t, stateMain, m.state, "esc must return to stateMain")
+}
+
+// ── Banner sequence ──────────────────────────────────────────────────
+
+// TestBannerSequence_NewerRaiseEclipsesOlderTimer drives the full
+// "banner A → banner B → A's stale timer fires → B is still up" flow
+// as a sequence. Individual pieces are tested above; this one pins the
+// composition.
+func TestBannerSequence_NewerRaiseEclipsesOlderTimer(t *testing.T) {
+	m := setupModel()
+
+	// Raise A at epoch=1.
+	m.raiseBanner("A", false)
+	require.Equal(t, "A", m.bannerMsg)
+	epochA := m.bannerEpoch
+
+	// Raise B at epoch=2. Banner now reads B.
+	m.raiseBanner("B", true) // error-style banner
+	require.Equal(t, "B", m.bannerMsg)
+	require.True(t, m.bannerErr)
+	require.Greater(t, m.bannerEpoch, epochA)
+
+	// A's stale timer fires. Must not clobber B.
+	m.Update(clearBannerMsg{epoch: epochA})
+	assert.Equal(t, "B", m.bannerMsg, "stale timer A must not wipe banner B")
+	assert.True(t, m.bannerErr, "B's error flag must survive A's timer")
+
+	// Finally B's timer fires. Banner clears.
+	m.Update(clearBannerMsg{epoch: m.bannerEpoch})
+	assert.Empty(t, m.bannerMsg)
+	assert.False(t, m.bannerErr)
 }
