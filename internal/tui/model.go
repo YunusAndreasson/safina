@@ -180,6 +180,16 @@ type Model struct {
 	// ("will evict N pods"). -1 means "still loading"; 0+ means landed.
 	drainConfirmPods int
 
+	// modalCardX/Y and modalInputRow are stamped by composeCard / the
+	// per-modal render funcs each frame for the input-bearing modals
+	// (scale, port-forward). View() reads them to translate the active
+	// textinput's local cursor offset into absolute terminal coordinates,
+	// so the hardware cursor lands at the right cell. Same pattern Chat
+	// uses with SetScreenOrigin, generalised so we don't compute the same
+	// modal geometry twice (once for the render, once for the cursor).
+	modalCardX, modalCardY int
+	modalInputRow          int // row offset of the input within the modal content (0-based)
+
 	// drainCh holds the running drain's event channel between
 	// DrainStartedMsg and the final Done event so successive
 	// NextDrainEvent reads target the same chan.
@@ -266,6 +276,15 @@ type Model struct {
 	// (focus back to tree) or by activating an immersive tab via hotkey.
 	peekWorkspace bool
 
+	// treeFocusInImmersive is the inverse of peekWorkspace for immersive
+	// states (logs/events/yaml/chat/hot/forwards/drain): true means the
+	// operator pressed Tab to redirect keystrokes to the tree while the
+	// immersive section keeps rendering. Read by the dispatch guard in
+	// handleKey to bypass the section's Update; cleared by returnToMain
+	// and by re-entering an immersive state from scratch so each
+	// open of a tab starts with the section owning keys.
+	treeFocusInImmersive bool
+
 	// startupBanner is a one-shot error message raised in Init(), used by
 	// main to surface CLI-flag mistakes (e.g. --context=does-not-exist)
 	// without spilling a stderr line into the user's scrollback.
@@ -302,7 +321,14 @@ func NewModel(mgr *k8s.Manager, cfg *config.AppConfig) Model {
 	scaleStyles.Blurred.Prompt = prompt
 	scaleStyles.Blurred.Text = text
 	scaleStyles.Blurred.Placeholder = t.DimTxt
+	// Hardware cursor — same treatment chat gets, so the operator sees a
+	// real blinking bar at the insertion point instead of relying on the
+	// default virtual block. tea.View.Cursor is populated in view.go.
+	scaleStyles.Cursor.Shape = tea.CursorBar
+	scaleStyles.Cursor.Blink = true
+	scaleStyles.Cursor.Color = t.P.Pink
 	scale.SetStyles(scaleStyles)
+	scale.SetVirtualCursor(false)
 
 	pf := textinput.New()
 	pf.Placeholder = "8080:80"
@@ -315,7 +341,11 @@ func NewModel(mgr *k8s.Manager, cfg *config.AppConfig) Model {
 	pfStyles.Blurred.Prompt = prompt
 	pfStyles.Blurred.Text = text
 	pfStyles.Blurred.Placeholder = t.DimTxt
+	pfStyles.Cursor.Shape = tea.CursorBar
+	pfStyles.Cursor.Blink = true
+	pfStyles.Cursor.Color = t.P.Pink
 	pf.SetStyles(pfStyles)
+	pf.SetVirtualCursor(false)
 
 	hp := help.New()
 	hp.Styles.ShortKey = t.HelpKey

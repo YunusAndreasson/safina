@@ -41,6 +41,15 @@ type Ctx struct {
 	// animated. One spinner for the whole app keeps every loader on the same
 	// frame.
 	Spinner spinner.Model
+
+	// Stale is true when the data on screen is meaningfully older than the
+	// auto-refresh cadence — either the topbar's refresh-age pill has
+	// ramped to yellow/red, or the terminal lost OS focus and refreshes
+	// are paused. Sections that paint live numbers (CPU/MEM cells,
+	// sparklines) read this flag and desaturate their cells so freshness
+	// is conveyed by the data itself, not just the "↻ Ns" pill in the
+	// topbar. The root sets this each render via SetStale.
+	Stale bool
 }
 
 // New builds a Ctx with a fresh background context.

@@ -33,6 +33,11 @@ type Logs struct {
 	vp     viewport.Model
 	follow bool
 	filter components.Filter
+	// wrap drives the viewport's soft-wrap mode. Default false (long
+	// lines truncate at the panel's right edge, matching every log
+	// viewer the on-caller has seen); `w` toggles it for the times a
+	// wide panic / large JSON record needs to read in one glance.
+	wrap bool
 
 	theme *theme.Theme
 
@@ -190,24 +195,46 @@ func (l *Logs) recomputeFilter() {
 	}
 }
 
-// refreshContent re-renders the viewport's content string with match
-// highlighting applied.
+// refreshContent re-renders the viewport's content string. Two paths,
+// chosen by whether a filter query is active:
+//
+//   - empty query: colorize each line with the log syntax highlighter
+//     (timestamps dim, level tokens semantic, JSON structure dim, stack
+//     frames dim). Reading-mode — the eye gets a visual map of where
+//     levels and structure sit, no search emphasis competing for color.
+//   - non-empty query: skip colorize, wrap matches in a yellow-on-bg
+//     highlight. Searching-mode — clean unstyled text under the match
+//     emphasis, no double-decoration over ANSI codes (which would
+//     require position math through escape sequences for marginal gain).
+//
+// Switching paths on query presence keeps each mode crisp; mixing
+// them would make match highlighting unreliable inside already-styled
+// segments without significantly more rendering machinery.
 func (l *Logs) refreshContent() {
 	if l.theme == nil {
 		return
 	}
-	hl := lipgloss.NewStyle().
-		Background(l.theme.P.Yellow).
-		Foreground(l.theme.P.BG).
-		Bold(true)
 	q := l.filter.Value()
-	cs := hasUpper(q)
 	var b strings.Builder
-	for n, idx := range l.filtered {
-		if n > 0 {
-			b.WriteByte('\n')
+	if q == "" {
+		for n, idx := range l.filtered {
+			if n > 0 {
+				b.WriteByte('\n')
+			}
+			b.WriteString(colorizeLogLine(l.lines[idx], l.theme))
 		}
-		b.WriteString(highlight(l.lines[idx], q, cs, hl))
+	} else {
+		hl := lipgloss.NewStyle().
+			Background(l.theme.P.Yellow).
+			Foreground(l.theme.P.BG).
+			Bold(true)
+		cs := hasUpper(q)
+		for n, idx := range l.filtered {
+			if n > 0 {
+				b.WriteByte('\n')
+			}
+			b.WriteString(highlight(l.lines[idx], q, cs, hl))
+		}
 	}
 	l.rendered = b.String()
 	l.vp.SetContent(l.rendered)
@@ -302,6 +329,21 @@ func (l *Logs) Update(msg tea.Msg, c *tuictx.Ctx) (tea.Cmd, bool) {
 			l.vp.GotoBottom()
 		}
 		return nil, false
+
+	case key.Matches(km, c.Keys.Wrap):
+		// Toggle soft wrap. The viewport handles wrap internally —
+		// we only flip its SoftWrap flag; the next render re-flows
+		// the existing buffer. Follow stays sticky: if we were at
+		// the bottom before, we should remain visually at the bottom
+		// after re-wrap (otherwise the line count changes and the
+		// last line drifts out of view).
+		wasAtBottom := l.vp.AtBottom()
+		l.wrap = !l.wrap
+		l.vp.SoftWrap = l.wrap
+		if l.follow && wasAtBottom {
+			l.vp.GotoBottom()
+		}
+		return nil, false
 	}
 
 	prevAtBottom := l.vp.AtBottom()
@@ -377,11 +419,19 @@ func (l *Logs) renderStatusRow(c *tuictx.Ctx) string {
 }
 
 // renderKeysRow lists the modal's key bindings in the same style/separator
-// convention as the global help bar (interpunct-separated, dim).
+// convention as the global help bar (interpunct-separated, dim). The
+// wrap key carries its current state in the description ("wrap on" /
+// "wrap") so the operator sees the toggle's effect without a separate
+// indicator.
 func (l *Logs) renderKeysRow() string {
+	wrapDesc := "wrap"
+	if l.wrap {
+		wrapDesc = "wrap on"
+	}
 	return components.RenderModalKeysRow(l.theme, []components.KeyDesc{
 		{Key: "/", Desc: "filter"},
 		{Key: "space", Desc: "follow"},
+		{Key: "w", Desc: wrapDesc},
 		{Key: "j/k", Desc: "scroll"},
 		{Key: "g/G", Desc: "top/bot"},
 		{Key: "ctrl+l", Desc: "clear"},

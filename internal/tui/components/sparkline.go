@@ -248,6 +248,62 @@ func Sparkline(t *theme.Theme, buf *MetricBuffer, width int, bg lipgloss.Style) 
 	return b.String()
 }
 
+// SparklineDim renders the same shape as Sparkline but with every cell
+// painted in P.Dim — no green/yellow/red gradient. Used when the data on
+// screen is stale (terminal blurred / refresh-age past the yellow tier)
+// so the row still shows trend shape, but the urgency-color signal is
+// suppressed until fresh samples arrive. The braille glyphs themselves
+// are unchanged — only the color register shifts.
+func SparklineDim(t *theme.Theme, buf *MetricBuffer, width int, bg lipgloss.Style) string {
+	if width < 2 {
+		width = 2
+	}
+	if buf == nil || buf.Len() < 2 {
+		return bg.Foreground(t.P.Dim).Render(strings.Repeat("·", width))
+	}
+	ceiling := buf.Ceiling()
+	if ceiling <= 0 {
+		ceiling = 1
+	}
+	if float64(buf.HighWater())/float64(ceiling) < idleCeilingFraction {
+		floor := string(brailleBase + rune(brailleLeft[1]+brailleRight[1]))
+		return bg.Foreground(t.P.Dim).Render(strings.Repeat(floor, width))
+	}
+	const samplesPerCell = 2
+	sampleCap := width * samplesPerCell
+	samples := buf.Samples()
+	if len(samples) > sampleCap {
+		samples = samples[len(samples)-sampleCap:]
+	}
+	padN := sampleCap - len(samples)
+	if padN < 0 {
+		padN = 0
+	}
+	var b strings.Builder
+	dim := bg.Foreground(t.P.Dim)
+	for cell := range width {
+		lIdx := cell * samplesPerCell
+		rIdx := cell*samplesPerCell + 1
+		lFrac, lHas := sampleFrac(samples, lIdx, padN, ceiling)
+		rFrac, rHas := sampleFrac(samples, rIdx, padN, ceiling)
+		if !lHas && !rHas {
+			b.WriteString(bg.Render(" "))
+			continue
+		}
+		lLevel := levelFor(lFrac)
+		rLevel := levelFor(rFrac)
+		if !lHas {
+			lLevel = 0
+		}
+		if !rHas {
+			rLevel = 0
+		}
+		ch := brailleBase + rune(brailleLeft[lLevel]+brailleRight[rLevel])
+		b.WriteString(dim.Render(string(ch)))
+	}
+	return b.String()
+}
+
 // SparklineFull renders the *entire* buffered history into `width` cells by
 // max-bucketing samples. Where Sparkline shows only the latest 2×width raw
 // samples (recency window — what you want in a tree row), SparklineFull

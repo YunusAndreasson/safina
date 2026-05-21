@@ -174,6 +174,15 @@ func StreamPodContainerLogs(ctx context.Context, cs kubernetes.Interface, namesp
 		Follow:    true,
 		Previous:  previous,
 		TailLines: int64Ptr(500),
+		// Ask kubelet to prepend an RFC3339Nano timestamp to every line.
+		// Without this, apps that emit plain output ("Starting server",
+		// "Listening on :8080") arrive with no temporal anchor — useless
+		// for correlation during an incident, and the log colorizer has
+		// nothing to dim. With timestamps, every line gets a recessive
+		// time prefix the eye glides past, and operators can match
+		// log entries against the kubelet's view of "when did this
+		// happen". Same default stern / k9s ship with.
+		Timestamps: true,
 	})
 
 	stream, err := req.Stream(ctx)

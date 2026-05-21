@@ -94,10 +94,10 @@ keys mutate cluster state.
 | r | Refresh |
 | Tab | Move focus between tree (left) and workspace (right); ←/→ then cycles tabs |
 | i | Open chat tab |
-| , | Resource browser (pick which kinds appear as folds) |
+| Ctrl+B | Resource browser (pick which kinds appear as folds) |
 | Ctrl+K | Switch cluster |
 | Ctrl+F | Active port-forwards list |
-| H | Hot pods (top-N by CPU, cluster-wide) |
+| h | Hot pods (top-N by CPU, cluster-wide) |
 | ? | Help |
 | q, Ctrl+C | Quit |
 

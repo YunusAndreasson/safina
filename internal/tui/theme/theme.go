@@ -163,6 +163,17 @@ func (t *Theme) StatusGlyph(s string, maxW int, bg lipgloss.Style) string {
 	fg := bg.Foreground(col)
 	dot := fg.Render("●")
 	if s == "Running" || s == "Ready" {
+		// Calm-cluster suppression — same instinct apps' healthGlyphStyled
+		// uses for HealthHealthy: a column full of green ●'s on a healthy
+		// cluster reads as noise, not signal. When the caller asked for a
+		// single-cell glyph (the inline pod/container H column), render
+		// a blank space so only abnormal rows attract the eye. The wider
+		// label-bearing variants (hotlist, nodes) still show "● Running"
+		// because the row carries enough other context that the dot reads
+		// as a label anchor, not redundancy.
+		if maxW < 3 {
+			return bg.Render(" ")
+		}
 		return dot
 	}
 	if maxW < 3 {

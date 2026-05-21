@@ -23,6 +23,13 @@ type Map struct {
 	Filter   key.Binding
 	// Tree-navigator additions:
 	FirstFail key.Binding
+	// Wrap toggles soft line-wrap inside the long-content workspace
+	// viewports (logs, events, describe). Default off — lines
+	// truncate at panel width, matching every other log viewer the
+	// on-caller has seen — and a single keystroke flips it for the
+	// times a long panic / wide JSON line needs to read in one
+	// glance. Lowercase per the read-action convention.
+	Wrap key.Binding
 	// Ask focuses the chat panel (vim-style "insert mode" jump from tree
 	// to typing). Tab also works; Ask is the discoverable alias.
 	Ask key.Binding
@@ -52,16 +59,14 @@ type Map struct {
 	// Drain evicts a node's pods. Uppercase D to keep `d` (Describe) intact.
 	Drain key.Binding
 	// Hot opens the noisy-neighbours modal — top-N pods cluster-wide
-	// sorted by CPU usage. Read-only and cluster-global (not tied to the
-	// tree cursor), so an `H` chord is the right shape: discoverable in
-	// the footer, not a fat-finger risk, distinct from the structural
-	// drill navigation.
+	// sorted by CPU usage. Read-only and cluster-global; lowercase per
+	// the convention (uppercase is reserved for mutators).
 	Hot key.Binding
 	// Configure opens the Resource Browser modal — the user picks which
 	// kubernetes resource kinds appear as folds in the tree. Bound to
-	// `,` (vim-leader convention; single keystroke; not used elsewhere
-	// in the app). Settings, not a verb on a row, so it sits in the
-	// "meta" help group.
+	// `ctrl+b` (Browse): a chord keeps it out of the alphabet collision
+	// space and pairs naturally with `ctrl+f` (forwards list) and
+	// `ctrl+k` (cluster switch) as the meta-config chord cluster.
 	Configure key.Binding
 	// ClusterSwitch (Ctrl+K) opens the mid-session cluster-switcher
 	// overlay. Memory rule "no default cluster" governs the cold start;
@@ -107,6 +112,7 @@ func Default() Map {
 		// FirstFail uses `n` to match vim's next-search-match convention.
 		// Read-only navigation jump → lowercase.
 		FirstFail: key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "next fail")),
+		Wrap:      key.NewBinding(key.WithKeys("w"), key.WithHelp("w", "wrap")),
 		Ask:       key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "ask (tab also)")),
 		Yank:      key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "copy")),
 		Reveal:    key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "reveal secret")),
@@ -118,9 +124,9 @@ func Default() Map {
 		Cordon: key.NewBinding(key.WithKeys("C"), key.WithHelp("C", "cordon")),
 		Drain:  key.NewBinding(key.WithKeys("D"), key.WithHelp("D", "drain")),
 
-		Hot: key.NewBinding(key.WithKeys("H"), key.WithHelp("H", "hot pods")),
+		Hot: key.NewBinding(key.WithKeys("h"), key.WithHelp("h", "hot pods")),
 
-		Configure: key.NewBinding(key.WithKeys(","), key.WithHelp(",", "configure")),
+		Configure: key.NewBinding(key.WithKeys("ctrl+b"), key.WithHelp("ctrl+b", "browse kinds")),
 
 		// Ctrl+K is the de-facto "command palette / quick-switcher" chord
 		// in every modern editor (VS Code, Linear, Notion). We claim it

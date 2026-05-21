@@ -30,6 +30,11 @@ type Events struct {
 
 	vp     viewport.Model
 	filter components.Filter
+	// wrap drives the viewport's soft-wrap mode. Default off — event
+	// messages are usually short and the table-like layout reads
+	// better with truncation; `w` toggles wrap for the rare wide
+	// message that needs full reading.
+	wrap bool
 
 	loading bool
 	err     error
@@ -246,6 +251,11 @@ func (s *Events) Update(msg tea.Msg, c *tuictx.Ctx) (tea.Cmd, bool) {
 		s.recomputeFilter()
 		s.refreshContent()
 		return nil, false
+
+	case key.Matches(km, c.Keys.Wrap):
+		s.wrap = !s.wrap
+		s.vp.SoftWrap = s.wrap
+		return nil, false
 	}
 
 	var cmd tea.Cmd
@@ -303,9 +313,14 @@ func (s *Events) renderStatusRow(c *tuictx.Ctx) string {
 }
 
 func (s *Events) renderKeysRow() string {
+	wrapDesc := "wrap"
+	if s.wrap {
+		wrapDesc = "wrap on"
+	}
 	return components.RenderModalKeysRow(s.theme, []components.KeyDesc{
 		{Key: "/", Desc: "filter"},
 		{Key: "r", Desc: "refresh"},
+		{Key: "w", Desc: wrapDesc},
 		{Key: "j/k", Desc: "scroll"},
 		{Key: "ctrl+l", Desc: "clear"},
 		{Key: "esc", Desc: "close"},

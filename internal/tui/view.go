@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
@@ -47,12 +48,47 @@ func (m *Model) View() tea.View {
 			ReportAlternateKeys: true,
 		},
 	}
-	// Hardware cursor is shown only on the Chat tab while it's active.
-	// Every other surface has its caret implied by the row highlight.
-	if m.state == stateChatView {
-		v.Cursor = m.chat.Cursor()
+	// Hardware cursor is shown on the Chat tab and on the input-bearing
+	// modals (scale, port-forward). Everywhere else the caret is implied
+	// by the row highlight. For the modals, composeCard + the per-modal
+	// renderer have already stashed the card's screen position and the
+	// row offset of the input within the card content; here we just
+	// translate the textinput's own cursor X back into absolute coords.
+	//
+	// Chat cursor is suppressed when the operator has tabbed to the
+	// tree (treeFocusInImmersive) — keys land on the tree, so a blinking
+	// chat cursor would be a lie about where input is going. The chat
+	// surface stays rendered with its blurred-input styling; pressing
+	// Tab again restores the cursor and the textarea focus.
+	switch m.state {
+	case stateChatView:
+		if !m.treeFocusInImmersive {
+			v.Cursor = m.chat.Cursor()
+		}
+	case stateScaleInput:
+		v.Cursor = m.modalInputCursor(m.scaleInput.Cursor())
+	case statePortForwardInput:
+		v.Cursor = m.modalInputCursor(m.pfInput.Cursor())
 	}
 	return v
+}
+
+// modalInputCursor translates a textinput's locally-rooted cursor (X
+// counted from the textinput's prompt origin, Y always 0 for single-line
+// inputs) into screen coordinates inside the centered modal card. The
+// per-frame stamps from composeCard (modalCardX/Y) and the per-modal
+// render fn (modalInputRow) give us the card origin and the input's row
+// offset; t.Modal contributes a 1-cell border + 1×2 padding on each side
+// of its content area.
+func (m *Model) modalInputCursor(cur *tea.Cursor) *tea.Cursor {
+	if cur == nil {
+		return nil
+	}
+	// Border (1) + horizontal padding (2) = 3 cells before content[0,0]'s X.
+	// Border (1) + vertical padding (1) = 2 rows before content[0,0]'s Y.
+	cur.X += m.modalCardX + 3
+	cur.Y = m.modalCardY + 2 + m.modalInputRow
+	return cur
 }
 
 func (m *Model) render() string {
@@ -155,6 +191,11 @@ func (m *Model) composeCard(base, card string) string {
 	if cy < 0 {
 		cy = 0
 	}
+	// Stash the centered card origin so View() can place a hardware
+	// cursor inside an input-bearing modal without re-running the same
+	// centering math. Cheap (two ints, overwritten every frame).
+	m.modalCardX = cx
+	m.modalCardY = cy
 	// Backdrop layer: a full-screen field of dim dots that paints over the
 	// base so the modal reads as gated ("don't keep typing into the tree").
 	// Same visual signature as the lipgloss.Place backdrop the old path
@@ -186,6 +227,13 @@ func (m *Model) renderModalBackdrop(w, h int) string {
 // renderBase composes the steady-state frame: topbar / optional banner /
 // main split / footer. The chat drawer is part of the main split when open.
 func (m *Model) renderBase(w, h int) string {
+	// Stamp the staleness flag on the shared Ctx before any section
+	// renders this frame — metric cells (sparklines + colored values)
+	// desaturate when this is true so the data carries its own age signal
+	// rather than only the topbar pill. Two triggers: refresh-age has
+	// stretched past the auto-refresh cadence, OR the terminal lost OS
+	// focus and refreshes are paused.
+	m.ctx.Stale = m.dataLooksStale()
 	parts := []string{}
 	used := 1 // footer (reserved)
 
@@ -238,12 +286,15 @@ func (m *Model) renderMainSplit(w, h int) string {
 	}
 
 	workspaceFocused := m.workspaceOwnsFocus()
-	// Only one pane wears the gradient border. Sync the tree's Focused field
-	// so its View() draws a flat dim border when the workspace owns focus.
-	// Restored on return so update.go's state transitions remain authoritative.
-	prevTreeFocused := m.tree.Focused
+	// Only one pane wears the gradient border. Tree.Focused is the
+	// persistent canonical value — set it here so a single source of
+	// truth flows both rendering (border / row highlight) and update.go
+	// (state-transition logic that reads m.tree.Focused). The previous
+	// defer-restore pattern left a different value persistent than the
+	// one rendered, which produced single-frame inconsistencies right
+	// after entering an immersive tab (the tree briefly looked focused
+	// because update.go's pre-render value hadn't been synced down).
 	m.tree.Focused = !workspaceFocused
-	defer func() { m.tree.Focused = prevTreeFocused }()
 
 	// Chat lives inside the workspace tab; record its screen origin so the
 	// hardware cursor lands at the right pixel when the user types.
@@ -305,7 +356,15 @@ func containsTab(tabs []sections.WorkspaceTab, want sections.WorkspaceTab) bool 
 // and consuming keystrokes, or the operator pressed Tab to peek at the
 // workspace without changing the active view. The tree stays visible but
 // the gradient border migrates to the workspace.
+//
+// treeFocusInImmersive is the override: when set, the operator pressed
+// Tab while an immersive section was active to redirect keys to the
+// tree. The section keeps rendering but the gradient border migrates
+// back to the tree, matching where the keys are actually landing.
 func (m *Model) workspaceOwnsFocus() bool {
+	if m.treeFocusInImmersive {
+		return false
+	}
 	if m.peekWorkspace {
 		return true
 	}
@@ -383,35 +442,17 @@ func (m *Model) workspaceTabAvailability() sections.WSTabAvailability {
 	return av
 }
 
-// workspaceTitle is the panel title — a contextual one-liner anchored to
-// the active tab. Inspector shows the breadcrumb leaf; Logs/Events/Yaml
-// show their own section title; pinned tabs show the operation context.
+// workspaceTitle always returns "" — every workspace tab renders with a
+// clean top border. The topbar breadcrumb names *what* is selected (left
+// side, brightest segment), and the tab strip on the panel's first
+// content row names *which surface* is active. Painting a per-tab title
+// on the panel rule on top of that was a third register for the same
+// information, and the rule's text would shift as the user switched
+// tabs — a small visual jitter at every Tab/click that read as a glitch.
+// Constant-empty title keeps the border identical across tabs.
 func (m *Model) workspaceTitle(tab sections.WorkspaceTab) string {
-	switch tab {
-	case sections.WSTabLogs:
-		return m.logs.PaneTitle()
-	case sections.WSTabEvents:
-		return m.events.PaneTitle()
-	case sections.WSTabYaml:
-		return m.describe.PaneTitle()
-	case sections.WSTabChat:
-		return m.chat.PaneTitle()
-	case sections.WSTabHot:
-		return m.hot.PaneTitle()
-	case sections.WSTabForwards:
-		return m.forwards.PaneTitle()
-	case sections.WSTabDrain:
-		return m.drain.PaneTitle()
-	case sections.WSTabInspector:
-		// Falls through to the breadcrumb path below.
-	default:
-	}
-	// Inspector: leaf of the breadcrumb (the operator's current focus).
-	crumbs := m.tree.BreadcrumbCrumbs()
-	if len(crumbs) > 0 {
-		return crumbs[len(crumbs)-1].Label
-	}
-	return "workspace"
+	_ = tab
+	return ""
 }
 
 // renderTabBody dispatches to the section that owns the active tab's
@@ -492,6 +533,29 @@ func (m *Model) topbarClusterHealth() components.ClusterHealth {
 		MemFrac:       memFrac,
 		PressureCount: h.PressureCount,
 	}
+}
+
+// dataLooksStale reports whether live data on screen is older than the
+// auto-refresh cadence enough to warrant desaturating the metric cells.
+// Two triggers: terminal lost OS focus (refreshes are paused, so even a
+// freshly-loaded value will rot), OR last refresh is older than the
+// yellow-tier threshold the topbar pill uses. Sub-threshold values are
+// considered fresh — desaturating "just refreshed" data would punish
+// every normal tick.
+func (m *Model) dataLooksStale() bool {
+	if m.ctx.ActiveContext == "" {
+		return false
+	}
+	if !m.focused {
+		return true
+	}
+	if m.lastRefresh.IsZero() {
+		return false
+	}
+	// Yellow tier in refreshColor starts at 6s (just past the 5s auto-tick).
+	// Match that threshold here so the metric cells and the topbar pill
+	// shift register together.
+	return m.now.Sub(m.lastRefresh) >= 6*time.Second
 }
 
 // refreshAge returns the "Ns" / "Nm" age of the last successful tree load,
@@ -621,10 +685,11 @@ func (m *Model) renderChatFooter() string {
 
 // renderImmersiveFooter renders just the global chrome row for any
 // workspace-tab state. Each immersive section (logs / events / describe /
-// hot / forwards) already paints a verb-hint row inside its own body, so
-// the footer's job is reduced to the universal "you can always leave / get
-// help / quit" affordances. The two-register rule from renderTreeFooter
-// still applies — the chrome stays dim so it reads as ambient.
+// hot / forwards) already paints a verb-hint row inside its own body
+// that includes "esc close" plus the section's own keys — so the footer
+// here intentionally does NOT restate esc, to avoid the double-render the
+// old layout had. What stays is the universal chrome (help / quit) the
+// section bodies don't surface themselves, in dim so it reads as ambient.
 func (m *Model) renderImmersiveFooter() string {
 	t := m.ctx.Theme
 	dim := lipgloss.NewStyle().Foreground(t.P.Dim)
@@ -633,7 +698,6 @@ func (m *Model) renderImmersiveFooter() string {
 	}
 	sep := dim.Render(" · ")
 	return strings.Join([]string{
-		pair("esc", "back"),
 		pair("?", "help"),
 		pair("q", "quit"),
 	}, sep)
@@ -742,6 +806,10 @@ func (m *Model) renderScaleModal() string {
 	if subtitle != "" {
 		parts = append(parts, t.DimTxt.Render(subtitle))
 	}
+	// Input row index within the content stack — title (+ optional
+	// subtitle) + blank spacer = where the textinput sits. Stashed for
+	// the View() hardware-cursor translation.
+	m.modalInputRow = len(parts) + 1
 	parts = append(parts,
 		"",
 		m.scaleInput.View(),
@@ -773,6 +841,8 @@ func currentDesiredReplicas(app k8s.AppInfo) int {
 func (m *Model) renderPortForwardModal() string {
 	t := m.ctx.Theme
 	subject := strings.ToLower(m.pfTarget.Kind) + " " + m.pfTarget.Name
+	// Fixed layout: title, blank, input → input row is always 2.
+	m.modalInputRow = 2
 	content := lipgloss.JoinVertical(lipgloss.Left,
 		t.BlueBold.Render("port-forward "+subject),
 		"",

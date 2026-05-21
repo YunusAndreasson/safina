@@ -48,15 +48,33 @@ func PanelWithAccent(t *theme.Theme, title string, w, h int, content string, foc
 		return renderFlatPanel(title, w, h, content, t.P.Dim, t.P.Dim)
 	}
 
-	b := lipgloss.ThickBorder()
+	// Same glyph set as the blurred path (renderFlatPanel uses
+	// RoundedBorder). The focus signal is carried entirely by the per-cell
+	// gradient color — the box shape is invariant. Earlier this path used
+	// ThickBorder, which meant every focus swap snapped the border
+	// characters between two sets (─│╭ ↔ ━┃┏) at the same moment the
+	// color changed, reading as a flicker on Tab / state transitions
+	// (e.g. tree → workspace when opening Logs). Unifying the glyphs
+	// removes the snap; only the color register shifts.
+	b := lipgloss.RoundedBorder()
 	topGrad := t.FocusGradient(borderAccent, w)
 	vGrad := t.FocusGradient(borderAccent, h)
 
+	// Empty title means "draw a clean top border with no inserted gap". The
+	// Inspector tab uses this path because the topbar's breadcrumb leaf
+	// already names the current selection — repeating it on the panel rule
+	// is duplication, not chrome.
+	trimmed := strings.TrimSpace(title)
 	titleStyle := lipgloss.NewStyle().Foreground(titleAccent).Bold(true)
-	titleSeg := titleStyle.Render(" " + strings.TrimSpace(title) + " ")
-	titleW := lipgloss.Width(titleSeg)
-
+	titleSeg := ""
+	titleW := 0
 	leadDashes := 1
+	if trimmed != "" {
+		titleSeg = titleStyle.Render(" " + trimmed + " ")
+		titleW = lipgloss.Width(titleSeg)
+	} else {
+		leadDashes = 0
+	}
 	dashesAfterTitle := w - 2 - leadDashes - titleW
 	if dashesAfterTitle < 1 {
 		dashesAfterTitle = 1
@@ -136,10 +154,16 @@ func renderFlatPanel(title string, w, h int, content string, borderColor, titleC
 	b := lipgloss.RoundedBorder()
 	border := lipgloss.NewStyle().Foreground(borderColor)
 	titleStyle := lipgloss.NewStyle().Foreground(titleColor)
-	titleSeg := titleStyle.Render(" " + strings.TrimSpace(title) + " ")
-	titleW := lipgloss.Width(titleSeg)
-
+	trimmed := strings.TrimSpace(title)
+	titleSeg := ""
+	titleW := 0
 	leadDashes := 1
+	if trimmed != "" {
+		titleSeg = titleStyle.Render(" " + trimmed + " ")
+		titleW = lipgloss.Width(titleSeg)
+	} else {
+		leadDashes = 0
+	}
 	dashesAfterTitle := w - 2 - leadDashes - titleW
 	if dashesAfterTitle < 1 {
 		dashesAfterTitle = 1

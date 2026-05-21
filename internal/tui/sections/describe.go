@@ -28,6 +28,11 @@ type Describe struct {
 
 	vp     viewport.Model
 	filter components.Filter
+	// wrap drives the viewport's soft-wrap mode. Default off — YAML
+	// indentation conveys structure best when long values truncate at
+	// the panel edge; `w` toggles wrap for the times a long inline
+	// string (image refs, annotations) needs the full read.
+	wrap bool
 
 	loading  bool
 	err      error
@@ -432,6 +437,11 @@ func (s *Describe) Update(msg tea.Msg, c *tuictx.Ctx) (tea.Cmd, bool) {
 		s.recomputeFilter()
 		s.refreshContent()
 		return nil, false
+
+	case key.Matches(km, c.Keys.Wrap):
+		s.wrap = !s.wrap
+		s.vp.SoftWrap = s.wrap
+		return nil, false
 	}
 
 	var cmd tea.Cmd
@@ -492,9 +502,14 @@ func (s *Describe) renderStatusRow(c *tuictx.Ctx) string {
 }
 
 func (s *Describe) renderKeysRow() string {
+	wrapDesc := "wrap"
+	if s.wrap {
+		wrapDesc = "wrap on"
+	}
 	return components.RenderModalKeysRow(s.theme, []components.KeyDesc{
 		{Key: "/", Desc: "filter"},
 		{Key: "r", Desc: "refresh"},
+		{Key: "w", Desc: wrapDesc},
 		{Key: "j/k", Desc: "scroll"},
 		{Key: "g/G", Desc: "top/bot"},
 		{Key: "ctrl+l", Desc: "clear"},

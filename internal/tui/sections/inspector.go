@@ -461,50 +461,97 @@ func renderLiveMetric(t *theme.Theme, kind string, live *inspectorLive, isCPU bo
 // Pulls the live sparkline buffer from the tree (shared pointer — keeps
 // updating on subsequent refreshes) and the configured requests/limits
 // from the detail fetch when it has landed. No-op when no samples yet.
+//
+// Semantics: curCPU/curMem are the instantaneous metrics-server reading
+// captured at the most recent refresh tick (5s cadence). NOT cumulative;
+// a steady-state pod renders a flat value, an application accumulating
+// page cache or leaking memory renders a climbing value — both faithful
+// to what metrics-server reports. The displayed number and the
+// rightmost sparkline sample are derived from the same a.Memory /
+// p.Memory field, so they never disagree.
 func attachPodLive(s *inspectorSnapshot, tr *Tree, p k8s.PodInfo, det *inspectorDetail) {
 	cpuBuf, memBuf := tr.MetricSeriesFor(k8s.KindPod, p.Namespace, p.Name)
-	if cpuBuf == nil && memBuf == nil {
+	live := buildLive(cpuBuf, memBuf, p.CPU, p.Memory)
+	if live == nil {
 		return
 	}
-	live := &inspectorLive{
-		cpuBuf: cpuBuf,
-		memBuf: memBuf,
-		curCPU: p.CPU,
-		curMem: p.Memory,
-	}
 	if det != nil && det.pod != nil {
-		d := det.pod
-		live.cpuReqMilli = d.CPURequestMilli
-		live.cpuLimMilli = d.CPULimitMilli
-		live.memReqBytes = d.MemRequestBytes
-		live.memLimBytes = d.MemLimitBytes
+		applyResourceBudget(live, det.pod.CPURequestMilli, det.pod.CPULimitMilli, det.pod.MemRequestBytes, det.pod.MemLimitBytes)
 	}
 	s.live = live
 }
 
 // attachAppLive populates the LIVE USAGE block for an App selection. The
-// row's CPU/Memory are a sum across the workload's pods; the configured
-// per-replica request/limit (when the detail fetch returned) is reported
-// next to the current value so the operator reads "we're at X, replica
-// budget is Y" without leaving the panel.
+// row's CPU/Memory are a sum across the workload's selector-matching
+// pods (see aggregateForSelector); during a rolling update both old
+// and new pods may be alive simultaneously and the sum briefly climbs
+// then settles — that is correct behaviour, not double-counting. The
+// configured per-pod request/limit (when the detail fetch returned)
+// is reported next to the current value so the operator reads "we're
+// at X, per-replica budget is Y" without leaving the panel.
 func attachAppLive(s *inspectorSnapshot, tr *Tree, a k8s.AppInfo, det *inspectorDetail) {
 	cpuBuf, memBuf := tr.MetricSeriesFor(k8s.KindApp, a.Namespace, a.Name)
-	if cpuBuf == nil && memBuf == nil {
+	live := buildLive(cpuBuf, memBuf, a.CPU, a.Memory)
+	if live == nil {
 		return
 	}
-	live := &inspectorLive{
+	if det != nil && det.app != nil {
+		applyResourceBudget(live, det.app.CPURequestMilli, det.app.CPULimitMilli, det.app.MemRequestBytes, det.app.MemLimitBytes)
+	}
+	s.live = live
+}
+
+// buildLive is the shared constructor for the inspectorLive block. Returns
+// nil when no metric history exists for the selection (both buffers
+// nil) — caller treats that as "skip the live block this frame". CPU /
+// memory values flow in as int64 (millicores, bytes) and round-trip to
+// the renderer unchanged; formatting happens at renderLiveMetric so any
+// change to the unit display is in one place.
+func buildLive(cpuBuf, memBuf *components.MetricBuffer, curCPU, curMem int64) *inspectorLive {
+	if cpuBuf == nil && memBuf == nil {
+		return nil
+	}
+	return &inspectorLive{
 		cpuBuf: cpuBuf,
 		memBuf: memBuf,
-		curCPU: a.CPU,
-		curMem: a.Memory,
+		curCPU: curCPU,
+		curMem: curMem,
 	}
-	if det != nil && det.app != nil {
-		d := det.app
-		live.cpuReqMilli = d.CPURequestMilli
-		live.cpuLimMilli = d.CPULimitMilli
-		live.memReqBytes = d.MemRequestBytes
-		live.memLimBytes = d.MemLimitBytes
+}
+
+// applyResourceBudget copies the request / limit fields from a detail
+// payload onto a live block. Centralised so callers don't drift on which
+// fields belong on inspectorLive — adding a new budget kind (e.g.
+// ephemeral storage) touches one site instead of every attach* helper.
+func applyResourceBudget(live *inspectorLive, cpuReqMilli, cpuLimMilli, memReqBytes, memLimBytes int64) {
+	live.cpuReqMilli = cpuReqMilli
+	live.cpuLimMilli = cpuLimMilli
+	live.memReqBytes = memReqBytes
+	live.memLimBytes = memLimBytes
+}
+
+// attachNodeLive populates the LIVE USAGE block for a node selection.
+// Same shape Apps and Pods use, with two semantic adjustments:
+//
+//   - The sparkline buffer for nodes holds per-mille utilisation (0-1000
+//     mapping to 0-100% of allocatable; ratchets to 2000 on overcommit)
+//     rather than raw values. The gradient colours therefore align with
+//     the percentage the row shows, while the headline value next to
+//     the spark is the *raw* CPU / Memory usage so the operator reads
+//     "1.5 cores in use" without doing arithmetic against the budget.
+//   - The "request" side of the annotation reports the sum of pod
+//     requests scheduled on this node; the "limit" side is the node's
+//     allocatable. Same formatReqLim renderer Apps / Pods use, so the
+//     visual register stays identical; on a node it reads as
+//     "1500m req · 8000m lim" = "scheduler has 1.5c reserved, kubelet
+//     reports 8c allocatable".
+func attachNodeLive(s *inspectorSnapshot, tr *Tree, n k8s.NodeInfo) {
+	cpuBuf, memBuf := tr.MetricSeriesFor(k8s.KindNode, "", n.Name)
+	live := buildLive(cpuBuf, memBuf, n.CPUUsed, n.MemUsed)
+	if live == nil {
+		return
 	}
+	applyResourceBudget(live, n.CPURequest, n.CPUAlloc, n.MemRequest, n.MemAlloc)
 	s.live = live
 }
 
@@ -562,7 +609,9 @@ func (i *Inspector) buildSnapshot(tr *Tree, ref NodeRef, det *inspectorDetail) *
 		}
 	case k8s.KindNode:
 		if n, ok := tr.SelectedNodeInfo(); ok {
-			return inspectNodeSnap(n, det)
+			snap := inspectNodeSnap(n, det)
+			attachNodeLive(snap, tr, n)
+			return snap
 		}
 	case k8s.KindContainer:
 		if c, ok := selectedContainer(tr); ok {

@@ -156,8 +156,8 @@ func TestE2E_KeybindingDispatchSmoke(t *testing.T) {
 	}{
 		{"help", "?", stateHelp},
 		{"forwards", "ctrl+f", stateForwardsList},
-		{"hot", "H", stateHotView},
-		{"configure", ",", stateBrowser},
+		{"hot", "h", stateHotView},
+		{"configure", "ctrl+b", stateBrowser},
 		{"clusterswitch", "ctrl+k", stateClusters},
 	}
 	for _, c := range checks {
@@ -169,6 +169,8 @@ func TestE2E_KeybindingDispatchSmoke(t *testing.T) {
 				msg = tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'f', Text: ""}
 			case "ctrl+k":
 				msg = tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'k', Text: ""}
+			case "ctrl+b":
+				msg = tea.KeyPressMsg{Mod: tea.ModCtrl, Code: 'b', Text: ""}
 			default:
 				msg = keyMsg(c.key)
 			}

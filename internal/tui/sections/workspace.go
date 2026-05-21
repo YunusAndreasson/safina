@@ -46,7 +46,7 @@ func (t WorkspaceTab) Label() string {
 	case WSTabChat:
 		return "(i) Chat"
 	case WSTabHot:
-		return "(H)ot"
+		return "(h)ot"
 	case WSTabForwards:
 		return "(⌃f) Forwards"
 	case WSTabDrain:
