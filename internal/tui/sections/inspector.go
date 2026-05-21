@@ -817,6 +817,9 @@ func inspectServiceSnap(svc k8s.ServiceInfo, det *inspectorDetail) *inspectorSna
 		if d.ExternalName != "" {
 			rows = append(rows, inspectorRow{label: "external", value: d.ExternalName, emphasis: "name"})
 		}
+		if svc.Ports != "" {
+			rows = append(rows, inspectorRow{label: "ports", value: svc.Ports, emphasis: "name"})
+		}
 		if d.Selector != "" {
 			rows = append(rows, inspectorRow{label: "selector", value: d.Selector, emphasis: "name"})
 		} else {
@@ -862,9 +865,11 @@ func inspectIngressSnap(ing k8s.IngressInfo, det *inspectorDetail) *inspectorSna
 	}
 	if det != nil && det.ingress != nil {
 		d := det.ingress
-		rows := []inspectorRow{
-			{label: "rules", value: strconv.Itoa(d.Rules)},
+		rows := []inspectorRow{}
+		if ing.Hosts != "" {
+			rows = append(rows, inspectorRow{label: "hosts", value: ing.Hosts, emphasis: "name"})
 		}
+		rows = append(rows, inspectorRow{label: "rules", value: strconv.Itoa(d.Rules)})
 		if len(d.TLSHosts) > 0 {
 			rows = append(rows, inspectorRow{
 				label: "tls hosts", value: strings.Join(d.TLSHosts, ", "), emphasis: "good",
@@ -928,22 +933,102 @@ func inspectSecretSnap(s k8s.SecretInfo) *inspectorSnapshot {
 }
 
 func inspectPVCSnap(p k8s.PVCInfo) *inspectorSnapshot {
-	// Row carries status / capacity / storageClass / age — leave the
-	// inspector to surface only the bound PV (which the row doesn't
-	// show) as a one-row hint.
+	// Row carries status / capacity / class — the inspector promotes the
+	// fields that don't fit in a row column (bound PV name, structured
+	// status emphasis) into a full section so the operator gets the
+	// "what does this claim resolve to?" answer at a glance.
 	s := &inspectorSnapshot{title: "PVC · " + p.Name}
+	rows := []inspectorRow{}
 	if p.VolumeName != "" {
-		s.subtitle = "bound to PV · " + p.VolumeName
+		rows = append(rows, inspectorRow{label: "volume", value: p.VolumeName, emphasis: "name"})
+	}
+	if p.Capacity != "" {
+		rows = append(rows, inspectorRow{label: "capacity", value: p.Capacity})
+	}
+	if p.StorageClass != "" {
+		rows = append(rows, inspectorRow{label: "storageClass", value: p.StorageClass})
+	}
+	if p.Status != "" {
+		rows = append(rows, inspectorRow{label: "status", value: p.Status, emphasis: pvClaimStatusEmphasis(p.Status)})
+	}
+	if len(rows) > 0 {
+		s.sections = append(s.sections, inspectorSection{rows: rows})
 	}
 	return s
 }
 
 func inspectPVSnap(p k8s.PVInfo) *inspectorSnapshot {
+	// Row carries status + capacity. Inspector adds claim, access modes,
+	// reclaim policy, and storage class — the fields an operator needs
+	// to decide "is this PV safe to recycle / who is binding it / will
+	// data survive if I delete the claim?".
 	s := &inspectorSnapshot{title: "PV · " + p.Name}
+	rows := []inspectorRow{}
 	if p.Claim != "" {
-		s.subtitle = "claimed by · " + p.Claim
+		rows = append(rows, inspectorRow{label: "claim", value: p.Claim, emphasis: "name"})
+	}
+	if p.Capacity != "" {
+		rows = append(rows, inspectorRow{label: "capacity", value: p.Capacity})
+	}
+	if p.AccessModes != "" {
+		rows = append(rows, inspectorRow{label: "accessModes", value: p.AccessModes})
+	}
+	if p.Reclaim != "" {
+		rows = append(rows, inspectorRow{label: "reclaim", value: p.Reclaim, emphasis: pvReclaimEmphasis(p.Reclaim)})
+	}
+	if p.StorageClass != "" {
+		rows = append(rows, inspectorRow{label: "storageClass", value: p.StorageClass})
+	}
+	if p.Status != "" {
+		rows = append(rows, inspectorRow{label: "status", value: p.Status, emphasis: pvVolumeStatusEmphasis(p.Status)})
+	}
+	if len(rows) > 0 {
+		s.sections = append(s.sections, inspectorSection{rows: rows})
 	}
 	return s
+}
+
+// pvClaimStatusEmphasis maps PVC status to an inspectorRow emphasis. Bound
+// is the steady-state happy case (good); Lost or Failed flags trouble; Pending
+// is a known-transient state worth a warn.
+func pvClaimStatusEmphasis(status string) string {
+	switch status {
+	case "Bound":
+		return "good"
+	case "Pending":
+		return "warn"
+	case "Lost", "Failed":
+		return "bad"
+	}
+	return ""
+}
+
+// pvVolumeStatusEmphasis is the PV-side mirror of pvClaimStatusEmphasis.
+// Released sits between "happy" and "dangerous" — the volume held data and
+// has been unbound, so a Delete reclaim will erase it on next reconcile.
+func pvVolumeStatusEmphasis(status string) string {
+	switch status {
+	case "Bound", "Available":
+		return "good"
+	case "Released":
+		return "warn"
+	case "Failed":
+		return "bad"
+	}
+	return ""
+}
+
+// pvReclaimEmphasis colours Delete red — the case where the on-caller most
+// often wants to know "if I drop the claim, do I lose the data?". Retain is
+// the safe default.
+func pvReclaimEmphasis(reclaim string) string {
+	switch reclaim {
+	case "Delete":
+		return "bad"
+	case "Retain":
+		return "good"
+	}
+	return ""
 }
 
 func inspectNodePoolSnap(p k8s.NodePoolInfo) *inspectorSnapshot {

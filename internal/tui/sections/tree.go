@@ -1646,6 +1646,51 @@ func anyAppHPA(apps []k8s.AppInfo) bool {
 	return false
 }
 
+func anyIngressHosts(ings []k8s.IngressInfo) bool {
+	for _, ing := range ings {
+		if ing.Hosts != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func anyPVCVolume(pvcs []k8s.PVCInfo) bool {
+	for _, p := range pvcs {
+		if p.VolumeName != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func anyPVClaim(pvs []k8s.PVInfo) bool {
+	for _, p := range pvs {
+		if p.Claim != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func anyPVAccessModes(pvs []k8s.PVInfo) bool {
+	for _, p := range pvs {
+		if p.AccessModes != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func anyPVReclaim(pvs []k8s.PVInfo) bool {
+	for _, p := range pvs {
+		if p.Reclaim != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // renderPodRows mirrors renderAppRows' column shape so the eye doesn't
 // have to relearn the table on every drill — same K · NAME · NS? · H ·
 // CPU? · MEM? · RST? · AGE layout, with progressive disclosure for NS,
@@ -2078,19 +2123,42 @@ func (t *Tree) renderServiceRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	}
 	tableW := innerW - components.EdgeTotal()
 	const (
-		kW   = 1
-		agW  = 5
-		typW = 12
-		ipW  = 15
+		kW    = 1
+		agW   = 5
+		typW  = 12
+		portW = 14
+		ipW   = 15
 	)
-	gaps := components.GapTotal(5)
+	// PORTS lives between TYPE and CLUSTER-IP. Drop it first under narrow
+	// widths so the address column stays readable.
+	showPorts := tableW-kW-typW-portW-ipW-agW-components.GapTotal(6) >= 10
+	colsCount := 5
+	if showPorts {
+		colsCount = 6
+	}
+	gaps := components.GapTotal(colsCount)
 	nW := tableW - kW - typW - ipW - agW - gaps
+	if showPorts {
+		nW -= portW
+	}
 	if nW < 10 {
 		nW = 10
 	}
-	cols := []int{kW, nW, typW, ipW, agW}
-	aligns := []components.Align{components.AlignLeft, components.AlignLeft, components.AlignLeft, components.AlignLeft, components.AlignRight}
-	header := components.Header(th, []string{"", "NAME", "TYPE", "CLUSTER-IP", "AGE"}, cols, aligns)
+	var (
+		cols    []int
+		aligns  []components.Align
+		headers []string
+	)
+	if showPorts {
+		cols = []int{kW, nW, typW, portW, ipW, agW}
+		aligns = []components.Align{components.AlignLeft, components.AlignLeft, components.AlignLeft, components.AlignLeft, components.AlignLeft, components.AlignRight}
+		headers = []string{"", "NAME", "TYPE", "PORTS", "CLUSTER-IP", "AGE"}
+	} else {
+		cols = []int{kW, nW, typW, ipW, agW}
+		aligns = []components.Align{components.AlignLeft, components.AlignLeft, components.AlignLeft, components.AlignLeft, components.AlignRight}
+		headers = []string{"", "NAME", "TYPE", "CLUSTER-IP", "AGE"}
+	}
+	header := components.Header(th, headers, cols, aligns)
 
 	start, end := components.VisibleRange(t.cursor, len(svcs), rowsAvail-1)
 	out := []string{header}
@@ -2102,9 +2170,17 @@ func (t *Tree) renderServiceRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 		typeCell := th.MetaOn(components.TruncPad(s.Type, typW), bg)
 		ipCell := th.MetaOn(components.TruncPad(s.ClusterIP, ipW), bg)
 		ageCell := th.Age(s.Age, bg)
-		out = append(out, components.Row(th,
-			[]string{kindGlyph(k8s.KindService, ""), nameCell, typeCell, ipCell, ageCell},
-			cols, aligns, selected, i))
+		cells := []string{kindGlyph(k8s.KindService, ""), nameCell, typeCell}
+		if showPorts {
+			portText := s.Ports
+			if portText == "" {
+				portText = "—"
+			}
+			portsCell := th.MetaOn(components.TruncPad(portText, portW), bg)
+			cells = append(cells, portsCell)
+		}
+		cells = append(cells, ipCell, ageCell)
+		out = append(out, components.Row(th, cells, cols, aligns, selected, i))
 	}
 	return strings.Join(out, "\n")
 }
@@ -2121,14 +2197,46 @@ func (t *Tree) renderIngressRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 		agW    = 5
 		classW = 8
 	)
-	gaps := components.GapTotal(4)
-	nW := tableW - kW - classW - agW - gaps
+	// HOSTS column takes ~30% of the remaining horizontal budget and is
+	// hidden when no ingress has any host configured (gate matches the
+	// progressive-disclosure idiom used for HPA / metric columns).
+	showHosts := anyIngressHosts(ings)
+	hostW := 0
+	colsCount := 4
+	if showHosts {
+		colsCount = 5
+		budget := tableW - kW - classW - agW - components.GapTotal(colsCount)
+		hostW = budget * 3 / 10
+		if hostW < 10 {
+			hostW = 10
+		}
+		// If the name column would collapse below 10, drop the column entirely.
+		if budget-hostW < 10 {
+			showHosts = false
+			hostW = 0
+			colsCount = 4
+		}
+	}
+	gaps := components.GapTotal(colsCount)
+	nW := tableW - kW - classW - agW - gaps - hostW
 	if nW < 10 {
 		nW = 10
 	}
-	cols := []int{kW, nW, classW, agW}
-	aligns := []components.Align{components.AlignLeft, components.AlignLeft, components.AlignLeft, components.AlignRight}
-	header := components.Header(th, []string{"", "NAME", "CLASS", "AGE"}, cols, aligns)
+	var (
+		cols    []int
+		aligns  []components.Align
+		headers []string
+	)
+	if showHosts {
+		cols = []int{kW, nW, hostW, classW, agW}
+		aligns = []components.Align{components.AlignLeft, components.AlignLeft, components.AlignLeft, components.AlignLeft, components.AlignRight}
+		headers = []string{"", "NAME", "HOSTS", "CLASS", "AGE"}
+	} else {
+		cols = []int{kW, nW, classW, agW}
+		aligns = []components.Align{components.AlignLeft, components.AlignLeft, components.AlignLeft, components.AlignRight}
+		headers = []string{"", "NAME", "CLASS", "AGE"}
+	}
+	header := components.Header(th, headers, cols, aligns)
 
 	start, end := components.VisibleRange(t.cursor, len(ings), rowsAvail-1)
 	out := []string{header}
@@ -2139,9 +2247,13 @@ func (t *Tree) renderIngressRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 		nameCell := th.NameStrongOn(components.TruncPad(ing.Name, nW), bg)
 		classCell := th.MetaOn(components.TruncPad(ing.Class, classW), bg)
 		ageCell := th.Age(ing.Age, bg)
-		out = append(out, components.Row(th,
-			[]string{kindGlyph(k8s.KindIngress, ""), nameCell, classCell, ageCell},
-			cols, aligns, selected, i))
+		cells := []string{kindGlyph(k8s.KindIngress, ""), nameCell}
+		if showHosts {
+			hostsCell := th.MetaOn(components.TruncPad(ing.Hosts, hostW), bg)
+			cells = append(cells, hostsCell)
+		}
+		cells = append(cells, classCell, ageCell)
+		out = append(out, components.Row(th, cells, cols, aligns, selected, i))
 	}
 	return strings.Join(out, "\n")
 }
@@ -2198,15 +2310,47 @@ func (t *Tree) renderPVCRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 		stW  = 8
 		capW = 7
 		scW  = 10
+		volW = 22
 	)
-	gaps := components.GapTotal(6)
-	nW := tableW - kW - stW - capW - scW - agW - gaps
-	if nW < 10 {
-		nW = 10
+	// VOLUME column: hidden when every PVC is unbound (e.g. Pending
+	// fleet) so the column doesn't sit empty between CLASS and AGE.
+	showVolume := anyPVCVolume(pvcs)
+	colsCount := 6
+	if showVolume {
+		colsCount = 7
 	}
-	cols := []int{kW, nW, stW, capW, scW, agW}
-	aligns := []components.Align{components.AlignLeft, components.AlignLeft, components.AlignLeft, components.AlignRight, components.AlignLeft, components.AlignRight}
-	header := components.Header(th, []string{"", "NAME", "STATUS", "CAPACITY", "CLASS", "AGE"}, cols, aligns)
+	gaps := components.GapTotal(colsCount)
+	nW := tableW - kW - stW - capW - scW - agW - gaps
+	if showVolume {
+		nW -= volW
+	}
+	if nW < 10 {
+		// Drop VOLUME first if we can't keep the name column readable.
+		if showVolume {
+			showVolume = false
+			colsCount = 6
+			gaps = components.GapTotal(colsCount)
+			nW = tableW - kW - stW - capW - scW - agW - gaps
+		}
+		if nW < 10 {
+			nW = 10
+		}
+	}
+	var (
+		cols    []int
+		aligns  []components.Align
+		headers []string
+	)
+	if showVolume {
+		cols = []int{kW, nW, stW, capW, scW, volW, agW}
+		aligns = []components.Align{components.AlignLeft, components.AlignLeft, components.AlignLeft, components.AlignRight, components.AlignLeft, components.AlignLeft, components.AlignRight}
+		headers = []string{"", "NAME", "STATUS", "CAPACITY", "CLASS", "VOLUME", "AGE"}
+	} else {
+		cols = []int{kW, nW, stW, capW, scW, agW}
+		aligns = []components.Align{components.AlignLeft, components.AlignLeft, components.AlignLeft, components.AlignRight, components.AlignLeft, components.AlignRight}
+		headers = []string{"", "NAME", "STATUS", "CAPACITY", "CLASS", "AGE"}
+	}
+	header := components.Header(th, headers, cols, aligns)
 
 	start, end := components.VisibleRange(t.cursor, len(pvcs), rowsAvail-1)
 	out := []string{header}
@@ -2219,9 +2363,13 @@ func (t *Tree) renderPVCRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 		capCell := th.MetaOn(components.TruncPad(p.Capacity, capW), bg)
 		scCell := th.MetaOn(components.TruncPad(p.StorageClass, scW), bg)
 		ageCell := th.Age(p.Age, bg)
-		out = append(out, components.Row(th,
-			[]string{kindGlyph(k8s.KindPVC, ""), nameCell, statusCell, capCell, scCell, ageCell},
-			cols, aligns, selected, i))
+		cells := []string{kindGlyph(k8s.KindPVC, ""), nameCell, statusCell, capCell, scCell}
+		if showVolume {
+			volCell := th.MetaOn(components.TruncPad(p.VolumeName, volW), bg)
+			cells = append(cells, volCell)
+		}
+		cells = append(cells, ageCell)
+		out = append(out, components.Row(th, cells, cols, aligns, selected, i))
 	}
 	return strings.Join(out, "\n")
 }
@@ -2234,19 +2382,88 @@ func (t *Tree) renderPVRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	}
 	tableW := innerW - components.EdgeTotal()
 	const (
-		kW   = 1
-		agW  = 5
-		stW  = 8
-		capW = 7
+		kW     = 1
+		agW    = 5
+		stW    = 8
+		capW   = 7
+		claimW = 24
+		accW   = 6
+		rclW   = 7
 	)
-	gaps := components.GapTotal(5)
-	nW := tableW - kW - stW - capW - agW - gaps
+	// Three optional columns with progressive drop priority. Order of
+	// dropping (least valuable first): RECLAIM → ACCESS → CLAIM. This
+	// keeps "what's binding this PV" visible the longest because that
+	// is the answer the on-caller is usually looking for.
+	showClaim := anyPVClaim(pvs)
+	showAccess := anyPVAccessModes(pvs)
+	showReclaim := anyPVReclaim(pvs)
+	// computeName: returns the name-column width given the optional flags;
+	// negative when there isn't room for a readable name column.
+	computeName := func(claim, access, reclaim bool) int {
+		count := 5 // K, NAME, STATUS, CAPACITY, AGE
+		extra := 0
+		if claim {
+			count++
+			extra += claimW
+		}
+		if access {
+			count++
+			extra += accW
+		}
+		if reclaim {
+			count++
+			extra += rclW
+		}
+		return tableW - kW - stW - capW - agW - extra - components.GapTotal(count)
+	}
+	for {
+		if computeName(showClaim, showAccess, showReclaim) >= 10 {
+			break
+		}
+		switch {
+		case showReclaim:
+			showReclaim = false
+		case showAccess:
+			showAccess = false
+		case showClaim:
+			showClaim = false
+		default:
+			break
+		}
+		if !showClaim && !showAccess && !showReclaim {
+			break
+		}
+	}
+	nW := computeName(showClaim, showAccess, showReclaim)
 	if nW < 10 {
 		nW = 10
 	}
-	cols := []int{kW, nW, stW, capW, agW}
-	aligns := []components.Align{components.AlignLeft, components.AlignLeft, components.AlignLeft, components.AlignRight, components.AlignRight}
-	header := components.Header(th, []string{"", "NAME", "STATUS", "CAPACITY", "AGE"}, cols, aligns)
+
+	cols := []int{kW, nW, stW}
+	aligns := []components.Align{components.AlignLeft, components.AlignLeft, components.AlignLeft}
+	headers := []string{"", "NAME", "STATUS"}
+	if showClaim {
+		cols = append(cols, claimW)
+		aligns = append(aligns, components.AlignLeft)
+		headers = append(headers, "CLAIM")
+	}
+	cols = append(cols, capW)
+	aligns = append(aligns, components.AlignRight)
+	headers = append(headers, "CAPACITY")
+	if showAccess {
+		cols = append(cols, accW)
+		aligns = append(aligns, components.AlignLeft)
+		headers = append(headers, "ACCESS")
+	}
+	if showReclaim {
+		cols = append(cols, rclW)
+		aligns = append(aligns, components.AlignLeft)
+		headers = append(headers, "RECLAIM")
+	}
+	cols = append(cols, agW)
+	aligns = append(aligns, components.AlignRight)
+	headers = append(headers, "AGE")
+	header := components.Header(th, headers, cols, aligns)
 
 	start, end := components.VisibleRange(t.cursor, len(pvs), rowsAvail-1)
 	out := []string{header}
@@ -2258,9 +2475,19 @@ func (t *Tree) renderPVRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 		statusCell := th.StatusGlyph(p.Status, stW, bg)
 		capCell := th.MetaOn(components.TruncPad(p.Capacity, capW), bg)
 		ageCell := th.Age(p.Age, bg)
-		out = append(out, components.Row(th,
-			[]string{kindGlyph(k8s.KindPV, ""), nameCell, statusCell, capCell, ageCell},
-			cols, aligns, selected, i))
+		cells := []string{kindGlyph(k8s.KindPV, ""), nameCell, statusCell}
+		if showClaim {
+			cells = append(cells, th.MetaOn(components.TruncPad(p.Claim, claimW), bg))
+		}
+		cells = append(cells, capCell)
+		if showAccess {
+			cells = append(cells, th.MetaOn(components.TruncPad(p.AccessModes, accW), bg))
+		}
+		if showReclaim {
+			cells = append(cells, th.MetaOn(components.TruncPad(p.Reclaim, rclW), bg))
+		}
+		cells = append(cells, ageCell)
+		out = append(out, components.Row(th, cells, cols, aligns, selected, i))
 	}
 	return strings.Join(out, "\n")
 }
