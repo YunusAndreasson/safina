@@ -20,5 +20,9 @@ debug.log
 *.swp
 *.swo
 
+# Claude Code local state (personal settings + transient run locks)
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+
 # OS
 .DS_Store
