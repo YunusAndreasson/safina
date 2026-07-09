@@ -46,15 +46,15 @@ func TestColorizeLogLine_AppliesStylingWhenExpected(t *testing.T) {
 		line       string
 		wantStyled bool
 	}{
-		"empty stays empty":           {line: "", wantStyled: false},
-		"unstyled plain message":      {line: "hello world", wantStyled: false},
-		"level token styles":          {line: "INFO server started", wantStyled: true},
-		"iso timestamp styles":        {line: "2026-05-20T13:45:01Z message", wantStyled: true},
-		"bracketed timestamp styles":  {line: "[2026-05-20 13:45:01] message", wantStyled: true},
-		"klog preamble styles":        {line: "E0520 13:45:01.234567       1 ctrl.go:1] boom", wantStyled: true},
-		"json object styles":          {line: `{"k":"v"}`, wantStyled: true},
-		"stack frame tab styles":      {line: "\tat com.example.Foo.bar(Foo.java:42)", wantStyled: true},
-		"stack frame  spaces styles":  {line: "    at runtime.main()", wantStyled: true},
+		"empty stays empty":            {line: "", wantStyled: false},
+		"unstyled plain message":       {line: "hello world", wantStyled: false},
+		"level token styles":           {line: "INFO server started", wantStyled: true},
+		"iso timestamp styles":         {line: "2026-05-20T13:45:01Z message", wantStyled: true},
+		"bracketed timestamp styles":   {line: "[2026-05-20 13:45:01] message", wantStyled: true},
+		"klog preamble styles":         {line: "E0520 13:45:01.234567       1 ctrl.go:1] boom", wantStyled: true},
+		"json object styles":           {line: `{"k":"v"}`, wantStyled: true},
+		"stack frame tab styles":       {line: "\tat com.example.Foo.bar(Foo.java:42)", wantStyled: true},
+		"stack frame  spaces styles":   {line: "    at runtime.main()", wantStyled: true},
 		"non-stack indented untouched": {line: "  just indented", wantStyled: false},
 	}
 	for name, tc := range cases {

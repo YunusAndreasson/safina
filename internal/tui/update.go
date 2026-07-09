@@ -772,8 +772,9 @@ func (m *Model) isImmersiveState() bool {
 	case stateLogView, stateEventsView, stateDescribeView,
 		stateChatView, stateHotView, stateForwardsList, stateDrainProgress:
 		return true
+	default:
+		return false
 	}
-	return false
 }
 
 // returnToMain closes whatever immersive workspace tab is active and
@@ -807,6 +808,8 @@ func (m *Model) cleanupImmersiveState() {
 		m.logCh = nil
 	case stateChatView:
 		m.chat.SetFocus(false)
+	default:
+		// remaining states hold no immersive resources to tear down
 	}
 }
 

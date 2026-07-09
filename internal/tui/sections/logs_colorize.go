@@ -303,24 +303,25 @@ func colorizeJSONLine(s string, t *theme.Theme) string {
 	i := 0
 	for i < len(s) {
 		c := s[i]
-		switch {
-		case c == '{' || c == '}' || c == '[' || c == ']':
+		switch c {
+		case '{', '}', '[', ']':
 			b.WriteString(dim.Render(string(c)))
-			if c == '{' {
+			switch c {
+			case '{':
 				expectKey = true
-			} else if c == '[' {
+			case '[':
 				expectKey = false
 			}
 			i++
-		case c == ',':
+		case ',':
 			b.WriteString(dim.Render(","))
 			expectKey = true
 			i++
-		case c == ':':
+		case ':':
 			b.WriteString(dim.Render(":"))
 			expectKey = false
 			i++
-		case c == '"':
+		case '"':
 			j := i + 1
 			for j < len(s) {
 				if s[j] == '\\' && j+1 < len(s) {
@@ -378,7 +379,7 @@ func colorizeJSONLine(s string, t *theme.Theme) string {
 				b.WriteString(green.Render(tok))
 			}
 			i = j
-		case c == ' ' || c == '\t':
+		case ' ', '\t':
 			b.WriteByte(c)
 			i++
 		default:

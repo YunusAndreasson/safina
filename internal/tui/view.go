@@ -69,6 +69,8 @@ func (m *Model) View() tea.View {
 		v.Cursor = m.modalInputCursor(m.scaleInput.Cursor())
 	case statePortForwardInput:
 		v.Cursor = m.modalInputCursor(m.pfInput.Cursor())
+	default:
+		// remaining states carry no textinput cursor to project
 	}
 	return v
 }

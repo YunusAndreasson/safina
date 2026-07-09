@@ -2514,10 +2514,7 @@ func (t *Tree) renderPVRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 		}
 		return tableW - kW - stW - capW - agW - extra - components.GapTotal(count)
 	}
-	for {
-		if computeName(showClaim, showAccess, showReclaim) >= 10 {
-			break
-		}
+	for computeName(showClaim, showAccess, showReclaim) < 10 {
 		switch {
 		case showReclaim:
 			showReclaim = false
@@ -2525,8 +2522,6 @@ func (t *Tree) renderPVRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 			showAccess = false
 		case showClaim:
 			showClaim = false
-		default:
-			break
 		}
 		if !showClaim && !showAccess && !showReclaim {
 			break
