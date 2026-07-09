@@ -188,7 +188,11 @@ func TestInspector_NodeCordonedHeadline(t *testing.T) {
 		"cordoned node should be called out in the headline")
 }
 
-func TestInspector_ContainerSnapPreservesImageAndState(t *testing.T) {
+func TestInspector_ContainerSnapPreservesState(t *testing.T) {
+	// The container inspector deliberately omits an image row — the
+	// tree row's NAME·IMAGE column carries it. What it must surface is
+	// the container's state headline plus the kind glyph (regular /
+	// init / ephemeral).
 	tr := newTestTree(t)
 	tr.path = []NodeRef{{Kind: k8s.KindContainer, Display: "Containers"}}
 	tr.children = &Children{
@@ -205,7 +209,10 @@ func TestInspector_ContainerSnapPreservesImageAndState(t *testing.T) {
 	ins.SetSelection(context.Background(), nil, "", &tr)
 	require.NotNil(t, ins.snap)
 	values := collectRowValues(ins.snap)
-	assert.Equal(t, "ghcr.io/co/checkout:v1.2.3", values["image"])
+	_, hasImage := values["image"]
+	assert.False(t, hasImage, "container inspector must not duplicate the row's image column")
+	assert.Equal(t, "regular", values["kind"])
+	assert.Equal(t, "Running", ins.snap.statusText)
 }
 
 func TestShortenImage(t *testing.T) {

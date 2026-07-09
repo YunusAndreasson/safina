@@ -42,6 +42,7 @@ func ListConfigMapsAcrossNamespaces(ctx context.Context, cs kubernetes.Interface
 					Name:      cm.Name,
 					Namespace: cm.Namespace,
 					Keys:      len(cm.Data) + len(cm.BinaryData),
+					KeyNames:  sortedDataKeyNames(cm.Data, cm.BinaryData),
 					Age:       HumanAge(cm.CreationTimestamp.Time),
 				})
 			}
@@ -246,6 +247,7 @@ func ListSecretsAcrossNamespaces(ctx context.Context, cs kubernetes.Interface, n
 					Namespace: s.Namespace,
 					Type:      string(s.Type),
 					Keys:      len(s.Data),
+					KeyNames:  sortedSecretKeyNames(s.Data),
 					Age:       HumanAge(s.CreationTimestamp.Time),
 				})
 			}
@@ -342,6 +344,39 @@ func RevealSecretYAML(ctx context.Context, cs kubernetes.Interface, namespace, n
 		s.Data = nil
 	}
 	return marshalYAML(s)
+}
+
+// sortedDataKeyNames returns a sorted union of map keys from a ConfigMap's
+// Data and BinaryData maps. Used by the inspector to preview a configmap's
+// schema without opening the reveal modal.
+func sortedDataKeyNames(data map[string]string, binary map[string][]byte) []string {
+	if len(data) == 0 && len(binary) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(data)+len(binary))
+	for k := range data {
+		out = append(out, k)
+	}
+	for k := range binary {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// sortedSecretKeyNames returns sorted key names of a Secret's data map.
+// Names only — never values. The reveal modal is the canonical view for
+// values; the inspector just shows "what schema is this?".
+func sortedSecretKeyNames(data map[string][]byte) []string {
+	if len(data) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(data))
+	for k := range data {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // GetPVByName returns a single PV by name. Used when drilling into a PVC

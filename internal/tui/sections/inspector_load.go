@@ -34,6 +34,8 @@ type InspectorDetailMsg struct {
 	Node    *k8s.NodeDetail
 	Service *k8s.ServiceDetail
 	Ingress *k8s.IngressDetail
+	PVC     *k8s.PVCDetail
+	PV      *k8s.PVDetail
 	Err     error
 }
 
@@ -87,6 +89,18 @@ func LoadInspectorDetail(ctx context.Context, mgr *k8s.Manager, contextName, kin
 			out.Err = err
 			if err == nil {
 				out.Ingress = &d
+			}
+		case k8s.KindPVC:
+			d, err := k8s.InspectPVC(ctx, cs, namespace, name)
+			out.Err = err
+			if err == nil {
+				out.PVC = &d
+			}
+		case k8s.KindPV:
+			d, err := k8s.InspectPV(ctx, cs, name)
+			out.Err = err
+			if err == nil {
+				out.PV = &d
 			}
 		}
 		return out

@@ -23,8 +23,20 @@ func rowByLabel(s *inspectorSnapshot, label string) (inspectorRow, bool) {
 	return inspectorRow{}, false
 }
 
-func TestInspectServiceSnap_ListsPorts(t *testing.T) {
-	svc := k8s.ServiceInfo{Name: "api", Namespace: "shop", Type: "ClusterIP", Ports: "80/TCP,443/TCP"}
+// sectionByTitle returns the first section with a matching title.
+func sectionByTitle(s *inspectorSnapshot, title string) (inspectorSection, bool) {
+	for _, sec := range s.sections {
+		if sec.title == title {
+			return sec, true
+		}
+	}
+	return inspectorSection{}, false
+}
+
+func TestInspectServiceSnap_OmitsRowColumns(t *testing.T) {
+	// Service rows already carry name, type, ports, clusterIP, age.
+	// The inspector must not restate any of them.
+	svc := k8s.ServiceInfo{Name: "api", Namespace: "shop", Type: "ClusterIP", Ports: "80/TCP,443/TCP", ClusterIP: "10.0.0.1"}
 	det := &inspectorDetail{service: &k8s.ServiceDetail{
 		Selector:           "app=api",
 		EndpointCount:      3,
@@ -32,11 +44,11 @@ func TestInspectServiceSnap_ListsPorts(t *testing.T) {
 	}}
 
 	snap := inspectServiceSnap(svc, det)
-
 	require.NotNil(t, snap)
-	got, ok := rowByLabel(snap, "ports")
-	require.True(t, ok, "service snapshot must surface a ports row")
-	assert.Equal(t, "80/TCP,443/TCP", got.value)
+	_, ok := rowByLabel(snap, "ports")
+	assert.False(t, ok, "service inspector must not restate the ports column")
+	_, ok = rowByLabel(snap, "clusterIP")
+	assert.False(t, ok, "service inspector must not restate the cluster-IP column")
 }
 
 func TestInspectServiceSnap_HeadlessAndExternalName(t *testing.T) {
@@ -82,102 +94,248 @@ func TestInspectServiceSnap_EndpointEmphasis(t *testing.T) {
 	}
 }
 
-func TestInspectIngressSnap_ListsHostsAndTLS(t *testing.T) {
-	t.Run("hosts without TLS", func(t *testing.T) {
-		ing := k8s.IngressInfo{Name: "web", Hosts: "foo.example.com,bar.example.com", Class: "nginx"}
-		det := &inspectorDetail{ingress: &k8s.IngressDetail{Rules: 2}}
+func TestInspectServiceSnap_ExtPolicyDefaultSuppressed(t *testing.T) {
+	// "Cluster" is the default and shouldn't earn a row; "Local" is the
+	// noteworthy setting.
+	svc := k8s.ServiceInfo{Name: "svc", Type: "LoadBalancer"}
+	det := &inspectorDetail{service: &k8s.ServiceDetail{ExternalTrafficPolicy: "Cluster"}}
+	snap := inspectServiceSnap(svc, det)
+	_, ok := rowByLabel(snap, "extPolicy")
+	assert.False(t, ok, "default Cluster traffic policy should not produce a row")
 
+	det.service.ExternalTrafficPolicy = "Local"
+	snap = inspectServiceSnap(svc, det)
+	got, ok := rowByLabel(snap, "extPolicy")
+	require.True(t, ok)
+	assert.Equal(t, "Local", got.value)
+}
+
+func TestInspectIngressSnap_OmitsHostsRestatesTLSAndBackends(t *testing.T) {
+	t.Run("backends listed without restating hosts column", func(t *testing.T) {
+		ing := k8s.IngressInfo{Name: "web", Hosts: "foo.example.com,bar.example.com", Class: "nginx"}
+		det := &inspectorDetail{ingress: &k8s.IngressDetail{
+			Rules: 2,
+			Backends: []k8s.IngressBackend{
+				{Host: "foo.example.com", Path: "/", Service: "foo-svc", Port: "80"},
+				{Host: "bar.example.com", Path: "/api", Service: "bar-svc", Port: "8080"},
+			},
+		}}
 		snap := inspectIngressSnap(ing, det)
-		host, ok := rowByLabel(snap, "hosts")
-		require.True(t, ok, "ingress snapshot must surface a hosts row")
-		assert.Equal(t, "foo.example.com,bar.example.com", host.value)
+		_, hasHosts := rowByLabel(snap, "hosts")
+		assert.False(t, hasHosts, "ingress inspector must not restate the hosts column")
+
+		sec, ok := sectionByTitle(snap, "backends")
+		require.True(t, ok, "expected a backends section")
+		require.Len(t, sec.rows, 2)
+		assert.Equal(t, "foo.example.com/", sec.rows[0].label)
+		assert.Equal(t, "foo-svc:80", sec.rows[0].value)
+	})
+	t.Run("no TLS surfaces (none)", func(t *testing.T) {
+		ing := k8s.IngressInfo{Name: "web", Hosts: "foo.example.com", Class: "nginx"}
+		det := &inspectorDetail{ingress: &k8s.IngressDetail{Rules: 1}}
+		snap := inspectIngressSnap(ing, det)
 		tls, ok := rowByLabel(snap, "tls")
 		require.True(t, ok)
 		assert.Equal(t, "(none)", tls.value)
 	})
-	t.Run("hosts with TLS", func(t *testing.T) {
+	t.Run("with TLS hosts", func(t *testing.T) {
 		ing := k8s.IngressInfo{Name: "web", Hosts: "foo.example.com", Class: "nginx"}
 		det := &inspectorDetail{ingress: &k8s.IngressDetail{Rules: 1, TLSHosts: []string{"foo.example.com"}}}
-
 		snap := inspectIngressSnap(ing, det)
-		_, hasHosts := rowByLabel(snap, "hosts")
-		assert.True(t, hasHosts)
 		tlsHosts, ok := rowByLabel(snap, "tls hosts")
 		require.True(t, ok)
 		assert.Equal(t, "foo.example.com", tlsHosts.value)
 		assert.Equal(t, "good", tlsHosts.emphasis)
 	})
+	t.Run("backends truncated past the cap", func(t *testing.T) {
+		ing := k8s.IngressInfo{Name: "wildcard"}
+		backends := make([]k8s.IngressBackend, 0, 8)
+		for range 8 {
+			backends = append(backends, k8s.IngressBackend{Host: "h", Service: "svc", Port: "80"})
+		}
+		det := &inspectorDetail{ingress: &k8s.IngressDetail{Backends: backends}}
+		snap := inspectIngressSnap(ing, det)
+		sec, ok := sectionByTitle(snap, "backends")
+		require.True(t, ok)
+		more, ok := rowByLabel(snap, "more")
+		require.True(t, ok, "expected the truncation row")
+		assert.Equal(t, "+3", more.value)
+		assert.Len(t, sec.rows, 6, "5 backends + 1 'more' row")
+	})
 }
 
-func TestInspectPVCSnap_PromotedToSection(t *testing.T) {
-	t.Run("bound", func(t *testing.T) {
+func TestInspectPVCSnap_OmitsRestatedRows(t *testing.T) {
+	// Row already shows status / capacity / class / volume; the inspector
+	// must not echo any of them.
+	t.Run("bound with detail", func(t *testing.T) {
 		p := k8s.PVCInfo{
 			Name: "data-0", Namespace: "shop", Status: "Bound",
 			Capacity: "10Gi", VolumeName: "pvc-abc-123", StorageClass: "fast",
 		}
-		snap := inspectPVCSnap(p)
-		require.NotEmpty(t, snap.sections, "bound PVC must have at least one section")
-
-		vol, ok := rowByLabel(snap, "volume")
-		require.True(t, ok)
-		assert.Equal(t, "pvc-abc-123", vol.value)
-
-		for _, label := range []string{"capacity", "storageClass", "status"} {
+		det := &inspectorDetail{pvc: &k8s.PVCDetail{AccessModes: "RWO"}}
+		snap := inspectPVCSnap(p, det)
+		for _, label := range []string{"volume", "capacity", "storageClass", "status"} {
 			_, ok := rowByLabel(snap, label)
-			assert.True(t, ok, "expected %q row", label)
+			assert.Falsef(t, ok, "PVC inspector must not restate the %q column", label)
 		}
-		status, _ := rowByLabel(snap, "status")
-		assert.Equal(t, "good", status.emphasis, "Bound should render as good")
-	})
-	t.Run("pending omits volume", func(t *testing.T) {
-		p := k8s.PVCInfo{Name: "data-pending", Namespace: "shop", Status: "Pending", StorageClass: "fast"}
-		snap := inspectPVCSnap(p)
-		_, hasVolume := rowByLabel(snap, "volume")
-		assert.False(t, hasVolume, "Pending PVCs (no VolumeName) should omit the volume row")
-		status, ok := rowByLabel(snap, "status")
+		got, ok := rowByLabel(snap, "accessModes")
 		require.True(t, ok)
-		assert.Equal(t, "warn", status.emphasis)
+		assert.Equal(t, "RWO", got.value)
+		assert.Equal(t, "Bound", snap.statusText)
+		assert.Equal(t, "good", snap.statusKind)
+	})
+	t.Run("pending surfaces reason", func(t *testing.T) {
+		p := k8s.PVCInfo{Name: "data-pending", Namespace: "shop", Status: "Pending", StorageClass: "fast"}
+		det := &inspectorDetail{pvc: &k8s.PVCDetail{
+			AccessModes:   "RWO",
+			PendingReason: "waiting for first consumer",
+		}}
+		snap := inspectPVCSnap(p, det)
+		got, ok := rowByLabel(snap, "pending")
+		require.True(t, ok)
+		assert.Equal(t, "waiting for first consumer", got.value)
+		assert.Equal(t, "warn", got.emphasis)
+		assert.Equal(t, "warn", snap.statusKind)
+	})
+	t.Run("block volume mode surfaces", func(t *testing.T) {
+		p := k8s.PVCInfo{Name: "block-claim", Namespace: "shop", Status: "Bound"}
+		det := &inspectorDetail{pvc: &k8s.PVCDetail{
+			AccessModes: "RWO",
+			VolumeMode:  "Block",
+		}}
+		snap := inspectPVCSnap(p, det)
+		got, ok := rowByLabel(snap, "volumeMode")
+		require.True(t, ok)
+		assert.Equal(t, "Block", got.value)
+	})
+	t.Run("mounted-by lists pods", func(t *testing.T) {
+		p := k8s.PVCInfo{Name: "data-0", Status: "Bound"}
+		det := &inspectorDetail{pvc: &k8s.PVCDetail{
+			AccessModes: "RWO",
+			MountedBy:   []string{"web-0", "web-1"},
+		}}
+		snap := inspectPVCSnap(p, det)
+		sec, ok := sectionByTitle(snap, "mounted by")
+		require.True(t, ok)
+		require.Len(t, sec.rows, 2)
+		assert.Equal(t, "web-0", sec.rows[0].value)
 	})
 }
 
-func TestInspectPVSnap_PromotedToSection(t *testing.T) {
-	t.Run("bound", func(t *testing.T) {
+func TestInspectPVSnap_OmitsRestatedRows(t *testing.T) {
+	t.Run("bound CSI volume", func(t *testing.T) {
 		p := k8s.PVInfo{
 			Name: "pv-001", Capacity: "10Gi", Status: "Bound",
 			Claim: "shop/data-0", StorageClass: "fast",
 			AccessModes: "RWO", Reclaim: "Retain",
 		}
-		snap := inspectPVSnap(p)
-		require.NotEmpty(t, snap.sections)
-
-		claim, ok := rowByLabel(snap, "claim")
-		require.True(t, ok)
-		assert.Equal(t, "shop/data-0", claim.value)
-
-		for _, label := range []string{"capacity", "accessModes", "reclaim", "storageClass", "status"} {
+		det := &inspectorDetail{pv: &k8s.PVDetail{
+			CSIDriver:    "ebs.csi.aws.com",
+			VolumeHandle: "vol-0abc",
+			NodeAffinity: "topology.kubernetes.io/zone=us-east-1a",
+		}}
+		snap := inspectPVSnap(p, det)
+		for _, label := range []string{"capacity", "accessModes", "storageClass", "status", "claim"} {
 			_, ok := rowByLabel(snap, label)
-			assert.True(t, ok, "expected %q row", label)
+			assert.Falsef(t, ok, "PV inspector must not restate the %q column", label)
 		}
-		rec, _ := rowByLabel(snap, "reclaim")
-		assert.Equal(t, "good", rec.emphasis, "Retain should render as good")
+		rec, ok := rowByLabel(snap, "reclaim")
+		require.True(t, ok)
+		assert.Equal(t, "Retain", rec.value)
+		assert.Equal(t, "good", rec.emphasis)
+
+		got, ok := rowByLabel(snap, "csi driver")
+		require.True(t, ok)
+		assert.Equal(t, "ebs.csi.aws.com", got.value)
+
+		got, ok = rowByLabel(snap, "topology")
+		require.True(t, ok)
+		assert.Contains(t, got.value, "us-east-1a")
+
+		assert.Equal(t, "Bound", snap.statusText)
+		assert.Equal(t, "good", snap.statusKind)
 	})
-	t.Run("available omits claim", func(t *testing.T) {
+	t.Run("delete reclaim is loud", func(t *testing.T) {
 		p := k8s.PVInfo{Name: "pv-002", Capacity: "5Gi", Status: "Available", Reclaim: "Delete"}
-		snap := inspectPVSnap(p)
-		_, hasClaim := rowByLabel(snap, "claim")
-		assert.False(t, hasClaim, "Available PVs (no claim) should omit the claim row")
+		snap := inspectPVSnap(p, nil)
 		rec, ok := rowByLabel(snap, "reclaim")
 		require.True(t, ok)
 		assert.Equal(t, "bad", rec.emphasis, "Delete reclaim should render as bad")
+		assert.Equal(t, "good", snap.statusKind, "Available is a good steady state")
 	})
 }
 
-func TestInspectConfigMapAndSecretSnap_UnchangedSubtitle(t *testing.T) {
-	cm := inspectConfigMapSnap(k8s.ConfigMapInfo{Name: "cfg", Keys: 3})
-	assert.Contains(t, cm.subtitle, "press d", "ConfigMap snapshot subtitle is deliberately minimal — locks in the opinionated UX")
-	assert.Empty(t, cm.sections, "ConfigMap snapshot should not emit row sections")
+func TestInspectConfigMapSnap_PreviewsKeys(t *testing.T) {
+	t.Run("no keys keeps subtitle only", func(t *testing.T) {
+		snap := inspectConfigMapSnap(k8s.ConfigMapInfo{Name: "cfg"})
+		assert.Contains(t, snap.subtitle, "press d")
+		assert.Empty(t, snap.sections)
+	})
+	t.Run("keys render as a single dim row", func(t *testing.T) {
+		cm := k8s.ConfigMapInfo{Name: "cfg", Keys: 3, KeyNames: []string{"db.host", "db.port", "feature.flags"}}
+		snap := inspectConfigMapSnap(cm)
+		got, ok := rowByLabel(snap, "keys")
+		require.True(t, ok)
+		assert.Contains(t, got.value, "db.host")
+		assert.Contains(t, got.value, "feature.flags")
+	})
+	t.Run("more than five truncate with +N", func(t *testing.T) {
+		names := []string{"a", "b", "c", "d", "e", "f", "g"}
+		cm := k8s.ConfigMapInfo{Name: "cfg", Keys: len(names), KeyNames: names}
+		snap := inspectConfigMapSnap(cm)
+		got, ok := rowByLabel(snap, "keys")
+		require.True(t, ok)
+		assert.Contains(t, got.value, "(+2 more)")
+	})
+}
 
-	sec := inspectSecretSnap(k8s.SecretInfo{Name: "creds", Type: "Opaque", Keys: 2})
-	assert.Contains(t, sec.subtitle, "press v", "Secret snapshot subtitle is deliberately minimal — locks in the opinionated UX")
-	assert.Empty(t, sec.sections)
+func TestInspectSecretSnap_PreviewsKeys(t *testing.T) {
+	t.Run("no keys keeps subtitle only", func(t *testing.T) {
+		snap := inspectSecretSnap(k8s.SecretInfo{Name: "creds", Type: "Opaque"})
+		assert.Contains(t, snap.subtitle, "press v")
+		assert.Empty(t, snap.sections)
+	})
+	t.Run("TLS key names render", func(t *testing.T) {
+		sec := k8s.SecretInfo{
+			Name: "tls-cert", Type: "kubernetes.io/tls", Keys: 2,
+			KeyNames: []string{"tls.crt", "tls.key"},
+		}
+		snap := inspectSecretSnap(sec)
+		got, ok := rowByLabel(snap, "keys")
+		require.True(t, ok)
+		assert.Contains(t, got.value, "tls.crt")
+		assert.Contains(t, got.value, "tls.key")
+	})
+}
+
+func TestInspectContainerSnap_OmitsImageAndAddsDetail(t *testing.T) {
+	c := k8s.ContainerInfo{
+		PodName:    "web-0",
+		Name:       "app",
+		Image:      "ghcr.io/co/app:v1.2.3",
+		Kind:       "regular",
+		State:      "Running",
+		Ready:      true,
+		Ports:      []string{"http:8080/TCP"},
+		CPURequest: 100, CPULimit: 500,
+		MemRequest: 64 * 1024 * 1024, MemLimit: 128 * 1024 * 1024,
+		Liveness:  "http :8080/healthz",
+		Readiness: "http :8080/ready",
+		Mounts:    3,
+		EnvCount:  2,
+	}
+	snap := inspectContainerSnap(c)
+	_, ok := rowByLabel(snap, "image")
+	assert.False(t, ok, "container inspector must not restate the row's image column")
+
+	got, ok := rowByLabel(snap, "ports")
+	require.True(t, ok)
+	assert.Equal(t, "http:8080/TCP", got.value)
+
+	_, ok = sectionByTitle(snap, "resources (configured)")
+	assert.True(t, ok, "expected configured resources section")
+
+	probes, ok := sectionByTitle(snap, "probes")
+	require.True(t, ok)
+	assert.Len(t, probes.rows, 2, "liveness + readiness")
 }

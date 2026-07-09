@@ -193,6 +193,20 @@ type ContainerInfo struct {
 	CPU        int64
 	Memory     int64
 	LastReason string
+	// Detail fields populated from the parent pod spec at list time —
+	// the cost is zero (we already iterate the spec) and they save the
+	// inspector from a separate per-container detail fetch.
+	Ports        []string // "name:port/proto" or "port/proto"
+	CPURequest   int64    // millicores
+	CPULimit     int64
+	MemRequest   int64 // bytes
+	MemLimit     int64
+	Liveness     string // short probe summary, e.g. "http :8080/healthz"
+	Readiness    string
+	Startup      string
+	Mounts       int // count of volumeMounts
+	EnvCount     int // direct env entries
+	EnvFromCount int // envFrom entries (configMap/secret refs)
 }
 
 // NodeInfo describes one node row.
@@ -240,7 +254,12 @@ type ConfigMapInfo struct {
 	Name      string
 	Namespace string
 	Keys      int
-	Age       string
+	// KeyNames preview — the first few key names, sorted. The inspector
+	// renders these so the operator can see the configmap's "schema"
+	// without opening the dedicated reveal modal. Empty slice is fine;
+	// the renderer falls back to the bare key count.
+	KeyNames []string
+	Age      string
 }
 
 // ServiceInfo is a row for a single Service.
@@ -268,7 +287,11 @@ type SecretInfo struct {
 	Namespace string
 	Type      string // Opaque, kubernetes.io/tls, etc.
 	Keys      int
-	Age       string
+	// KeyNames preview — sorted key names (no values). Inspector
+	// renders the first few so the operator can see the secret's
+	// schema (e.g. "tls.crt, tls.key") without revealing values.
+	KeyNames []string
+	Age      string
 }
 
 // PVCInfo is a row for a single PersistentVolumeClaim.
@@ -993,11 +1016,30 @@ func ListContainersForPod(ctx context.Context, cs kubernetes.Interface, namespac
 
 func makeContainerInfo(p *corev1.Pod, c corev1.Container, kind string, st corev1.ContainerStatus, usage map[string]ResourceUsage) ContainerInfo {
 	ci := ContainerInfo{
-		PodName:   p.Name,
-		Namespace: p.Namespace,
-		Name:      c.Name,
-		Image:     c.Image,
-		Kind:      kind,
+		PodName:      p.Name,
+		Namespace:    p.Namespace,
+		Name:         c.Name,
+		Image:        c.Image,
+		Kind:         kind,
+		Ports:        containerPortStrings(c.Ports),
+		Liveness:     summarizeProbe(c.LivenessProbe),
+		Readiness:    summarizeProbe(c.ReadinessProbe),
+		Startup:      summarizeProbe(c.StartupProbe),
+		Mounts:       len(c.VolumeMounts),
+		EnvCount:     len(c.Env),
+		EnvFromCount: len(c.EnvFrom),
+	}
+	if r := c.Resources.Requests.Cpu(); r != nil {
+		ci.CPURequest = r.MilliValue()
+	}
+	if l := c.Resources.Limits.Cpu(); l != nil {
+		ci.CPULimit = l.MilliValue()
+	}
+	if r := c.Resources.Requests.Memory(); r != nil {
+		ci.MemRequest = r.Value()
+	}
+	if l := c.Resources.Limits.Memory(); l != nil {
+		ci.MemLimit = l.Value()
 	}
 	if u, ok := usage[c.Name]; ok {
 		ci.CPU = u.CPU
@@ -1563,4 +1605,52 @@ func PodHealth(p PodInfo) Health {
 		return HealthFailing
 	}
 	return HealthUnknown
+}
+
+// containerPortStrings renders a container's declared ports as compact
+// "[name:]port/proto" tokens — the inspector folds them onto one line.
+// Empty slice is fine; the inspector skips the ports row.
+func containerPortStrings(ports []corev1.ContainerPort) []string {
+	if len(ports) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(ports))
+	for _, p := range ports {
+		proto := string(p.Protocol)
+		if proto == "" {
+			proto = "TCP"
+		}
+		s := fmt.Sprintf("%d/%s", p.ContainerPort, proto)
+		if p.Name != "" {
+			s = p.Name + ":" + s
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// summarizeProbe renders one of a container's probes as a single-line
+// summary the inspector can drop next to the probe label. Empty string
+// means the probe isn't configured.
+func summarizeProbe(p *corev1.Probe) string {
+	if p == nil {
+		return ""
+	}
+	switch {
+	case p.HTTPGet != nil:
+		h := p.HTTPGet
+		port := h.Port.String()
+		scheme := "http"
+		if h.Scheme == corev1.URISchemeHTTPS {
+			scheme = "https"
+		}
+		return fmt.Sprintf("%s :%s%s", scheme, port, h.Path)
+	case p.TCPSocket != nil:
+		return "tcp :" + p.TCPSocket.Port.String()
+	case p.GRPC != nil:
+		return fmt.Sprintf("grpc :%d", p.GRPC.Port)
+	case p.Exec != nil:
+		return "exec " + strings.Join(p.Exec.Command, " ")
+	}
+	return ""
 }

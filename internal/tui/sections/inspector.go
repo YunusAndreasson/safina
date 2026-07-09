@@ -53,6 +53,8 @@ type inspectorDetail struct {
 	node    *k8s.NodeDetail
 	service *k8s.ServiceDetail
 	ingress *k8s.IngressDetail
+	pvc     *k8s.PVCDetail
+	pv      *k8s.PVDetail
 	err     error
 }
 
@@ -110,19 +112,14 @@ type inspectorRow struct {
 // inspectorLive bundles the per-selection metric trend rendered as a
 // two-row block in the Inspector. cpuBuf / memBuf alias the tree's
 // rolling buffers so the sparkline reads live samples on every render.
-// curCPU/curMem are the latest list-call readings. cpuReqMilli /
-// cpuLimMilli / memReqBytes / memLimBytes are the configured per-pod
-// (or per-replica) requests/limits, used to annotate the spark with the
-// budget the operator set; zero means "not configured."
+// curCPU/curMem are the latest list-call readings. Configured budgets
+// (requests / limits) deliberately don't live here — they get their own
+// "resources (configured)" section in the per-kind builder.
 type inspectorLive struct {
-	cpuBuf      *components.MetricBuffer
-	memBuf      *components.MetricBuffer
-	curCPU      int64
-	curMem      int64
-	cpuReqMilli int64
-	cpuLimMilli int64
-	memReqBytes int64
-	memLimBytes int64
+	cpuBuf *components.MetricBuffer
+	memBuf *components.MetricBuffer
+	curCPU int64
+	curMem int64
 }
 
 // NewInspector constructs an empty inspector.
@@ -186,6 +183,8 @@ func (i *Inspector) Apply(msg InspectorDetailMsg, tr *Tree) {
 		node:    msg.Node,
 		service: msg.Service,
 		ingress: msg.Ingress,
+		pvc:     msg.PVC,
+		pv:      msg.PV,
 		err:     msg.Err,
 	}
 	i.detail[key] = det
@@ -352,40 +351,16 @@ func statusLine(t *theme.Theme, text, kind string, innerW int) string {
 // value-edge instead of misaligning by one cell.
 const liveValueCellW = 6
 
-// liveValueAnnoGap is the breathing room between the current value and
-// the req/lim annotation. Wider than a single space so the eye reads
-// "value" and "[config]" as two separate sub-columns instead of one
-// dotted chain ("9m · 5m req · 20m lim" was unreadable as a hierarchy).
-const liveValueAnnoGap = 4
-
-// liveRightBlockW is the *fixed* cell budget reserved for the right side
-// (value + optional " · req · lim" annotation) of every LIVE USAGE row.
-// Chosen to fit the common case without grow-shrink across selections:
-//
-//	"1024Mi · 1024Mi req · 2048Mi lim"  → 31 cells
-//
-// Always returning a constant guarantees the sparkline width is invariant
-// across cpu↔mem rows, across resources (with vs without configured
-// req/lim), and across refreshes (no digits-change shift). Resources
-// whose req/lim string doesn't fit are truncated rather than allowed to
-// push the spark inward — keeping the spark stable wins over preserving
-// every character of static config text (the same numbers also appear
-// uncut in the "resources (configured)" section below).
-const liveRightBlockW = 32
-
 // renderLiveMetric paints one row of the LIVE USAGE block: label, wide
-// history sparkline, current value, optional req/limit annotation. The
-// sparkline width is derived from the *constant* liveRightBlockW — never
-// from this frame's content — so the spark edge is invariant across:
+// history sparkline, current value. The configured req/limit budgets
+// (and node request-sum / allocatable) live in their own "resources"
+// section below, so the live row is just trend + reading — no
+// annotation. The sparkline width is derived from a constant right
+// block (= liveValueCellW), keeping the spark edge invariant across:
 //
 //   - refreshes (value digit changes don't shift it)
 //   - rows (cpu ↔ mem stay column-aligned)
-//   - selections (a pod with no configured req/lim shows the same spark
-//     width as one with budgets configured)
 //
-// Resources whose req/lim text would overflow the budget get truncated
-// with an ellipsis — the same numbers appear uncut in the "resources
-// (configured)" section a few lines down, so we don't lose information.
 // The trend window adapts to retained history via SparklineFull's
 // bucket-aggregation: a fresh session shows minutes; one left running
 // shows hours.
@@ -396,27 +371,17 @@ func renderLiveMetric(t *theme.Theme, kind string, live *inspectorLive, isCPU bo
 
 	var buf *components.MetricBuffer
 	var cur int64
-	var reqLim string
 	var curStr string
 	if isCPU {
 		buf, cur = live.cpuBuf, live.curCPU
 		curStr = k8s.FormatCPU(cur)
-		if live.cpuReqMilli > 0 || live.cpuLimMilli > 0 {
-			reqLim = formatReqLim(live.cpuReqMilli, live.cpuLimMilli, "cpu")
-		}
 	} else {
 		buf, cur = live.memBuf, live.curMem
 		curStr = k8s.FormatMem(cur)
-		if live.memReqBytes > 0 || live.memLimBytes > 0 {
-			reqLim = formatReqLim(live.memReqBytes, live.memLimBytes, "mem")
-		}
 	}
 
-	// The right block is two sub-columns: the value (worst-case-padded so
-	// cpu↔mem rows share an edge) and the req/lim annotation, separated
-	// by a fixed whitespace gap. No "·" between them — the gap is a
-	// stronger Gestalt separator than a dotted character, and reads as
-	// "headline value [config context]" instead of one number chain.
+	// Right-pad the value into a fixed cell so cpu↔mem rows share an
+	// edge regardless of digit count.
 	valPad := liveValueCellW - lipgloss.Width(curStr)
 	if valPad < 0 {
 		valPad = 0
@@ -424,37 +389,13 @@ func renderLiveMetric(t *theme.Theme, kind string, live *inspectorLive, isCPU bo
 	valStyled := lipgloss.NewStyle().Foreground(t.P.FG).Render(curStr)
 	valSlot := strings.Repeat(" ", valPad) + valStyled
 
-	// Annotation sub-column: liveRightBlockW − value − gap, right-aligned
-	// inside its own slot so its right edge lands at the panel's right
-	// edge regardless of req/lim content length.
-	annoSlotW := liveRightBlockW - liveValueCellW - liveValueAnnoGap
-	if annoSlotW < 0 {
-		annoSlotW = 0
-	}
-	var annoSlot string
-	if reqLim != "" && annoSlotW > 0 {
-		annotation := reqLim
-		if lipgloss.Width(annotation) > annoSlotW {
-			annotation = truncate(annotation, annoSlotW)
-		}
-		pad := annoSlotW - lipgloss.Width(annotation)
-		if pad < 0 {
-			pad = 0
-		}
-		annoSlot = strings.Repeat(" ", pad) + t.DimTxt.Render(annotation)
-	} else {
-		annoSlot = strings.Repeat(" ", annoSlotW)
-	}
-
-	right := valSlot + strings.Repeat(" ", liveValueAnnoGap) + annoSlot
-
-	sparkW := innerW - labelW - gap - liveRightBlockW - gap
+	sparkW := innerW - labelW - gap - liveValueCellW - gap
 	if sparkW < 8 {
 		sparkW = 8
 	}
 	spark := components.SparklineFull(t, buf, sparkW, lipgloss.NewStyle())
 
-	return label + spark + strings.Repeat(" ", gap) + right
+	return label + spark + strings.Repeat(" ", gap) + valSlot
 }
 
 // attachPodLive populates the LIVE USAGE block for a pod selection.
@@ -469,14 +410,11 @@ func renderLiveMetric(t *theme.Theme, kind string, live *inspectorLive, isCPU bo
 // to what metrics-server reports. The displayed number and the
 // rightmost sparkline sample are derived from the same a.Memory /
 // p.Memory field, so they never disagree.
-func attachPodLive(s *inspectorSnapshot, tr *Tree, p k8s.PodInfo, det *inspectorDetail) {
+func attachPodLive(s *inspectorSnapshot, tr *Tree, p k8s.PodInfo, _ *inspectorDetail) {
 	cpuBuf, memBuf := tr.MetricSeriesFor(k8s.KindPod, p.Namespace, p.Name)
 	live := buildLive(cpuBuf, memBuf, p.CPU, p.Memory)
 	if live == nil {
 		return
-	}
-	if det != nil && det.pod != nil {
-		applyResourceBudget(live, det.pod.CPURequestMilli, det.pod.CPULimitMilli, det.pod.MemRequestBytes, det.pod.MemLimitBytes)
 	}
 	s.live = live
 }
@@ -489,14 +427,11 @@ func attachPodLive(s *inspectorSnapshot, tr *Tree, p k8s.PodInfo, det *inspector
 // configured per-pod request/limit (when the detail fetch returned)
 // is reported next to the current value so the operator reads "we're
 // at X, per-replica budget is Y" without leaving the panel.
-func attachAppLive(s *inspectorSnapshot, tr *Tree, a k8s.AppInfo, det *inspectorDetail) {
+func attachAppLive(s *inspectorSnapshot, tr *Tree, a k8s.AppInfo, _ *inspectorDetail) {
 	cpuBuf, memBuf := tr.MetricSeriesFor(k8s.KindApp, a.Namespace, a.Name)
 	live := buildLive(cpuBuf, memBuf, a.CPU, a.Memory)
 	if live == nil {
 		return
-	}
-	if det != nil && det.app != nil {
-		applyResourceBudget(live, det.app.CPURequestMilli, det.app.CPULimitMilli, det.app.MemRequestBytes, det.app.MemLimitBytes)
 	}
 	s.live = live
 }
@@ -519,39 +454,20 @@ func buildLive(cpuBuf, memBuf *components.MetricBuffer, curCPU, curMem int64) *i
 	}
 }
 
-// applyResourceBudget copies the request / limit fields from a detail
-// payload onto a live block. Centralised so callers don't drift on which
-// fields belong on inspectorLive — adding a new budget kind (e.g.
-// ephemeral storage) touches one site instead of every attach* helper.
-func applyResourceBudget(live *inspectorLive, cpuReqMilli, cpuLimMilli, memReqBytes, memLimBytes int64) {
-	live.cpuReqMilli = cpuReqMilli
-	live.cpuLimMilli = cpuLimMilli
-	live.memReqBytes = memReqBytes
-	live.memLimBytes = memLimBytes
-}
-
 // attachNodeLive populates the LIVE USAGE block for a node selection.
-// Same shape Apps and Pods use, with two semantic adjustments:
-//
-//   - The sparkline buffer for nodes holds per-mille utilisation (0-1000
-//     mapping to 0-100% of allocatable; ratchets to 2000 on overcommit)
-//     rather than raw values. The gradient colours therefore align with
-//     the percentage the row shows, while the headline value next to
-//     the spark is the *raw* CPU / Memory usage so the operator reads
-//     "1.5 cores in use" without doing arithmetic against the budget.
-//   - The "request" side of the annotation reports the sum of pod
-//     requests scheduled on this node; the "limit" side is the node's
-//     allocatable. Same formatReqLim renderer Apps / Pods use, so the
-//     visual register stays identical; on a node it reads as
-//     "1500m req · 8000m lim" = "scheduler has 1.5c reserved, kubelet
-//     reports 8c allocatable".
+// Same shape Apps and Pods use, with one semantic adjustment: the
+// sparkline buffer for nodes holds per-mille utilisation (0-1000
+// mapping to 0-100% of allocatable; ratchets to 2000 on overcommit)
+// rather than raw values. The gradient colours therefore align with
+// the percentage the row shows, while the headline value next to the
+// spark is the *raw* CPU / Memory usage so the operator reads
+// "1.5 cores in use" without doing arithmetic against the budget.
 func attachNodeLive(s *inspectorSnapshot, tr *Tree, n k8s.NodeInfo) {
 	cpuBuf, memBuf := tr.MetricSeriesFor(k8s.KindNode, "", n.Name)
 	live := buildLive(cpuBuf, memBuf, n.CPUUsed, n.MemUsed)
 	if live == nil {
 		return
 	}
-	applyResourceBudget(live, n.CPURequest, n.CPUAlloc, n.MemRequest, n.MemAlloc)
 	s.live = live
 }
 
@@ -587,7 +503,8 @@ func renderInspectorRow(t *theme.Theme, r inspectorRow, labelW, innerW int) stri
 // scale.
 func kindSupportsDetail(kind string) bool {
 	switch kind {
-	case k8s.KindPod, k8s.KindApp, k8s.KindNode, k8s.KindService, k8s.KindIngress:
+	case k8s.KindPod, k8s.KindApp, k8s.KindNode, k8s.KindService, k8s.KindIngress,
+		k8s.KindPVC, k8s.KindPV:
 		return true
 	}
 	return false
@@ -635,11 +552,11 @@ func (i *Inspector) buildSnapshot(tr *Tree, ref NodeRef, det *inspectorDetail) *
 		}
 	case k8s.KindPVC:
 		if p, ok := selectedPVC(tr); ok {
-			return inspectPVCSnap(p)
+			return inspectPVCSnap(p, det)
 		}
 	case k8s.KindPV:
 		if p, ok := selectedPV(tr); ok {
-			return inspectPVSnap(p)
+			return inspectPVSnap(p, det)
 		}
 	case k8s.KindNamespace, k8s.KindNamespaceFolder:
 		return &inspectorSnapshot{
@@ -689,7 +606,11 @@ func inspectPodSnap(p k8s.PodInfo, det *inspectorDetail) *inspectorSnapshot {
 		if d.HostIP != "" {
 			runtime = append(runtime, inspectorRow{label: "host IP", value: d.HostIP, emphasis: "dim"})
 		}
-		if d.QoS != "" {
+		// QoS only when it's a non-default classification — surfacing
+		// "BestEffort" trains the eye to ignore the field on the
+		// majority of pods that don't set requests. Guaranteed and
+		// Burstable are the actionable signals.
+		if d.QoS != "" && d.QoS != "BestEffort" {
 			runtime = append(runtime, inspectorRow{label: "QoS", value: d.QoS, emphasis: "dim"})
 		}
 		if d.OwnerName != "" {
@@ -803,6 +724,21 @@ func inspectNodeSnap(n k8s.NodeInfo, det *inspectorDetail) *inspectorSnapshot {
 	}
 	s.statusText, s.statusKind = nodeHeadline(n)
 
+	// Capacity sister-stat for the live block above: the sum of pod
+	// requests scheduled on this node versus the kubelet's reported
+	// allocatable. Reads "scheduler reservation / kubelet allocatable"
+	// — answers "is this node oversubscribed by reservations?". Skipped
+	// when neither is known (clusters without metrics).
+	if hasResources(n.CPURequest, n.CPUAlloc, n.MemRequest, n.MemAlloc) {
+		s.sections = append(s.sections, inspectorSection{
+			title: "capacity (scheduled / allocatable)",
+			rows: []inspectorRow{
+				{label: "cpu", value: formatScheduledAllocatable(n.CPURequest, n.CPUAlloc, "cpu"), emphasis: "name"},
+				{label: "mem", value: formatScheduledAllocatable(n.MemRequest, n.MemAlloc, "mem"), emphasis: "name"},
+			},
+		})
+	}
+
 	if det != nil && det.node != nil {
 		d := det.node
 		ver := []inspectorRow{}
@@ -866,9 +802,10 @@ func inspectServiceSnap(svc k8s.ServiceInfo, det *inspectorDetail) *inspectorSna
 		if d.ExternalName != "" {
 			rows = append(rows, inspectorRow{label: "external", value: d.ExternalName, emphasis: "name"})
 		}
-		if svc.Ports != "" {
-			rows = append(rows, inspectorRow{label: "ports", value: svc.Ports, emphasis: "name"})
-		}
+		// Ports / cluster IP / type all live in the row's columns — the
+		// inspector deliberately skips them. Selector, endpoint health,
+		// session affinity, traffic policy, and LB ingress IPs are the
+		// fields a row column can't carry.
 		if d.Selector != "" {
 			rows = append(rows, inspectorRow{label: "selector", value: d.Selector, emphasis: "name"})
 		} else {
@@ -891,7 +828,10 @@ func inspectServiceSnap(svc k8s.ServiceInfo, det *inspectorDetail) *inspectorSna
 		if d.SessionAffinity != "" && d.SessionAffinity != "None" {
 			rows = append(rows, inspectorRow{label: "sessionAff", value: d.SessionAffinity, emphasis: "dim"})
 		}
-		if d.ExternalTrafficPolicy != "" {
+		// extPolicy "Cluster" is the default — suppressing it keeps the
+		// inspector quiet on the majority of services. "Local" is the
+		// noteworthy setting that affects source-IP preservation.
+		if d.ExternalTrafficPolicy != "" && d.ExternalTrafficPolicy != "Cluster" {
 			rows = append(rows, inspectorRow{label: "extPolicy", value: d.ExternalTrafficPolicy, emphasis: "dim"})
 		}
 		if len(d.LoadBalancerIngress) > 0 {
@@ -914,29 +854,70 @@ func inspectIngressSnap(ing k8s.IngressInfo, det *inspectorDetail) *inspectorSna
 	}
 	if det != nil && det.ingress != nil {
 		d := det.ingress
-		rows := []inspectorRow{}
-		if ing.Hosts != "" {
-			rows = append(rows, inspectorRow{label: "hosts", value: ing.Hosts, emphasis: "name"})
-		}
-		rows = append(rows, inspectorRow{label: "rules", value: strconv.Itoa(d.Rules)})
+		// TLS + LB-ingress: a small "exposure" header, separate from
+		// the backends list below. Hosts are in the row column, so we
+		// don't restate them.
+		head := []inspectorRow{}
 		if len(d.TLSHosts) > 0 {
-			rows = append(rows, inspectorRow{
+			head = append(head, inspectorRow{
 				label: "tls hosts", value: strings.Join(d.TLSHosts, ", "), emphasis: "good",
 			})
 		} else {
-			rows = append(rows, inspectorRow{label: "tls", value: "(none)", emphasis: "dim"})
+			head = append(head, inspectorRow{label: "tls", value: "(none)", emphasis: "dim"})
 		}
 		if len(d.IngressIP) > 0 {
-			rows = append(rows, inspectorRow{
+			head = append(head, inspectorRow{
 				label: "lb ingress", value: strings.Join(d.IngressIP, ", "), emphasis: "name",
 			})
 		}
-		s.sections = append(s.sections, inspectorSection{rows: rows})
+		s.sections = append(s.sections, inspectorSection{rows: head})
+
+		if len(d.Backends) > 0 {
+			s.sections = append(s.sections, inspectorSection{
+				title: "backends",
+				rows:  backendRows(d.Backends),
+			})
+		}
 	}
 	if det != nil && det.err != nil {
 		s.err = det.err
 	}
 	return s
+}
+
+// backendRows folds the flattened ingress backend list into inspector
+// rows: label is "host[/path]" (defaulting to "default" for the catch-all
+// backend), value is "service:port". Caps at 5 entries with "+N more"
+// so a wildcard ingress doesn't take over the tile.
+func backendRows(backends []k8s.IngressBackend) []inspectorRow {
+	const limit = 5
+	rows := make([]inspectorRow, 0, len(backends))
+	for i, b := range backends {
+		if i == limit && len(backends) > limit {
+			rows = append(rows, inspectorRow{
+				label: "more", value: "+" + strconv.Itoa(len(backends)-limit), emphasis: "dim",
+			})
+			break
+		}
+		label := b.Host
+		if label == "" {
+			label = "default"
+		}
+		if b.Path != "" {
+			label += b.Path
+		}
+		val := "(none)"
+		em := "dim"
+		if b.Service != "" {
+			val = b.Service
+			if b.Port != "" {
+				val += ":" + b.Port
+			}
+			em = "name"
+		}
+		rows = append(rows, inspectorRow{label: label, value: val, emphasis: em})
+	}
+	return rows
 }
 
 // Light-touch builders for kinds that don't get a deep fetch — the row
@@ -952,89 +933,219 @@ func inspectContainerSnap(c k8s.ContainerInfo) *inspectorSnapshot {
 		s.statusText = c.State
 		s.statusKind = containerStateKind(c.State, c.Ready)
 	}
-	rows := []inspectorRow{
+	// Identity: only kind (init / regular / ephemeral) — image already
+	// lives in the row's split NAME·IMAGE column.
+	id := []inspectorRow{
 		{label: "kind", value: c.Kind, emphasis: "dim"},
-		{label: "image", value: c.Image, emphasis: "name"},
 	}
 	if c.LastReason != "" {
-		rows = append(rows, inspectorRow{label: "last", value: c.LastReason, emphasis: "warn"})
+		id = append(id, inspectorRow{label: "last", value: c.LastReason, emphasis: "warn"})
 	}
-	s.sections = append(s.sections, inspectorSection{rows: rows})
+	if len(c.Ports) > 0 {
+		id = append(id, inspectorRow{
+			label: "ports", value: strings.Join(c.Ports, ", "), emphasis: "name",
+		})
+	}
+	s.sections = append(s.sections, inspectorSection{rows: id})
+
+	if hasResources(c.CPURequest, c.CPULimit, c.MemRequest, c.MemLimit) {
+		s.sections = append(s.sections, inspectorSection{
+			title: "resources (configured)",
+			rows: []inspectorRow{
+				{label: "cpu", value: formatReqLim(c.CPURequest, c.CPULimit, "cpu"), emphasis: "name"},
+				{label: "mem", value: formatReqLim(c.MemRequest, c.MemLimit, "mem"), emphasis: "name"},
+			},
+		})
+	}
+
+	probes := []inspectorRow{}
+	if c.Liveness != "" {
+		probes = append(probes, inspectorRow{label: "liveness", value: c.Liveness, emphasis: "dim"})
+	}
+	if c.Readiness != "" {
+		probes = append(probes, inspectorRow{label: "readiness", value: c.Readiness, emphasis: "dim"})
+	}
+	if c.Startup != "" {
+		probes = append(probes, inspectorRow{label: "startup", value: c.Startup, emphasis: "dim"})
+	}
+	if len(probes) > 0 {
+		s.sections = append(s.sections, inspectorSection{title: "probes", rows: probes})
+	}
+
+	wiring := []inspectorRow{}
+	if c.Mounts > 0 {
+		wiring = append(wiring, inspectorRow{
+			label: "mounts", value: strconv.Itoa(c.Mounts), emphasis: "dim",
+		})
+	}
+	if c.EnvCount > 0 || c.EnvFromCount > 0 {
+		val := strconv.Itoa(c.EnvCount)
+		if c.EnvFromCount > 0 {
+			val += " · " + strconv.Itoa(c.EnvFromCount) + " envFrom"
+		}
+		wiring = append(wiring, inspectorRow{label: "env", value: val, emphasis: "dim"})
+	}
+	if len(wiring) > 0 {
+		s.sections = append(s.sections, inspectorSection{rows: wiring})
+	}
 	return s
 }
 
 func inspectConfigMapSnap(c k8s.ConfigMapInfo) *inspectorSnapshot {
-	// All fields already shown in the row (ns, keys, age) — the
-	// inspector reduces to a header. Stops the tile from rendering
-	// "ConfigMap · cfg / namespace=ns / keys=3 / age=5d" which is
-	// pure duplication.
-	return &inspectorSnapshot{
+	// Row carries (ns, keys, age). Inspector previews the schema —
+	// up to a handful of key names — so the operator sees what the
+	// configmap is *about* without opening the reveal modal.
+	s := &inspectorSnapshot{
 		title:    "ConfigMap · " + c.Name,
 		subtitle: "press d to view keys",
 	}
-}
-
-func inspectSecretSnap(s k8s.SecretInfo) *inspectorSnapshot {
-	return &inspectorSnapshot{
-		title:    "Secret · " + s.Name,
-		subtitle: "type · " + nonEmpty(s.Type, "Opaque") + "  ·  press v to reveal",
-	}
-}
-
-func inspectPVCSnap(p k8s.PVCInfo) *inspectorSnapshot {
-	// Row carries status / capacity / class — the inspector promotes the
-	// fields that don't fit in a row column (bound PV name, structured
-	// status emphasis) into a full section so the operator gets the
-	// "what does this claim resolve to?" answer at a glance.
-	s := &inspectorSnapshot{title: "PVC · " + p.Name}
-	rows := []inspectorRow{}
-	if p.VolumeName != "" {
-		rows = append(rows, inspectorRow{label: "volume", value: p.VolumeName, emphasis: "name"})
-	}
-	if p.Capacity != "" {
-		rows = append(rows, inspectorRow{label: "capacity", value: p.Capacity})
-	}
-	if p.StorageClass != "" {
-		rows = append(rows, inspectorRow{label: "storageClass", value: p.StorageClass})
-	}
-	if p.Status != "" {
-		rows = append(rows, inspectorRow{label: "status", value: p.Status, emphasis: pvClaimStatusEmphasis(p.Status)})
-	}
-	if len(rows) > 0 {
+	if rows := keyPreviewRows(c.KeyNames); len(rows) > 0 {
 		s.sections = append(s.sections, inspectorSection{rows: rows})
 	}
 	return s
 }
 
-func inspectPVSnap(p k8s.PVInfo) *inspectorSnapshot {
-	// Row carries status + capacity. Inspector adds claim, access modes,
-	// reclaim policy, and storage class — the fields an operator needs
-	// to decide "is this PV safe to recycle / who is binding it / will
-	// data survive if I delete the claim?".
-	s := &inspectorSnapshot{title: "PV · " + p.Name}
+func inspectSecretSnap(sec k8s.SecretInfo) *inspectorSnapshot {
+	s := &inspectorSnapshot{
+		title:    "Secret · " + sec.Name,
+		subtitle: "type · " + nonEmpty(sec.Type, "Opaque") + "  ·  press v to reveal",
+	}
+	if rows := keyPreviewRows(sec.KeyNames); len(rows) > 0 {
+		s.sections = append(s.sections, inspectorSection{rows: rows})
+	}
+	return s
+}
+
+// keyPreviewRows folds a sorted key-name list into a single inspector row
+// "keys · a, b, c (+N more)" — capped so a configmap with 50 entries
+// doesn't take over the tile. Names only, never values.
+func keyPreviewRows(names []string) []inspectorRow {
+	if len(names) == 0 {
+		return nil
+	}
+	const limit = 5
+	preview := names
+	suffix := ""
+	if len(names) > limit {
+		preview = names[:limit]
+		suffix = "  (+" + strconv.Itoa(len(names)-limit) + " more)"
+	}
+	return []inspectorRow{{
+		label:    "keys",
+		value:    strings.Join(preview, ", ") + suffix,
+		emphasis: "dim",
+	}}
+}
+
+func inspectPVCSnap(p k8s.PVCInfo, det *inspectorDetail) *inspectorSnapshot {
+	// Status / capacity / class are in the row's columns; the inspector
+	// skips them. It surfaces the fields a row can't fit: the bound PV
+	// name (when the row hides it), access modes, non-default volume
+	// mode, the latest pending-condition message, and the pods that
+	// currently have the claim mounted.
+	s := &inspectorSnapshot{title: "PVC · " + p.Name}
+	// Status headline drives the colour — same severity vocab the
+	// row's STATUS column uses, but here it's the loud bit at the top
+	// of the tile rather than a column entry.
+	if p.Status != "" {
+		s.statusText = p.Status
+		s.statusKind = pvClaimStatusEmphasis(p.Status)
+	}
+
 	rows := []inspectorRow{}
-	if p.Claim != "" {
-		rows = append(rows, inspectorRow{label: "claim", value: p.Claim, emphasis: "name"})
+	if det != nil && det.pvc != nil {
+		d := det.pvc
+		if d.AccessModes != "" {
+			rows = append(rows, inspectorRow{label: "accessModes", value: d.AccessModes, emphasis: "name"})
+		}
+		// Block mode is the unusual setting that changes how the volume
+		// is mounted; suppress the default Filesystem to keep the row
+		// list quiet for the majority case.
+		if d.VolumeMode != "" {
+			rows = append(rows, inspectorRow{label: "volumeMode", value: d.VolumeMode, emphasis: "warn"})
+		}
+		if d.PendingReason != "" {
+			rows = append(rows, inspectorRow{
+				label: "pending", value: d.PendingReason, emphasis: "warn",
+			})
+		}
 	}
-	if p.Capacity != "" {
-		rows = append(rows, inspectorRow{label: "capacity", value: p.Capacity})
+	if len(rows) > 0 {
+		s.sections = append(s.sections, inspectorSection{rows: rows})
 	}
-	if p.AccessModes != "" {
-		rows = append(rows, inspectorRow{label: "accessModes", value: p.AccessModes})
+	if det != nil && det.pvc != nil && len(det.pvc.MountedBy) > 0 {
+		s.sections = append(s.sections, inspectorSection{
+			title: "mounted by",
+			rows:  podMountRows(det.pvc.MountedBy),
+		})
 	}
+	if det != nil && det.err != nil {
+		s.err = det.err
+	}
+	return s
+}
+
+func inspectPVSnap(p k8s.PVInfo, det *inspectorDetail) *inspectorSnapshot {
+	// Row carries status / capacity / claim / access / reclaim
+	// (progressive disclosure for the last three). The inspector
+	// surfaces the per-driver identity (CSI driver + handle), topology
+	// (node affinity), and which workload currently mounts the
+	// underlying disk — none of which fit in a row column.
+	s := &inspectorSnapshot{title: "PV · " + p.Name}
+	if p.Status != "" {
+		s.statusText = p.Status
+		s.statusKind = pvVolumeStatusEmphasis(p.Status)
+	}
+	// Reclaim policy is a strong-emphasis hint (Delete = red) that
+	// belongs in the inspector even though the row carries it —
+	// the column is dim-by-default, the inspector promotes the
+	// dangerous case so an operator scanning top-down sees it.
+	rows := []inspectorRow{}
 	if p.Reclaim != "" {
 		rows = append(rows, inspectorRow{label: "reclaim", value: p.Reclaim, emphasis: pvReclaimEmphasis(p.Reclaim)})
 	}
-	if p.StorageClass != "" {
-		rows = append(rows, inspectorRow{label: "storageClass", value: p.StorageClass})
-	}
-	if p.Status != "" {
-		rows = append(rows, inspectorRow{label: "status", value: p.Status, emphasis: pvVolumeStatusEmphasis(p.Status)})
+	if det != nil && det.pv != nil {
+		d := det.pv
+		if d.CSIDriver != "" {
+			rows = append(rows, inspectorRow{label: "csi driver", value: d.CSIDriver, emphasis: "name"})
+		}
+		if d.VolumeHandle != "" {
+			rows = append(rows, inspectorRow{label: "handle", value: d.VolumeHandle, emphasis: "dim"})
+		}
+		if d.NodeAffinity != "" {
+			rows = append(rows, inspectorRow{label: "topology", value: d.NodeAffinity, emphasis: "dim"})
+		}
 	}
 	if len(rows) > 0 {
 		s.sections = append(s.sections, inspectorSection{rows: rows})
 	}
+	if det != nil && det.pv != nil && len(det.pv.MountedBy) > 0 {
+		s.sections = append(s.sections, inspectorSection{
+			title: "mounted by",
+			rows:  podMountRows(det.pv.MountedBy),
+		})
+	}
+	if det != nil && det.err != nil {
+		s.err = det.err
+	}
 	return s
+}
+
+// podMountRows folds a list of pod names (or "ns/name") into "pod" rows,
+// capped so a heavily-shared claim doesn't fill the tile.
+func podMountRows(pods []string) []inspectorRow {
+	const limit = 5
+	out := make([]inspectorRow, 0, len(pods))
+	for i, p := range pods {
+		if i == limit && len(pods) > limit {
+			out = append(out, inspectorRow{
+				label: "more", value: "+" + strconv.Itoa(len(pods)-limit), emphasis: "dim",
+			})
+			break
+		}
+		out = append(out, inspectorRow{label: "pod", value: p, emphasis: "name"})
+	}
+	return out
 }
 
 // pvClaimStatusEmphasis maps PVC status to an inspectorRow emphasis. Bound
@@ -1300,6 +1411,26 @@ func containerStateKind(state string, ready bool) string {
 		return "good"
 	}
 	return ""
+}
+
+// formatScheduledAllocatable renders a node's "X / Y" sister stat —
+// pod-request sum vs. allocatable — without the "req · lim" wording
+// formatReqLim uses, which would mislabel a node's scheduler reservation
+// as a limit.
+func formatScheduledAllocatable(scheduled, allocatable int64, kind string) string {
+	format := k8s.FormatCPU
+	if kind == "mem" {
+		format = k8s.FormatMem
+	}
+	switch {
+	case scheduled > 0 && allocatable > 0:
+		return format(scheduled) + " / " + format(allocatable)
+	case allocatable > 0:
+		return "— / " + format(allocatable)
+	case scheduled > 0:
+		return format(scheduled) + " / —"
+	}
+	return "—"
 }
 
 func hasResources(cpuReq, cpuLim, memReq, memLim int64) bool {

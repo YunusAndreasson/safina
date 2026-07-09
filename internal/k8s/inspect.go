@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -162,6 +163,42 @@ type IngressDetail struct {
 	TLSHosts  []string
 	Rules     int
 	IngressIP []string // status.loadBalancer.ingress entries
+	// Backends flattens spec.rules into "where does host[/path] route?" rows
+	// — the field that actually tells an operator whether a request will
+	// hit the workload they expect.
+	Backends []IngressBackend
+}
+
+// IngressBackend is one routing rule projected for the inspector: which
+// host (and optional path) hits which service:port. Empty Path means the
+// rule applies to all paths under the host.
+type IngressBackend struct {
+	Host    string
+	Path    string
+	Service string
+	Port    string // service-port number or named port
+}
+
+// PVCDetail is the deep-fetch view of a PersistentVolumeClaim — the
+// fields that don't fit in a row column. Access modes, volume mode (only
+// surfaced when non-default Block), and the latest condition message for
+// Pending claims (the actionable bit when a claim won't bind).
+type PVCDetail struct {
+	AccessModes   string // "RWO,ROX,RWX"
+	VolumeMode    string // "Filesystem" (default) or "Block"
+	PendingReason string // last condition.Message when Status is Pending
+	MountedBy     []string
+}
+
+// PVDetail is the deep-fetch view of a PersistentVolume — the
+// per-driver identity (CSI driver + volume handle) and topology
+// (node affinity) bits an operator uses to map a PV to a real cloud
+// disk or local volume.
+type PVDetail struct {
+	CSIDriver    string
+	VolumeHandle string
+	NodeAffinity string
+	MountedBy    []string
 }
 
 // ── Inspect* loaders ─────────────────────────────────────────────────
@@ -408,7 +445,139 @@ func InspectIngress(ctx context.Context, cs kubernetes.Interface, namespace, nam
 			out.IngressIP = append(out.IngressIP, lb.Hostname)
 		}
 	}
+	for _, r := range ing.Spec.Rules {
+		if r.HTTP == nil {
+			continue
+		}
+		for _, p := range r.HTTP.Paths {
+			b := IngressBackend{Host: r.Host, Path: p.Path}
+			if p.Backend.Service != nil {
+				b.Service = p.Backend.Service.Name
+				switch {
+				case p.Backend.Service.Port.Number != 0:
+					b.Port = strconv.Itoa(int(p.Backend.Service.Port.Number))
+				case p.Backend.Service.Port.Name != "":
+					b.Port = p.Backend.Service.Port.Name
+				}
+			}
+			out.Backends = append(out.Backends, b)
+		}
+	}
+	if ing.Spec.DefaultBackend != nil && ing.Spec.DefaultBackend.Service != nil {
+		db := ing.Spec.DefaultBackend.Service
+		b := IngressBackend{Service: db.Name}
+		switch {
+		case db.Port.Number != 0:
+			b.Port = strconv.Itoa(int(db.Port.Number))
+		case db.Port.Name != "":
+			b.Port = db.Port.Name
+		}
+		out.Backends = append(out.Backends, b)
+	}
 	return out, nil
+}
+
+// InspectPVC fetches one PersistentVolumeClaim and projects it into a
+// PVCDetail. AccessModes / VolumeMode are derived from the spec; the
+// PendingReason from the latest condition message — the actionable hint
+// when a claim won't bind ("waiting for first consumer", "no
+// provisioner"). MountedBy walks the namespace's pods to surface which
+// workload currently has the claim attached; if the pod-list call fails
+// we treat it as "unknown" rather than failing the whole detail fetch.
+func InspectPVC(ctx context.Context, cs kubernetes.Interface, namespace, name string) (PVCDetail, error) {
+	pvc, err := cs.CoreV1().PersistentVolumeClaims(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return PVCDetail{}, classifyDetailErr(err, "pvc", name)
+	}
+	out := PVCDetail{}
+	modes := make([]string, 0, len(pvc.Spec.AccessModes))
+	for _, m := range pvc.Spec.AccessModes {
+		modes = append(modes, string(m))
+	}
+	out.AccessModes = strings.Join(modes, ",")
+	if pvc.Spec.VolumeMode != nil && *pvc.Spec.VolumeMode == corev1.PersistentVolumeBlock {
+		out.VolumeMode = string(*pvc.Spec.VolumeMode)
+	}
+	if pvc.Status.Phase == corev1.ClaimPending {
+		// k8s appends new conditions, so the last one carries the freshest
+		// reason. message is more useful than reason — "waiting for first
+		// consumer" vs the bare "WaitForFirstConsumer".
+		if n := len(pvc.Status.Conditions); n > 0 {
+			c := pvc.Status.Conditions[n-1]
+			if c.Message != "" {
+				out.PendingReason = c.Message
+			} else {
+				out.PendingReason = c.Reason
+			}
+		}
+	}
+	pods, err := cs.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
+	if err == nil {
+		for _, p := range pods.Items {
+			for _, v := range p.Spec.Volumes {
+				if v.PersistentVolumeClaim != nil && v.PersistentVolumeClaim.ClaimName == name {
+					out.MountedBy = append(out.MountedBy, p.Name)
+					break
+				}
+			}
+		}
+	}
+	return out, nil
+}
+
+// InspectPV fetches one PersistentVolume and projects it into a PVDetail.
+// CSI driver + handle answer "which cloud disk is this?"; node affinity
+// captures the topology constraint a scheduler will honor (single zone,
+// single node). MountedBy is best-effort — we look up the bound claim
+// and walk that namespace's pods.
+func InspectPV(ctx context.Context, cs kubernetes.Interface, name string) (PVDetail, error) {
+	pv, err := cs.CoreV1().PersistentVolumes().Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return PVDetail{}, classifyDetailErr(err, "pv", name)
+	}
+	out := PVDetail{}
+	if pv.Spec.CSI != nil {
+		out.CSIDriver = pv.Spec.CSI.Driver
+		out.VolumeHandle = pv.Spec.CSI.VolumeHandle
+	}
+	out.NodeAffinity = formatNodeAffinity(pv.Spec.NodeAffinity)
+	if pv.Spec.ClaimRef != nil {
+		ns := pv.Spec.ClaimRef.Namespace
+		claim := pv.Spec.ClaimRef.Name
+		pods, err := cs.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{})
+		if err == nil {
+			for _, p := range pods.Items {
+				for _, v := range p.Spec.Volumes {
+					if v.PersistentVolumeClaim != nil && v.PersistentVolumeClaim.ClaimName == claim {
+						out.MountedBy = append(out.MountedBy, ns+"/"+p.Name)
+						break
+					}
+				}
+			}
+		}
+	}
+	return out, nil
+}
+
+// formatNodeAffinity renders a PV's required node selector terms as a
+// short single-line summary "key=val,key=val" — the topology constraints
+// that bind the volume to a zone / region / node. Returns "" when the
+// PV is unconstrained (matches anything).
+func formatNodeAffinity(aff *corev1.VolumeNodeAffinity) string {
+	if aff == nil || aff.Required == nil {
+		return ""
+	}
+	parts := []string{}
+	for _, term := range aff.Required.NodeSelectorTerms {
+		for _, m := range term.MatchExpressions {
+			if len(m.Values) == 0 {
+				parts = append(parts, m.Key+" "+string(m.Operator))
+				continue
+			}
+			parts = append(parts, m.Key+"="+strings.Join(m.Values, "|"))
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 // ── helpers ──────────────────────────────────────────────────────────
