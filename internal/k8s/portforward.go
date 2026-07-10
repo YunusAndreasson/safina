@@ -7,8 +7,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
-	"path"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +18,8 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/portforward"
 	"k8s.io/client-go/transport/spdy"
+
+	"github.com/yunus/safina/internal/debug"
 )
 
 // PortForwardTargetKind names the two things you can forward to.
@@ -202,14 +202,28 @@ func (fm *ForwardManager) StartPortForward(
 		return nil, fmt.Errorf("spdy transport: %w", err)
 	}
 
-	// Build the portforward URL: POST /api/v1/namespaces/<ns>/pods/<pod>/portforward
-	base, err := url.Parse(restCfg.Host)
-	if err != nil {
-		return nil, fmt.Errorf("parse host: %w", err)
-	}
-	base.Path = path.Join(base.Path, "api", "v1", "namespaces", namespace, "pods", podName, "portforward")
+	// Build the portforward URL through the REST client rather than by
+	// hand-joining paths onto restCfg.Host — this keeps any apiserver base
+	// path (proxies mount the API under a prefix) intact.
+	pfURL := cs.CoreV1().RESTClient().Post().
+		Resource("pods").
+		Namespace(namespace).
+		Name(podName).
+		SubResource("portforward").
+		URL()
 
-	dialer := spdy.NewDialer(upgrader, &http.Client{Transport: transport}, http.MethodPost, base)
+	spdyDialer := spdy.NewDialer(upgrader, &http.Client{Transport: transport}, http.MethodPost, pfURL)
+
+	// kubectl-standard dialer pair: try the websocket tunnel first (works
+	// through HTTP/2-only proxies and LBs that drop SPDY), fall back to the
+	// legacy SPDY dialer when the websocket upgrade is what failed. If the
+	// tunnel dialer itself can't be built, SPDY alone matches old behavior.
+	dialer := spdyDialer
+	if tunnel, err := portforward.NewSPDYOverWebsocketDialer(pfURL, restCfg); err == nil {
+		dialer = portforward.NewFallbackDialer(tunnel, spdyDialer, streamFallback)
+	} else {
+		debug.Errf("portforward.tunnel_dialer_failed", "err", err.Error())
+	}
 
 	stop := make(chan struct{})
 	ready := make(chan struct{})

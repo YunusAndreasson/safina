@@ -8,8 +8,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/kubernetes"
 
 	"github.com/yunus/safina/internal/debug"
 	"github.com/yunus/safina/internal/k8s"
@@ -26,12 +24,17 @@ func LoadTreeChildren(ctx context.Context, mgr *k8s.Manager, contextName string,
 		if !ok {
 			return TreeChildrenLoadedMsg{Path: path, Err: errContextNotFound}
 		}
-		ch, err := loadChildren(ctx, client.Clientset, client.Dynamic, path, userNS, systemNS)
+		ch, err := loadChildren(ctx, client, path, userNS, systemNS)
 		return TreeChildrenLoadedMsg{Path: path, Children: ch, Err: err}
 	}
 }
 
-func loadChildren(ctx context.Context, cs kubernetes.Interface, dyn dynamic.Interface, path []NodeRef, cfgUser, cfgSystem []string) (*Children, error) {
+// loadChildren dispatches on the focus kind. Reads go through the Client's
+// cache-aware methods — informer-backed when the context's cache is warm,
+// transparent direct-API fallback otherwise — so the 5s auto-refresh tick
+// costs memory reads, not a List fan-out. CRDs (client.Dynamic) and one-off
+// PV/PVC drills stay direct.
+func loadChildren(ctx context.Context, client *k8s.Client, path []NodeRef, cfgUser, cfgSystem []string) (*Children, error) {
 	focus := path[len(path)-1]
 
 	switch focus.Kind {
@@ -46,7 +49,7 @@ func loadChildren(ctx context.Context, cs kubernetes.Interface, dyn dynamic.Inte
 		// + every user namespace + System. Apps are still fetched here so
 		// (1) the All folder gets an accurate count, and (2) namespace
 		// folders inherit the worst-of-apps health pip via nsHealthCache.
-		userNs, sysNs, err := k8s.ListAndClassifyNamespaces(ctx, cs, cfgUser, cfgSystem)
+		userNs, sysNs, err := client.ListAndClassifyNamespaces(ctx, cfgUser, cfgSystem)
 		if err != nil {
 			return nil, err
 		}
@@ -58,7 +61,7 @@ func loadChildren(ctx context.Context, cs kubernetes.Interface, dyn dynamic.Inte
 		for i, n := range sysNs {
 			sysNames[i] = n.Name
 		}
-		apps, err := k8s.ListAppsInNamespaces(ctx, cs, userNames)
+		apps, err := client.ListAppsInNamespaces(ctx, userNames)
 		if err != nil {
 			return nil, err
 		}
@@ -74,7 +77,7 @@ func loadChildren(ctx context.Context, cs kubernetes.Interface, dyn dynamic.Inte
 		// "All" folder: the unified cross-namespace view. Returns apps so
 		// the renderer can emit the same Workloads/Config/Secrets/Network/
 		// Storage fold layout the cluster root used to host inline.
-		userNs, _, err := k8s.ListAndClassifyNamespaces(ctx, cs, cfgUser, cfgSystem)
+		userNs, _, err := client.ListAndClassifyNamespaces(ctx, cfgUser, cfgSystem)
 		if err != nil {
 			return nil, err
 		}
@@ -82,14 +85,14 @@ func loadChildren(ctx context.Context, cs kubernetes.Interface, dyn dynamic.Inte
 		for i, n := range userNs {
 			userNames[i] = n.Name
 		}
-		apps, err := k8s.ListAppsInNamespaces(ctx, cs, userNames)
+		apps, err := client.ListAppsInNamespaces(ctx, userNames)
 		if err != nil {
 			return nil, err
 		}
 		return &Children{Kind: k8s.KindApp, Apps: apps}, nil
 
 	case k8s.KindClusterFold:
-		pools, _, err := k8s.ListNodesAndPools(ctx, cs)
+		pools, _, err := client.ListNodesAndPools(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -100,7 +103,7 @@ func loadChildren(ctx context.Context, cs kubernetes.Interface, dyn dynamic.Inte
 		// resources). The only payload we need to fetch is the System
 		// namespace count so the System row can show "(N)" — without it
 		// the badge would render "(0)" or get suppressed entirely.
-		_, sysNs, err := k8s.ListAndClassifyNamespaces(ctx, cs, cfgUser, cfgSystem)
+		_, sysNs, err := client.ListAndClassifyNamespaces(ctx, cfgUser, cfgSystem)
 		if err != nil {
 			return nil, err
 		}
@@ -118,18 +121,18 @@ func loadChildren(ctx context.Context, cs kubernetes.Interface, dyn dynamic.Inte
 		// Scope by parent: a Workloads fold inside a NamespaceFolder lists
 		// only that namespace's workloads; otherwise (inside the All fold)
 		// it spans every user namespace.
-		nss, err := workloadNamespaces(ctx, cs, path, cfgUser, cfgSystem)
+		nss, err := workloadNamespaces(ctx, client, path, cfgUser, cfgSystem)
 		if err != nil {
 			return nil, err
 		}
-		apps, err := k8s.ListAppsInNamespaces(ctx, cs, nss)
+		apps, err := client.ListAppsInNamespaces(ctx, nss)
 		if err != nil {
 			return nil, err
 		}
 		return &Children{Kind: k8s.KindApp, Apps: apps}, nil
 
 	case k8s.KindSystemFold:
-		_, sysNs, err := k8s.ListAndClassifyNamespaces(ctx, cs, cfgUser, cfgSystem)
+		_, sysNs, err := client.ListAndClassifyNamespaces(ctx, cfgUser, cfgSystem)
 		if err != nil {
 			return nil, err
 		}
@@ -141,14 +144,14 @@ func loadChildren(ctx context.Context, cs kubernetes.Interface, dyn dynamic.Inte
 		// the namespace's worst-of health pip stays current. The renderer
 		// detects the parent kind and emits Workloads/Config/Secrets/Network/
 		// Storage fold rows above (or instead of) the apps list.
-		apps, err := k8s.ListAppsInNamespaces(ctx, cs, []string{focus.Name})
+		apps, err := client.ListAppsInNamespaces(ctx, []string{focus.Name})
 		if err != nil {
 			return nil, err
 		}
 		return &Children{Kind: k8s.KindApp, Apps: apps}, nil
 
 	case k8s.KindApp:
-		pods, err := k8s.ListPodsForApp(ctx, cs, k8s.AppRef{
+		pods, err := client.ListPodsForApp(ctx, k8s.AppRef{
 			Kind:      focus.SubKind,
 			Namespace: focus.Namespace,
 			Name:      focus.Name,
@@ -160,14 +163,14 @@ func loadChildren(ctx context.Context, cs kubernetes.Interface, dyn dynamic.Inte
 		return &Children{Kind: k8s.KindPod, Pods: pods}, nil
 
 	case k8s.KindPod:
-		ctrs, err := k8s.ListContainersForPod(ctx, cs, focus.Namespace, focus.Name)
+		ctrs, err := client.ListContainersForPod(ctx, focus.Namespace, focus.Name)
 		if err != nil {
 			return nil, err
 		}
 		return &Children{Kind: k8s.KindContainer, Containers: ctrs}, nil
 
 	case k8s.KindNodePool:
-		_, allNodes, err := k8s.ListNodesAndPools(ctx, cs)
+		_, allNodes, err := client.ListNodesAndPools(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -180,69 +183,69 @@ func loadChildren(ctx context.Context, cs kubernetes.Interface, dyn dynamic.Inte
 		return &Children{Kind: k8s.KindNode, Nodes: filtered}, nil
 
 	case k8s.KindNode:
-		pods, err := k8s.ListPodsOnNode(ctx, cs, focus.Name)
+		pods, err := client.ListPodsOnNode(ctx, focus.Name)
 		if err != nil {
 			return nil, err
 		}
 		return &Children{Kind: k8s.KindPod, Pods: pods}, nil
 
 	case k8s.KindConfigFold:
-		nss, err := workloadNamespaces(ctx, cs, path, cfgUser, cfgSystem)
+		nss, err := workloadNamespaces(ctx, client, path, cfgUser, cfgSystem)
 		if err != nil {
 			return nil, err
 		}
-		cms, err := k8s.ListConfigMapsAcrossNamespaces(ctx, cs, nss)
+		cms, err := client.ListConfigMapsAcrossNamespaces(ctx, nss)
 		if err != nil {
 			return nil, err
 		}
 		return &Children{Kind: k8s.KindConfigMap, ConfigMaps: cms}, nil
 
 	case k8s.KindSecretsFold:
-		nss, err := workloadNamespaces(ctx, cs, path, cfgUser, cfgSystem)
+		nss, err := workloadNamespaces(ctx, client, path, cfgUser, cfgSystem)
 		if err != nil {
 			return nil, err
 		}
-		secrets, err := k8s.ListSecretsAcrossNamespaces(ctx, cs, nss)
+		secrets, err := client.ListSecretsAcrossNamespaces(ctx, nss)
 		if err != nil {
 			return nil, err
 		}
 		return &Children{Kind: k8s.KindSecret, Secrets: secrets}, nil
 
 	case k8s.KindNetworkFold:
-		nss, err := workloadNamespaces(ctx, cs, path, cfgUser, cfgSystem)
+		nss, err := workloadNamespaces(ctx, client, path, cfgUser, cfgSystem)
 		if err != nil {
 			return nil, err
 		}
-		svcs, err := k8s.ListServicesAcrossNamespaces(ctx, cs, nss)
+		svcs, err := client.ListServicesAcrossNamespaces(ctx, nss)
 		if err != nil {
 			return nil, err
 		}
 		return &Children{Kind: k8s.KindService, Services: svcs}, nil
 
 	case k8s.KindIngressFold:
-		nss, err := workloadNamespaces(ctx, cs, path, cfgUser, cfgSystem)
+		nss, err := workloadNamespaces(ctx, client, path, cfgUser, cfgSystem)
 		if err != nil {
 			return nil, err
 		}
-		ings, err := k8s.ListIngressesAcrossNamespaces(ctx, cs, nss)
+		ings, err := client.ListIngressesAcrossNamespaces(ctx, nss)
 		if err != nil {
 			return nil, err
 		}
 		return &Children{Kind: k8s.KindIngress, Ingresses: ings}, nil
 
 	case k8s.KindService:
-		ings, err := k8s.ListIngressesForService(ctx, cs, focus.Namespace, focus.Name)
+		ings, err := client.ListIngressesForService(ctx, focus.Namespace, focus.Name)
 		if err != nil {
 			return nil, err
 		}
 		return &Children{Kind: k8s.KindIngress, Ingresses: ings}, nil
 
 	case k8s.KindStorageFold:
-		nss, err := workloadNamespaces(ctx, cs, path, cfgUser, cfgSystem)
+		nss, err := workloadNamespaces(ctx, client, path, cfgUser, cfgSystem)
 		if err != nil {
 			return nil, err
 		}
-		pvcs, err := k8s.ListPVCsAcrossNamespaces(ctx, cs, nss)
+		pvcs, err := client.ListPVCsAcrossNamespaces(ctx, nss)
 		if err != nil {
 			return nil, err
 		}
@@ -250,11 +253,12 @@ func loadChildren(ctx context.Context, cs kubernetes.Interface, dyn dynamic.Inte
 
 	case k8s.KindPVC:
 		// Get the PVC to find its bound volume name, then fetch the PV.
-		pvc, err := cs.CoreV1().PersistentVolumeClaims(focus.Namespace).Get(ctx, focus.Name, metav1.GetOptions{})
+		// One-off drill Gets stay direct — the apiserver is authoritative.
+		pvc, err := client.Clientset.CoreV1().PersistentVolumeClaims(focus.Namespace).Get(ctx, focus.Name, metav1.GetOptions{})
 		if err != nil {
 			return nil, err
 		}
-		pv, err := k8s.GetPVByName(ctx, cs, pvc.Spec.VolumeName)
+		pv, err := k8s.GetPVByName(ctx, client.Clientset, pvc.Spec.VolumeName)
 		if err != nil {
 			return nil, err
 		}
@@ -269,7 +273,7 @@ func loadChildren(ctx context.Context, cs kubernetes.Interface, dyn dynamic.Inte
 		if !ok {
 			return nil, fmt.Errorf("invalid GVR %q", focus.GVR)
 		}
-		nsList, err := workloadNamespaces(ctx, cs, path, cfgUser, cfgSystem)
+		nsList, err := workloadNamespaces(ctx, client, path, cfgUser, cfgSystem)
 		if err != nil {
 			return nil, err
 		}
@@ -284,9 +288,9 @@ func loadChildren(ctx context.Context, cs kubernetes.Interface, dyn dynamic.Inte
 		// fast path when nsList covers every user namespace.
 		var items []k8s.GenericResource
 		if len(nsList) == 1 {
-			items, err = k8s.ListGeneric(ctx, dyn, gvr, nsList[0])
+			items, err = k8s.ListGeneric(ctx, client.Dynamic, gvr, nsList[0])
 		} else {
-			items, err = k8s.ListGeneric(ctx, dyn, gvr, "")
+			items, err = k8s.ListGeneric(ctx, client.Dynamic, gvr, "")
 		}
 		if err != nil {
 			return nil, err
@@ -313,43 +317,28 @@ func parseGVR(s string) (schema.GroupVersionResource, bool) {
 	return schema.GroupVersionResource{Group: parts[0], Version: parts[1], Resource: parts[2]}, true
 }
 
-// allNamespaces returns user namespace names — every namespace whose name
-// is NOT in sysSet. Used to scope resource listing (ConfigMaps, Secrets,
-// Services, PVCs) to the user-visible bucket.
-func allNamespaces(ctx context.Context, cs kubernetes.Interface, sysSet map[string]bool) []string {
-	list, err := cs.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil
-	}
-	names := make([]string, 0, len(list.Items))
-	for _, ns := range list.Items {
-		if !sysSet[ns.Name] {
-			names = append(names, ns.Name)
-		}
-	}
-	return names
-}
-
 // workloadNamespaces resolves which namespaces a resource-fold (Workloads,
 // Config, Secrets, Network, Storage) should list against, by inspecting the
 // drill path. When a NamespaceFolder (or system Namespace) parent is in the
 // path the fold is scoped to that single namespace — what the user expects
 // after drilling "payments/ ▸ Workloads". Otherwise (inside the All folder)
 // it spans every user namespace, mirroring safina's pre-folders behavior.
-func workloadNamespaces(ctx context.Context, cs kubernetes.Interface, path []NodeRef, cfgUser, cfgSystem []string) ([]string, error) {
+// The user bucket IS the complement of the system bucket, so one classify
+// call replaces the old classify-then-relist-and-filter pair.
+func workloadNamespaces(ctx context.Context, client *k8s.Client, path []NodeRef, cfgUser, cfgSystem []string) ([]string, error) {
 	for i := len(path) - 1; i >= 0; i-- {
 		switch path[i].Kind {
 		case k8s.KindNamespaceFolder, k8s.KindNamespace:
 			return []string{path[i].Name}, nil
 		}
 	}
-	_, sysNs, err := k8s.ListAndClassifyNamespaces(ctx, cs, cfgUser, cfgSystem)
+	userNs, _, err := client.ListAndClassifyNamespaces(ctx, cfgUser, cfgSystem)
 	if err != nil {
 		return nil, err
 	}
-	sysSet := make(map[string]bool, len(sysNs))
-	for _, n := range sysNs {
-		sysSet[n.Name] = true
+	names := make([]string, len(userNs))
+	for i, n := range userNs {
+		names[i] = n.Name
 	}
-	return allNamespaces(ctx, cs, sysSet), nil
+	return names, nil
 }

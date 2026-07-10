@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -156,7 +155,6 @@ type Model struct {
 
 	state state
 
-	help       help.Model
 	scaleInput textinput.Model
 	// pfInput collects the "L:R" pair for a new port-forward. Reused across
 	// every start; cleared on each open.
@@ -347,17 +345,6 @@ func NewModel(mgr *k8s.Manager, cfg *config.AppConfig) Model {
 	pf.SetStyles(pfStyles)
 	pf.SetVirtualCursor(false)
 
-	hp := help.New()
-	hp.Styles.ShortKey = t.HelpKey
-	hp.Styles.ShortDesc = t.HelpDesc
-	hp.Styles.FullKey = t.HelpKey
-	hp.Styles.FullDesc = t.HelpDesc
-	sepStyle := lipgloss.NewStyle().Foreground(t.P.Dim)
-	hp.Styles.ShortSeparator = sepStyle
-	hp.Styles.FullSeparator = sepStyle
-	hp.ShortSeparator = " · "
-	hp.FullSeparator = "   "
-
 	svc := claude.NewService()
 
 	m := Model{
@@ -379,7 +366,6 @@ func NewModel(mgr *k8s.Manager, cfg *config.AppConfig) Model {
 		clusters:           sections.NewClusterSwitcher(),
 		claudeSvc:          svc,
 		state:              stateMain,
-		help:               hp,
 		scaleInput:         scale,
 		pfInput:            pf,
 		now:                time.Now(),

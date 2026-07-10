@@ -417,6 +417,14 @@ func ListAndClassifyNamespaces(ctx context.Context, cs kubernetes.Interface, cfg
 		names = append(names, n.Name)
 		ageBy[n.Name] = HumanAge(n.CreationTimestamp.Time)
 	}
+	u, s := classifyNamespacesWithAge(names, ageBy, cfgUser, cfgSystem)
+	return u, s, nil
+}
+
+// classifyNamespacesWithAge is the shared tail of ListAndClassifyNamespaces:
+// classify into user/system buckets and stamp each row's Age. Shared between
+// the direct-API path and the cache-aware Client method.
+func classifyNamespacesWithAge(names []string, ageBy map[string]string, cfgUser, cfgSystem []string) (user, system []NamespaceInfo) {
 	u, s := ClassifyNamespaces(names, cfgUser, cfgSystem)
 	for i := range u {
 		u[i].Age = ageBy[u[i].Name]
@@ -424,7 +432,7 @@ func ListAndClassifyNamespaces(ctx context.Context, cs kubernetes.Interface, cfg
 	for i := range s {
 		s[i].Age = ageBy[s[i].Name]
 	}
-	return u, s, nil
+	return u, s
 }
 
 // ── Apps (workload-kind unification) ─────────────────────────────────
@@ -561,7 +569,13 @@ func ListAppsInNamespaces(ctx context.Context, cs kubernetes.Interface, namespac
 	}
 	wg.Wait()
 
-	// Enrich with HPA badges.
+	return finishApps(out, hpaIdx), nil
+}
+
+// finishApps is the shared tail of ListAppsInNamespaces: HPA badge
+// enrichment followed by the identity sort. Shared between the direct-API
+// path and the cache-aware Client method.
+func finishApps(out []AppInfo, hpaIdx map[string]*HPABadge) []AppInfo {
 	for i := range out {
 		key := out[i].Namespace + "/" + out[i].Kind + "/" + out[i].Name
 		if b, ok := hpaIdx[key]; ok {
@@ -591,7 +605,7 @@ func ListAppsInNamespaces(ctx context.Context, cs kubernetes.Interface, namespac
 		}
 		return out[i].Name < out[j].Name
 	})
-	return out, nil
+	return out
 }
 
 func deploymentToApp(d appsv1.Deployment, pods []corev1.Pod, metrics map[string]ResourceUsage) AppInfo {
@@ -939,17 +953,24 @@ func podsByOwnerUID(ctx context.Context, cs kubernetes.Interface, namespace stri
 	if len(ownerUIDs) == 0 {
 		return nil, nil
 	}
-	allow := make(map[types.UID]bool, len(ownerUIDs))
-	for _, u := range ownerUIDs {
-		allow[u] = true
-	}
 	list, err := cs.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, err
 	}
 	metrics, _ := ListPodMetrics(ctx, cs, namespace)
-	out := make([]PodInfo, 0, len(list.Items))
-	for _, p := range list.Items {
+	return filterPodsByOwner(list.Items, ownerUIDs, metrics), nil
+}
+
+// filterPodsByOwner is the shared tail of podsByOwnerUID: keep pods owned by
+// one of ownerUIDs, enrich with metrics, sort worst-health-first. Shared
+// between the direct-API path and the cache-aware Client method.
+func filterPodsByOwner(pods []corev1.Pod, ownerUIDs []types.UID, metrics map[string]ResourceUsage) []PodInfo {
+	allow := make(map[types.UID]bool, len(ownerUIDs))
+	for _, u := range ownerUIDs {
+		allow[u] = true
+	}
+	out := make([]PodInfo, 0, len(pods))
+	for _, p := range pods {
 		matched := false
 		for _, o := range p.OwnerReferences {
 			if allow[o.UID] {
@@ -975,7 +996,7 @@ func podsByOwnerUID(ctx context.Context, cs kubernetes.Interface, namespace stri
 		}
 		return out[i].Name < out[j].Name
 	})
-	return out, nil
+	return out
 }
 
 // ── Containers ──────────────────────────────────────────────────────
@@ -988,8 +1009,14 @@ func ListContainersForPod(ctx context.Context, cs kubernetes.Interface, namespac
 		return nil, err
 	}
 	byCtr, _ := ListPodMetricsByContainer(ctx, cs, namespace)
-	usage := byCtr[namespace+"/"+name]
+	return containersForPod(p, byCtr[namespace+"/"+name]), nil
+}
 
+// containersForPod is the shared tail of ListContainersForPod: flatten the
+// pod's regular + init + ephemeral containers into ContainerInfos. Shared
+// between the direct-API path and the cache-aware Client method. Read-only
+// on p — the cache-aware path hands in a SHARED informer object.
+func containersForPod(p *corev1.Pod, usage map[string]ResourceUsage) []ContainerInfo {
 	out := make([]ContainerInfo, 0, len(p.Spec.Containers)+len(p.Spec.InitContainers)+len(p.Spec.EphemeralContainers))
 	statusByName := func(statuses []corev1.ContainerStatus) map[string]corev1.ContainerStatus {
 		m := make(map[string]corev1.ContainerStatus, len(statuses))
@@ -1011,7 +1038,7 @@ func ListContainersForPod(ctx context.Context, cs kubernetes.Interface, namespac
 		c := corev1.Container{Name: ec.Name, Image: ec.Image}
 		out = append(out, makeContainerInfo(p, c, "ephemeral", corev1.ContainerStatus{}, usage))
 	}
-	return out, nil
+	return out
 }
 
 func makeContainerInfo(p *corev1.Pod, c corev1.Container, kind string, st corev1.ContainerStatus, usage map[string]ResourceUsage) ContainerInfo {
@@ -1097,19 +1124,28 @@ func ListNodesAndPools(ctx context.Context, cs kubernetes.Interface) ([]NodePool
 	}()
 	wg.Wait()
 
-	// Bucket pods by node for request-aggregation.
-	podsByNode := make(map[string][]corev1.Pod)
+	var podItems []corev1.Pod
 	if allPods != nil {
-		for _, p := range allPods.Items {
-			if p.Spec.NodeName == "" {
-				continue
-			}
-			podsByNode[p.Spec.NodeName] = append(podsByNode[p.Spec.NodeName], p)
+		podItems = allPods.Items
+	}
+	pools, infos := buildNodesAndPools(nodes.Items, nodeMetrics, podItems)
+	return pools, infos, nil
+}
+
+// buildNodesAndPools is the shared tail of ListNodesAndPools: bucket pods by
+// node for request math, build NodeInfos, sort, and group into pools. Shared
+// between the direct-API path and the cache-aware Client method.
+func buildNodesAndPools(nodes []corev1.Node, nodeMetrics map[string]ResourceUsage, allPods []corev1.Pod) ([]NodePoolInfo, []NodeInfo) {
+	podsByNode := make(map[string][]corev1.Pod)
+	for _, p := range allPods {
+		if p.Spec.NodeName == "" {
+			continue
 		}
+		podsByNode[p.Spec.NodeName] = append(podsByNode[p.Spec.NodeName], p)
 	}
 
-	infos := make([]NodeInfo, 0, len(nodes.Items))
-	for _, n := range nodes.Items {
+	infos := make([]NodeInfo, 0, len(nodes))
+	for _, n := range nodes {
 		ni := nodeToInfo(n, nodeMetrics, podsByNode[n.Name])
 		infos = append(infos, ni)
 	}
@@ -1121,8 +1157,7 @@ func ListNodesAndPools(ctx context.Context, cs kubernetes.Interface) ([]NodePool
 		return infos[i].Name < infos[j].Name
 	})
 
-	pools := groupIntoPools(infos)
-	return pools, infos, nil
+	return groupIntoPools(infos), infos
 }
 
 func nodeToInfo(n corev1.Node, metrics map[string]ResourceUsage, pods []corev1.Pod) NodeInfo {
@@ -1410,7 +1445,9 @@ func (ch *ClusterHealth) addPod(p corev1.Pod) {
 // direct-API path when informers failed to sync (timeout, RBAC, or no set
 // was built).
 func (c *Client) LoadClusterHealth(ctx context.Context) (ClusterHealth, error) {
-	if c.informers == nil || c.informers.podLister == nil || c.informers.nodeLister == nil {
+	podLister := c.Informers().Pods()
+	nodeLister := c.Informers().Nodes()
+	if podLister == nil || nodeLister == nil {
 		return LoadClusterHealth(ctx, c.Clientset)
 	}
 	var ch ClusterHealth
@@ -1427,12 +1464,12 @@ func (c *Client) LoadClusterHealth(ctx context.Context) (ClusterHealth, error) {
 		nodeMetrics, _ = ListNodeMetrics(ctx, c.Clientset)
 	}()
 
-	nodes, err := c.informers.nodeLister.List(labels.Everything())
+	nodes, err := nodeLister.List(labels.Everything())
 	if err != nil {
 		wg.Wait()
 		return ch, err
 	}
-	pods, err := c.informers.podLister.List(labels.Everything())
+	pods, err := podLister.List(labels.Everything())
 	if err != nil {
 		wg.Wait()
 		return ch, err
@@ -1458,8 +1495,15 @@ func ListPodsOnNode(ctx context.Context, cs kubernetes.Interface, nodeName strin
 		return nil, err
 	}
 	metrics, _ := ListPodMetrics(ctx, cs, "")
-	out := make([]PodInfo, 0, len(list.Items))
-	for _, p := range list.Items {
+	return podInfosSortedNSName(list.Items, metrics), nil
+}
+
+// podInfosSortedNSName is the shared tail of ListPodsOnNode: convert pods to
+// PodInfos with metrics enrichment, sorted by namespace then name. Shared
+// between the direct-API path and the cache-aware Client method.
+func podInfosSortedNSName(pods []corev1.Pod, metrics map[string]ResourceUsage) []PodInfo {
+	out := make([]PodInfo, 0, len(pods))
+	for _, p := range pods {
 		info := podToInfo(p)
 		if metrics != nil {
 			if u, ok := metrics[p.Namespace+"/"+p.Name]; ok {
@@ -1475,7 +1519,7 @@ func ListPodsOnNode(ctx context.Context, cs kubernetes.Interface, nodeName strin
 		}
 		return out[i].Name < out[j].Name
 	})
-	return out, nil
+	return out
 }
 
 // ── Node "Available" math ────────────────────────────────────────────

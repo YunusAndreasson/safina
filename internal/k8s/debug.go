@@ -10,7 +10,6 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/remotecommand"
 )
 
 // DefaultDebugImage is what gets attached when a pod has no shell. netshoot
@@ -81,7 +80,7 @@ func AttachDebugContainer(
 			TTY:       true,
 		}, scheme.ParameterCodec)
 
-	executor, err := remotecommand.NewSPDYExecutor(restCfg, "POST", req.URL())
+	executor, err := newStreamExecutor(restCfg, req.URL())
 	if err != nil {
 		return nil, fmt.Errorf("create attach executor: %w", err)
 	}

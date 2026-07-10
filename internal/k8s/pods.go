@@ -174,6 +174,11 @@ func StreamPodContainerLogs(ctx context.Context, cs kubernetes.Interface, namesp
 		Follow:    true,
 		Previous:  previous,
 		TailLines: int64Ptr(500),
+		// TailLines bounds lines, not bytes — a container that logged one
+		// pathological multi-hundred-MB line would flood the stream (and the
+		// TUI buffer) through a 500-line window. 10 MiB is far beyond any
+		// legitimate on-call read.
+		LimitBytes: int64Ptr(10 << 20),
 		// Ask kubelet to prepend an RFC3339Nano timestamp to every line.
 		// Without this, apps that emit plain output ("Starting server",
 		// "Listening on :8080") arrive with no temporal anchor — useless
@@ -226,7 +231,8 @@ func int64Ptr(i int64) *int64 {
 // Falls back to the direct-API path when informers failed to sync (timeout,
 // RBAC denying Watch on Pods, or no informer set was built).
 func (c *Client) ListHotPodsByCPU(ctx context.Context, limit int) ([]PodInfo, error) {
-	if c.informers == nil || c.informers.podLister == nil {
+	podLister := c.Informers().Pods()
+	if podLister == nil {
 		return ListHotPodsByCPU(ctx, c.Clientset, limit)
 	}
 	if limit <= 0 {
@@ -236,7 +242,7 @@ func (c *Client) ListHotPodsByCPU(ctx context.Context, limit int) ([]PodInfo, er
 	// Cache holds every phase; filter to Running in-process to match the
 	// direct-API path's server-side FieldSelector. Predicate cost is trivial
 	// next to the cached lookup itself.
-	cached, err := c.informers.podLister.List(labels.Everything())
+	cached, err := podLister.List(labels.Everything())
 	if err != nil {
 		return nil, err
 	}

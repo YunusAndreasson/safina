@@ -34,7 +34,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.ctx.Width = msg.Width
 		m.ctx.Height = msg.Height
-		m.help.SetWidth(msg.Width)
 		m.logs.SetSize(msg.Width, msg.Height)
 		m.events.SetSize(msg.Width, msg.Height)
 		m.describe.SetSize(msg.Width, msg.Height)
@@ -71,6 +70,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			"name", focus.Name,
 			"namespace", focus.Namespace,
 			"depth", len(msg.Path))
+		if focus.Kind == k8s.KindContext {
+			// Lazy informers: entering (or re-entering) a cluster starts its
+			// watch-backed cache and stops every other context's — watch
+			// streams only ever target the cluster on screen. Idempotent and
+			// non-blocking, so calling it on every context focus is free;
+			// the first paint renders from direct reads while the cache warms.
+			m.ctx.Manager.ActivateContext(focus.Name)
+		}
 		if focus.Kind == k8s.KindContext && m.ctx.ActiveContext != focus.Name {
 			m.ctx.ActiveContext = focus.Name
 			m.ctx.ResetBackground()
@@ -92,8 +99,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.saveConfig()
 		}
 		if focus.Kind == k8s.KindContextList {
-			// Popped back to the picker — there's no "data" to be stale,
-			// so hide the refresh indicator until the user picks again.
+			// Popped back to the picker — parked there, no cluster deserves
+			// open watch streams, so every context's informers shut down.
+			m.ctx.Manager.DeactivateAll()
+			// There's no "data" to be stale, so hide the refresh indicator
+			// until the user picks again.
 			m.lastRefresh = time.Time{}
 			// Right-stack tiles target a resource; at the picker there is
 			// no selection so all three go quiet rather than render ghosts.

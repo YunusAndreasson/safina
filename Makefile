@@ -4,12 +4,15 @@ BINARY_NAME = safina
 BUILD_DIR = bin
 MAIN_PATH = cmd/safina/main.go
 
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS = -X github.com/yunus/safina/internal/version.Version=$(VERSION)
+
 BENCH_BINARY = $(BUILD_DIR)/safina-bench
 BENCH_CONTEXT ?= safina-bench
 BENCH_KUBECONFIG ?= $(HOME)/.kube/config
 
 build:
-	go build -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_PATH)
+	go build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_PATH)
 
 install: build
 	cp $(BUILD_DIR)/$(BINARY_NAME) $(GOPATH)/bin/

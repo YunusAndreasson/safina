@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 
+	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
@@ -38,13 +40,7 @@ func ListConfigMapsAcrossNamespaces(ctx context.Context, cs kubernetes.Interface
 			}
 			rows := make([]ConfigMapInfo, 0, len(list.Items))
 			for _, cm := range list.Items {
-				rows = append(rows, ConfigMapInfo{
-					Name:      cm.Name,
-					Namespace: cm.Namespace,
-					Keys:      len(cm.Data) + len(cm.BinaryData),
-					KeyNames:  sortedDataKeyNames(cm.Data, cm.BinaryData),
-					Age:       HumanAge(cm.CreationTimestamp.Time),
-				})
+				rows = append(rows, configMapToInfo(cm))
 			}
 			mu.Lock()
 			out = append(out, rows...)
@@ -83,18 +79,7 @@ func ListServicesAcrossNamespaces(ctx context.Context, cs kubernetes.Interface, 
 			}
 			rows := make([]ServiceInfo, 0, len(list.Items))
 			for _, s := range list.Items {
-				ports := make([]string, len(s.Spec.Ports))
-				for i, p := range s.Spec.Ports {
-					ports[i] = fmt.Sprintf("%d/%s", p.Port, p.Protocol)
-				}
-				rows = append(rows, ServiceInfo{
-					Name:      s.Name,
-					Namespace: s.Namespace,
-					Type:      string(s.Spec.Type),
-					ClusterIP: s.Spec.ClusterIP,
-					Ports:     strings.Join(ports, ", "),
-					Age:       HumanAge(s.CreationTimestamp.Time),
-				})
+				rows = append(rows, serviceToInfo(s))
 			}
 			mu.Lock()
 			out = append(out, rows...)
@@ -133,23 +118,7 @@ func ListIngressesAcrossNamespaces(ctx context.Context, cs kubernetes.Interface,
 			}
 			rows := make([]IngressInfo, 0, len(list.Items))
 			for _, ing := range list.Items {
-				hosts := make([]string, 0, len(ing.Spec.Rules))
-				for _, r := range ing.Spec.Rules {
-					if r.Host != "" {
-						hosts = append(hosts, r.Host)
-					}
-				}
-				class := ""
-				if ing.Spec.IngressClassName != nil {
-					class = *ing.Spec.IngressClassName
-				}
-				rows = append(rows, IngressInfo{
-					Name:      ing.Name,
-					Namespace: ing.Namespace,
-					Hosts:     strings.Join(hosts, ", "),
-					Class:     class,
-					Age:       HumanAge(ing.CreationTimestamp.Time),
-				})
+				rows = append(rows, ingressToInfo(ing))
 			}
 			mu.Lock()
 			out = append(out, rows...)
@@ -175,49 +144,30 @@ func ListIngressesForService(ctx context.Context, cs kubernetes.Interface, names
 	}
 	var out []IngressInfo
 	for _, ing := range list.Items {
-		// Check if any rule references this service.
-		found := false
-		for _, r := range ing.Spec.Rules {
-			for _, p := range r.HTTP.Paths {
-				if p.Backend.Service != nil && p.Backend.Service.Name == serviceName {
-					found = true
-					break
-				}
-			}
-			if found {
-				break
-			}
-		}
-		if !found {
-			// Also check the default backend.
-			if ing.Spec.DefaultBackend != nil &&
-				ing.Spec.DefaultBackend.Service != nil &&
-				ing.Spec.DefaultBackend.Service.Name == serviceName {
-				found = true
-			}
-		}
-		if !found {
+		if !ingressReferencesService(ing, serviceName) {
 			continue
 		}
-		hosts := make([]string, 0, len(ing.Spec.Rules))
-		for _, r := range ing.Spec.Rules {
-			if r.Host != "" {
-				hosts = append(hosts, r.Host)
-			}
-		}
-		class := ""
-		if ing.Spec.IngressClassName != nil {
-			class = *ing.Spec.IngressClassName
-		}
-		out = append(out, IngressInfo{
-			Name:      ing.Name,
-			Namespace: ing.Namespace,
-			Hosts:     strings.Join(hosts, ", "),
-			Class:     class,
-			Age:       HumanAge(ing.CreationTimestamp.Time),
-		})
+		out = append(out, ingressToInfo(ing))
 	}
 	return out, nil
+}
+
+// ingressReferencesService reports whether ing routes to serviceName via any
+// rule backend or the default backend.
+func ingressReferencesService(ing networkingv1.Ingress, serviceName string) bool {
+	for _, r := range ing.Spec.Rules {
+		if r.HTTP == nil {
+			continue
+		}
+		for _, p := range r.HTTP.Paths {
+			if p.Backend.Service != nil && p.Backend.Service.Name == serviceName {
+				return true
+			}
+		}
+	}
+	return ing.Spec.DefaultBackend != nil &&
+		ing.Spec.DefaultBackend.Service != nil &&
+		ing.Spec.DefaultBackend.Service.Name == serviceName
 }
 
 // ListSecretsAcrossNamespaces lists Secrets across the given namespaces,
@@ -242,14 +192,7 @@ func ListSecretsAcrossNamespaces(ctx context.Context, cs kubernetes.Interface, n
 			}
 			rows := make([]SecretInfo, 0, len(list.Items))
 			for _, s := range list.Items {
-				rows = append(rows, SecretInfo{
-					Name:      s.Name,
-					Namespace: s.Namespace,
-					Type:      string(s.Type),
-					Keys:      len(s.Data),
-					KeyNames:  sortedSecretKeyNames(s.Data),
-					Age:       HumanAge(s.CreationTimestamp.Time),
-				})
+				rows = append(rows, secretToInfo(s))
 			}
 			mu.Lock()
 			out = append(out, rows...)
@@ -288,23 +231,7 @@ func ListPVCsAcrossNamespaces(ctx context.Context, cs kubernetes.Interface, name
 			}
 			rows := make([]PVCInfo, 0, len(list.Items))
 			for _, pvc := range list.Items {
-				capacity := ""
-				if q, ok := pvc.Spec.Resources.Requests["storage"]; ok {
-					capacity = q.String()
-				}
-				sc := ""
-				if pvc.Spec.StorageClassName != nil {
-					sc = *pvc.Spec.StorageClassName
-				}
-				rows = append(rows, PVCInfo{
-					Name:         pvc.Name,
-					Namespace:    pvc.Namespace,
-					Status:       string(pvc.Status.Phase),
-					Capacity:     capacity,
-					VolumeName:   pvc.Spec.VolumeName,
-					StorageClass: sc,
-					Age:          HumanAge(pvc.CreationTimestamp.Time),
-				})
+				rows = append(rows, pvcToInfo(pvc))
 			}
 			mu.Lock()
 			out = append(out, rows...)
@@ -344,6 +271,88 @@ func RevealSecretYAML(ctx context.Context, cs kubernetes.Interface, namespace, n
 		s.Data = nil
 	}
 	return marshalYAML(s)
+}
+
+// ── Row converters ───────────────────────────────────────────────────
+//
+// One converter per kind, shared between the direct-API fan-outs above and
+// the cache-aware Client methods (client_cache.go). All read-only: the cache
+// path hands in SHARED informer objects.
+
+func configMapToInfo(cm corev1.ConfigMap) ConfigMapInfo {
+	return ConfigMapInfo{
+		Name:      cm.Name,
+		Namespace: cm.Namespace,
+		Keys:      len(cm.Data) + len(cm.BinaryData),
+		KeyNames:  sortedDataKeyNames(cm.Data, cm.BinaryData),
+		Age:       HumanAge(cm.CreationTimestamp.Time),
+	}
+}
+
+func serviceToInfo(s corev1.Service) ServiceInfo {
+	ports := make([]string, len(s.Spec.Ports))
+	for i, p := range s.Spec.Ports {
+		ports[i] = fmt.Sprintf("%d/%s", p.Port, p.Protocol)
+	}
+	return ServiceInfo{
+		Name:      s.Name,
+		Namespace: s.Namespace,
+		Type:      string(s.Spec.Type),
+		ClusterIP: s.Spec.ClusterIP,
+		Ports:     strings.Join(ports, ", "),
+		Age:       HumanAge(s.CreationTimestamp.Time),
+	}
+}
+
+func ingressToInfo(ing networkingv1.Ingress) IngressInfo {
+	hosts := make([]string, 0, len(ing.Spec.Rules))
+	for _, r := range ing.Spec.Rules {
+		if r.Host != "" {
+			hosts = append(hosts, r.Host)
+		}
+	}
+	class := ""
+	if ing.Spec.IngressClassName != nil {
+		class = *ing.Spec.IngressClassName
+	}
+	return IngressInfo{
+		Name:      ing.Name,
+		Namespace: ing.Namespace,
+		Hosts:     strings.Join(hosts, ", "),
+		Class:     class,
+		Age:       HumanAge(ing.CreationTimestamp.Time),
+	}
+}
+
+func secretToInfo(s corev1.Secret) SecretInfo {
+	return SecretInfo{
+		Name:      s.Name,
+		Namespace: s.Namespace,
+		Type:      string(s.Type),
+		Keys:      len(s.Data),
+		KeyNames:  sortedSecretKeyNames(s.Data),
+		Age:       HumanAge(s.CreationTimestamp.Time),
+	}
+}
+
+func pvcToInfo(pvc corev1.PersistentVolumeClaim) PVCInfo {
+	capacity := ""
+	if q, ok := pvc.Spec.Resources.Requests["storage"]; ok {
+		capacity = q.String()
+	}
+	sc := ""
+	if pvc.Spec.StorageClassName != nil {
+		sc = *pvc.Spec.StorageClassName
+	}
+	return PVCInfo{
+		Name:         pvc.Name,
+		Namespace:    pvc.Namespace,
+		Status:       string(pvc.Status.Phase),
+		Capacity:     capacity,
+		VolumeName:   pvc.Spec.VolumeName,
+		StorageClass: sc,
+		Age:          HumanAge(pvc.CreationTimestamp.Time),
+	}
 }
 
 // sortedDataKeyNames returns a sorted union of map keys from a ConfigMap's

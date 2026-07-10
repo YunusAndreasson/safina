@@ -186,7 +186,7 @@ func StreamAppLogs(ctx context.Context, mgr *k8s.Manager, contextName string, ap
 		if !ok {
 			return ActionDoneMsg{Action: "logs", Err: errContextNotFound}
 		}
-		pods, err := k8s.ListPodsForApp(ctx, client.Clientset, app)
+		pods, err := client.ListPodsForApp(ctx, app)
 		if err != nil {
 			return ActionDoneMsg{Action: "logs", Err: err}
 		}

@@ -91,7 +91,7 @@ func ExecPod(
 			TTY:    true,
 		}, scheme.ParameterCodec)
 
-	executor, err := remotecommand.NewWebSocketExecutor(restCfg, "GET", req.URL().String())
+	executor, err := newStreamExecutor(restCfg, req.URL())
 	if err != nil {
 		return nil, fmt.Errorf("create exec executor: %w", err)
 	}

@@ -38,13 +38,13 @@ func TestLoadKubeConfig_Valid(t *testing.T) {
 }
 
 func TestLoadKubeConfig_EmptyPath(t *testing.T) {
-	// Setting explicitPath="" with no KUBECONFIG env and no home dir
-	// could fail. This tests the error path gracefully.
-	// We can't easily control os.UserHomeDir(), so we just verify
-	// it doesn't panic.
-	_, err := LoadKubeConfig("")
-	// May error (no kubeconfig path resolved) — that's fine
-	_ = err
+	// explicitPath="" falls back to $KUBECONFIG / ~/.kube/config via the
+	// default clientcmd loading rules. Pin the env so the test doesn't
+	// depend on the developer's real kubeconfig.
+	t.Setenv("KUBECONFIG", writeTempKubeconfig(t, minimalKubeconfig))
+	cfg, err := LoadKubeConfig("")
+	require.NoError(t, err)
+	assert.Contains(t, cfg.Contexts, "test-context")
 }
 
 func TestLoadKubeConfig_InvalidPath(t *testing.T) {
@@ -90,13 +90,18 @@ users:
 
 	path1 := writeTempKubeconfig(t, config1)
 	path2 := writeTempKubeconfig(t, config2)
-	mergedPath := path1 + string(os.PathListSeparator) + path2
 
-	cfg, err := LoadKubeConfig(mergedPath)
+	// Multi-file merge happens via $KUBECONFIG, matching kubectl: an
+	// explicit --kubeconfig path is a single file and never a list.
+	t.Setenv("KUBECONFIG", path1+string(os.PathListSeparator)+path2)
+
+	cfg, err := LoadKubeConfig("")
 	require.NoError(t, err)
 	assert.Len(t, cfg.Contexts, 2, "both configs should be merged")
 	assert.Contains(t, cfg.Contexts, "context-1")
 	assert.Contains(t, cfg.Contexts, "context-2")
+	// kubectl merge semantics: the first file to set current-context wins.
+	assert.Equal(t, "context-1", cfg.CurrentContext)
 }
 
 func TestLoadKubeConfig_EmptyFile(t *testing.T) {
@@ -156,18 +161,6 @@ users:
 func TestListContexts_EmptyConfig(t *testing.T) {
 	contexts := ListContexts(nil)
 	assert.Empty(t, contexts)
-}
-
-func TestResolveKubeconfigPath_Explicit(t *testing.T) {
-	got := resolveKubeconfigPath("/custom/path")
-	assert.Equal(t, "/custom/path", got)
-}
-
-func TestResolveKubeconfigPath_Default(t *testing.T) {
-	// When no explicit path or env var, should use ~/.kube/config
-	got := resolveKubeconfigPath("")
-	assert.Contains(t, got, ".kube")
-	assert.Contains(t, got, "config")
 }
 
 func writeTempKubeconfig(t *testing.T, content string) string {

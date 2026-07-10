@@ -2,10 +2,7 @@ package config
 
 import (
 	"errors"
-	"os"
-	"path/filepath"
 	"sort"
-	"strings"
 
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
@@ -17,60 +14,24 @@ type ContextInfo struct {
 	User    string
 }
 
-func resolveKubeconfigPath(explicitPath string) string {
-	if explicitPath != "" {
-		return explicitPath
-	}
-	if env := os.Getenv("KUBECONFIG"); env != "" {
-		return env
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".kube", "config")
-}
-
+// LoadKubeConfig loads and merges kubeconfig files via kubectl's canonical
+// loading rules: an explicit --kubeconfig path wins outright; otherwise each
+// entry in $KUBECONFIG (list-separated) is merged with first-file-wins
+// semantics per key, falling back to ~/.kube/config. Matching kubectl here
+// means safina always sees exactly the config kubectl would use — including
+// which file's current-context wins.
 func LoadKubeConfig(explicitPath string) (*clientcmdapi.Config, error) {
-	path := resolveKubeconfigPath(explicitPath)
-	if path == "" {
-		return nil, errors.New("no kubeconfig path resolved")
+	rules := clientcmd.NewDefaultClientConfigLoadingRules()
+	rules.ExplicitPath = explicitPath
+
+	cfg, err := rules.Load()
+	if err != nil {
+		return nil, err
 	}
-
-	paths := strings.Split(path, string(os.PathListSeparator))
-	merged := clientcmdapi.NewConfig()
-
-	for _, p := range paths {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		if _, err := os.Stat(p); os.IsNotExist(err) {
-			continue
-		}
-		cfg, err := clientcmd.LoadFromFile(p)
-		if err != nil {
-			continue
-		}
-		for k, v := range cfg.Clusters {
-			merged.Clusters[k] = v
-		}
-		for k, v := range cfg.AuthInfos {
-			merged.AuthInfos[k] = v
-		}
-		for k, v := range cfg.Contexts {
-			merged.Contexts[k] = v
-		}
-		if cfg.CurrentContext != "" {
-			merged.CurrentContext = cfg.CurrentContext
-		}
-	}
-
-	if len(merged.Contexts) == 0 {
+	if len(cfg.Contexts) == 0 {
 		return nil, errors.New("no contexts found in kubeconfig")
 	}
-
-	return merged, nil
+	return cfg, nil
 }
 
 func ListContexts(raw *clientcmdapi.Config) []ContextInfo {

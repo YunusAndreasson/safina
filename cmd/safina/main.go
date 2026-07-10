@@ -12,6 +12,7 @@ import (
 	"github.com/yunus/safina/internal/errlog"
 	"github.com/yunus/safina/internal/k8s"
 	"github.com/yunus/safina/internal/tui"
+	"github.com/yunus/safina/internal/version"
 )
 
 var (
@@ -24,8 +25,9 @@ var (
 
 func main() {
 	rootCmd := &cobra.Command{
-		Use:   "safina",
-		Short: "🚢 Safina – A lightweight Kubernetes TUI navigator",
+		Use:     "safina",
+		Version: version.Version,
+		Short:   "🚢 Safina – A lightweight Kubernetes TUI navigator",
 		Long: `Safina is a terminal-based Kubernetes navigation tool that allows
 operators to browse multiple clusters, list namespaces, view pods with
 color-coded status, and perform actions like scaling, rollback, and log viewing.`,

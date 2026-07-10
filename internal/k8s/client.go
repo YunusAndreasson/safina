@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"k8s.io/client-go/discovery"
@@ -19,6 +20,7 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
 	"github.com/yunus/safina/internal/debug"
+	"github.com/yunus/safina/internal/version"
 )
 
 type Client struct {
@@ -33,10 +35,59 @@ type Client struct {
 	// Used for any resource the tree doesn't have a first-class typed
 	// renderer for (CRDs, anything the user enabled beyond the defaults).
 	Dynamic dynamic.Interface
-	// informers backs the cache-aware Client methods (HotPods, ClusterHealth).
-	// nil when initial sync failed (e.g. RBAC denies Watch); methods detect
-	// this and fall back to direct API reads.
-	informers *informerSet
+	// informers backs the cache-aware Client methods. Lazily started when
+	// this context becomes active (Manager.ActivateContext) and stopped when
+	// the user leaves it, so watch streams only ever target the cluster on
+	// screen. Atomic because tea.Cmd goroutines read it while the lifecycle
+	// swaps it. nil (or per-kind unsynced) means "fall back to direct reads".
+	informers atomic.Pointer[informerSet]
+	// informerCS is the clientset the informer factory consumes: same
+	// transport chain as Clientset but negotiating protobuf (bench-validated
+	// as the biggest List/Watch bytes-on-wire win — see bench/variants.go).
+	// ONLY the factory uses it: protobuf is safe for built-in types but the
+	// main clientset's raw metrics path (metrics.go DoRaw → json.Unmarshal)
+	// and the dynamic/CRD client must stay JSON. Falls back to Clientset
+	// when construction failed.
+	informerCS kubernetes.Interface
+}
+
+// Informers returns the running informer set for this context, or nil when
+// the context isn't active (or the Client is nil). The set's per-kind
+// accessors are themselves nil until that kind's initial sync lands, so
+// callers can chain without checking: c.Informers().Pods() == nil ⇒ direct.
+func (c *Client) Informers() *informerSet {
+	if c == nil {
+		return nil
+	}
+	return c.informers.Load()
+}
+
+// StartInformers lazily starts this context's informer set. Idempotent and
+// non-blocking: watch streams open and sync in the background while callers
+// keep rendering off direct API reads.
+func (c *Client) StartInformers() {
+	if c == nil || c.informers.Load() != nil {
+		return
+	}
+	cs := c.informerCS
+	if cs == nil {
+		cs = c.Clientset
+	}
+	set := startInformers(cs)
+	// A concurrent activation may have won the race — keep theirs, drop ours.
+	if !c.informers.CompareAndSwap(nil, set) {
+		set.close()
+	}
+}
+
+// StopInformers tears down this context's watch streams. Idempotent.
+func (c *Client) StopInformers() {
+	if c == nil {
+		return
+	}
+	if set := c.informers.Swap(nil); set != nil {
+		set.close()
+	}
 }
 
 // SkippedContext records a kubeconfig context whose Client construction
@@ -87,6 +138,11 @@ func NewClient(rawCfg *clientcmdapi.Config, ctxName string) (*Client, error) {
 	restCfg.QPS = 200
 	restCfg.Burst = 400
 
+	// Identify safina (with its exact build) in apiserver audit logs and APF
+	// metrics — every cluster this client touches is production, so operators
+	// reviewing audit trails should see more than client-go's generic default.
+	restCfg.UserAgent = "safina/" + version.Version + " " + rest.DefaultKubernetesUserAgent()
+
 	// Wrap the transport so every API request is audited when SAFINA_DEBUG
 	// is set. Compose with any existing WrapTransport (auth/exec plugins
 	// like gke-gcloud-auth-plugin can set their own) so we don't clobber
@@ -114,29 +170,41 @@ func NewClient(rawCfg *clientcmdapi.Config, ctxName string) (*Client, error) {
 		return nil, fmt.Errorf("failed to create dynamic client for %q: %w", ctxName, err)
 	}
 
-	// Eagerly start the pod + node informers and block until initial sync.
-	// On a typical cluster this is ~100-500ms; NewManager parallelises across
-	// contexts so total launch cost is bounded by the slowest cluster, not
-	// the sum. Failure (timeout or RBAC-denied Watch) leaves informers=nil,
-	// and the cache-aware methods fall back to direct API reads.
-	inf := startInformers(cs)
+	// Second clientset for the informer factory, negotiating protobuf.
+	// Post-informerization the factory owns virtually all List+Watch bytes,
+	// so this captures the protobuf win (bench: ~40-60% fewer bytes on the
+	// wire for pod-heavy lists) while structurally confining it to built-in
+	// types — dynamic/CRD content and the metrics DoRaw path stay JSON. The
+	// JSON entry in AcceptContentTypes covers any aggregated apiserver that
+	// can't serve protobuf. Best-effort: on error, informers reuse the JSON
+	// clientset.
+	protoCfg := rest.CopyConfig(restCfg)
+	protoCfg.ContentType = "application/vnd.kubernetes.protobuf"
+	protoCfg.AcceptContentTypes = "application/vnd.kubernetes.protobuf,application/json"
+	protoCS, err := kubernetes.NewForConfig(protoCfg)
+	if err != nil {
+		debug.Errf("client.proto_clientset_failed", "context", ctxName, "err", err.Error())
+		protoCS = nil
+	}
 
+	// Informers are NOT started here: construction happens for every
+	// kubeconfig context at launch, and opening watch streams to N-1
+	// production clusters the operator never enters this session would be
+	// pure apiserver load. Manager.ActivateContext starts them when the
+	// user actually drills into this context.
 	return &Client{
 		Clientset:  cs,
 		RESTConfig: restCfg,
 		Discovery:  disco,
 		Dynamic:    dyn,
-		informers:  inf,
+		informerCS: protoCS,
 	}, nil
 }
 
 // Close releases the informer watch streams. Idempotent; safe on a Client
-// whose informer sync failed (informers will be nil).
+// whose informers were never started.
 func (c *Client) Close() {
-	if c == nil {
-		return
-	}
-	c.informers.close()
+	c.StopInformers()
 }
 
 func NewManager(rawCfg *clientcmdapi.Config) (*Manager, error) {
@@ -155,10 +223,10 @@ func NewManager(rawCfg *clientcmdapi.Config) (*Manager, error) {
 	}
 	sort.Strings(names)
 
-	// Build clients in parallel. Each NewClient blocks on informer sync
-	// (~100-500ms per cluster); doing them serially across N contexts would
-	// stack the wait, but in parallel total launch latency collapses to the
-	// slowest single cluster.
+	// Build clients in parallel. Construction is pure config assembly (no
+	// network calls, no informer sync), but exec-auth plugins can still
+	// block on I/O — parallelism keeps launch latency bounded by the
+	// slowest single context rather than the sum.
 	type result struct {
 		name   string
 		client *Client
@@ -200,6 +268,36 @@ func (m *Manager) Close() {
 	}
 	for _, c := range m.Clients {
 		c.Close()
+	}
+}
+
+// ActivateContext starts the informer set for the named context and stops
+// every other context's set. Called when the user drills into a cluster —
+// safina's contract is "watch streams open only to the cluster on screen".
+// Idempotent and non-blocking (sync happens in the background), so calling
+// it on every context-focus event is safe.
+func (m *Manager) ActivateContext(name string) {
+	if m == nil {
+		return
+	}
+	for n, c := range m.Clients {
+		if n == name {
+			c.StartInformers()
+		} else {
+			c.StopInformers()
+		}
+	}
+}
+
+// DeactivateAll stops every context's informers. Called when the user pops
+// back to the context picker — parked there, no cluster deserves open
+// watches. Idempotent.
+func (m *Manager) DeactivateAll() {
+	if m == nil {
+		return
+	}
+	for _, c := range m.Clients {
+		c.StopInformers()
 	}
 }
 

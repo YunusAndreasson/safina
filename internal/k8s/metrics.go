@@ -7,7 +7,23 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/client-go/kubernetes"
+	restclient "k8s.io/client-go/rest"
 )
+
+// restClientOrNil returns the core REST client, or nil when the clientset
+// can't produce a usable one — fake clientsets return a nil *rest.RESTClient
+// that panics on first use. Metrics reads treat that as "no metrics-server",
+// the same silent-degrade the contract already promises.
+func restClientOrNil(cs kubernetes.Interface) restclient.Interface {
+	rc := cs.CoreV1().RESTClient()
+	if rc == nil {
+		return nil
+	}
+	if concrete, ok := rc.(*restclient.RESTClient); ok && concrete == nil {
+		return nil
+	}
+	return rc
+}
 
 // ResourceUsage carries current pod (or aggregated) CPU + memory usage.
 // CPU is in millicores (1 core = 1000); Memory in bytes.
@@ -95,11 +111,15 @@ func ListPodMetricsByContainer(ctx context.Context, cs kubernetes.Interface, nam
 }
 
 func fetchPodMetrics(ctx context.Context, cs kubernetes.Interface, namespace string) (podMetricsList, bool) {
+	rc := restClientOrNil(cs)
+	if rc == nil {
+		return podMetricsList{}, false
+	}
 	path := "/apis/metrics.k8s.io/v1beta1/pods"
 	if namespace != "" {
 		path = "/apis/metrics.k8s.io/v1beta1/namespaces/" + namespace + "/pods"
 	}
-	raw, err := cs.CoreV1().RESTClient().Get().AbsPath(path).DoRaw(ctx)
+	raw, err := rc.Get().AbsPath(path).DoRaw(ctx)
 	if err != nil {
 		return podMetricsList{}, false
 	}
@@ -128,7 +148,11 @@ type nodeMetric struct {
 // ListNodeMetrics returns "nodeName" → ResourceUsage. Same silent-degrade
 // contract as ListPodMetrics.
 func ListNodeMetrics(ctx context.Context, cs kubernetes.Interface) (map[string]ResourceUsage, error) {
-	raw, err := cs.CoreV1().RESTClient().Get().AbsPath("/apis/metrics.k8s.io/v1beta1/nodes").DoRaw(ctx)
+	rc := restClientOrNil(cs)
+	if rc == nil {
+		return nil, nil
+	}
+	raw, err := rc.Get().AbsPath("/apis/metrics.k8s.io/v1beta1/nodes").DoRaw(ctx)
 	if err != nil {
 		return nil, nil //nolint:nilerr // silent-degrade: metrics-server unavailable
 	}
