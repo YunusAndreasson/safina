@@ -485,10 +485,16 @@ func (m *Model) SetStartupBanner(msg string) {
 	m.startupBanner = msg
 }
 
+// saveConfig persists the app config. Called on context switch (to record
+// LastCluster) as well as from the quit paths — it must have NO teardown
+// side effects: forwards and informers survive a cluster switch by design
+// (shutdown owns teardown). Bundling Manager.Close in here once killed the
+// freshly-activated informer set — and every active port-forward — on every
+// context switch.
 func (m *Model) saveConfig() {
 	// Preserve the rest of the config (EnabledResources, namespace
-	// overrides) — saveConfig is called from every quit path, so a
-	// fresh struct here would silently wipe user customisation.
+	// overrides) — a fresh struct here would silently wipe user
+	// customisation.
 	cfg := m.ctx.AppCfg
 	if cfg == nil {
 		cfg = &config.AppConfig{}
@@ -496,6 +502,12 @@ func (m *Model) saveConfig() {
 	cfg.LastCluster = m.ctx.ActiveContext
 	cfg.LastNamespace = m.ctx.ActiveNamespace
 	_ = config.Save(cfg)
+}
+
+// shutdown persists config and releases process-lifetime resources. Called
+// from every quit path (and only quit paths).
+func (m *Model) shutdown() {
+	m.saveConfig()
 	// Forwards live in user space (a local TCP listener); they don't survive
 	// the process anyway, but we close them explicitly so the topbar pill
 	// can't lie about active count if anything else inspects the manager
@@ -504,7 +516,7 @@ func (m *Model) saveConfig() {
 		m.ctx.Manager.Forwards.StopAll()
 	}
 	// Tear down informer watch streams so process exit doesn't leak
-	// long-lived HTTP/2 connections to every cluster the manager touched.
+	// long-lived HTTP/2 connections to the active cluster.
 	if m.ctx.Manager != nil {
 		m.ctx.Manager.Close()
 	}

@@ -181,6 +181,12 @@ func NewClient(rawCfg *clientcmdapi.Config, ctxName string) (*Client, error) {
 	protoCfg := rest.CopyConfig(restCfg)
 	protoCfg.ContentType = "application/vnd.kubernetes.protobuf"
 	protoCfg.AcceptContentTypes = "application/vnd.kubernetes.protobuf,application/json"
+	// The 30s client timeout above is right for one-shot reads but FATAL for
+	// informers: it severs every watch stream at 30s, forcing all kinds to
+	// re-establish twice a minute — measured live as 15 kinds × 2 req/min of
+	// pure churn. Reflectors set their own server-side per-watch timeout
+	// (~5-10 min randomized), so the informer client runs without one.
+	protoCfg.Timeout = 0
 	protoCS, err := kubernetes.NewForConfig(protoCfg)
 	if err != nil {
 		debug.Errf("client.proto_clientset_failed", "context", ctxName, "err", err.Error())

@@ -1021,7 +1021,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// so arrows/drill target the tree instead of the textarea.
 	if m.state == stateChatView && !treeOwnsKeysInImmersive {
 		if msg.String() == "ctrl+c" {
-			m.saveConfig()
+			m.shutdown()
 			m.ctx.Cancel()
 			return m, tea.Quit
 		}
@@ -1049,7 +1049,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	switch {
 	case key.Matches(msg, m.ctx.Keys.Quit):
-		m.saveConfig()
+		m.shutdown()
 		m.ctx.Cancel()
 		return m, tea.Quit
 
