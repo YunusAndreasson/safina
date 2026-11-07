@@ -65,11 +65,23 @@ type Children struct {
 
 // ── Tree section ─────────────────────────────────────────────────────
 
+// treeRenderRows is shared only within one View call. Query/sort work is
+// reused by the empty-state check and row renderer, never across updates.
+type treeRenderRows struct {
+	rows      []NodeRef
+	rowsReady bool
+	apps      []k8s.AppInfo
+	pods      []k8s.PodInfo
+	appsReady bool
+	podsReady bool
+}
+
 // Tree is the breadcrumb-driven drill navigator that replaces the previous
 // Deployments + Pods two-panel layout.
 type Tree struct {
-	Focused bool
-	Loading bool
+	renderRows *treeRenderRows
+	Focused    bool
+	Loading    bool
 
 	// Refreshing is the "background reload in flight" flag — true while a
 	// refresh (manual R or auto-tick) is fetching new data and we already
@@ -646,6 +658,24 @@ func (t *Tree) Children() *Children { return t.children }
 // SelectedRef returns the NodeRef of the highlighted child, or zero value
 // when the level is empty.
 func (t *Tree) SelectedRef() NodeRef {
+	if t.children != nil && t.cursor >= 0 {
+		switch t.children.Kind {
+		case k8s.KindApp:
+			if !t.appFolderRows() {
+				apps := t.filteredApps()
+				if t.cursor < len(apps) {
+					return appRowRef(&apps[t.cursor])
+				}
+				return NodeRef{}
+			}
+		case k8s.KindPod:
+			pods := t.filteredPods()
+			if t.cursor < len(pods) {
+				return podRowRef(&pods[t.cursor])
+			}
+			return NodeRef{}
+		}
+	}
 	rows := t.visibleRows()
 	if t.cursor < 0 || t.cursor >= len(rows) {
 		return NodeRef{}
@@ -796,13 +826,23 @@ func (t *Tree) SetChildren(path []NodeRef, ch *Children) {
 }
 
 // Push drills into the given child. Returns a TreeFocusChangedMsg cmd so the
-// root model can issue a load. The new level is empty until SetChildren
-// arrives.
+// root model can issue a load on a cache miss. Workload folders can reuse
+// the parent's already-loaded snapshot on their first drill.
 func (t *Tree) Push(ref NodeRef) tea.Cmd {
+	parent, parentKind := t.children, t.Focus().Kind
 	t.cursorByKey[t.pathKey()] = t.cursor
 	t.path = append(t.path, ref)
-	t.children = t.cache[t.pathKey()]
-	t.cursor = t.cursorByKey[t.pathKey()]
+	key := t.pathKey()
+	t.children = t.cache[key]
+	_, visited := t.cursorByKey[key]
+	// The folder already fetched these exact workloads for counts and health.
+	// Seed only the first drill, so revisiting an invalidated level still loads.
+	if t.children == nil && !visited && ref.Kind == k8s.KindWorkloadsFold && parent != nil && parent.Kind == k8s.KindApp &&
+		(parentKind == k8s.KindNamespaceFolder || parentKind == k8s.KindNamespace || parentKind == k8s.KindAllNamespacesFold) {
+		t.children = &Children{Kind: k8s.KindApp, Apps: parent.Apps}
+		t.cache[key] = t.children
+	}
+	t.cursor = t.cursorByKey[key]
 	t.LoadErr = nil
 	t.filter.Clear()
 	return emit(TreeFocusChangedMsg{Path: clonePath(t.path)})
@@ -853,6 +893,12 @@ func (t *Tree) ResetForContextSwitch() {
 		t.cache[rootKey] = rootCache
 	}
 	t.cursorByKey = make(map[string]int)
+	// Samples and health summaries are cluster-scoped, even when resource
+	// names happen to match in another cluster.
+	t.metricsHist = make(map[string]*metricSeries)
+	t.nsHealthCache = make(map[string]nsHealthSummary)
+	t.healthPulse = make(map[string]time.Time)
+	t.lastHealth = make(map[string]k8s.Health)
 	t.filter.Clear()
 }
 
@@ -935,6 +981,8 @@ func (t *Tree) updateFiltering(km tea.KeyPressMsg) tea.Cmd {
 // ── Render ───────────────────────────────────────────────────────────
 
 func (t *Tree) View(c *tuictx.Ctx, w, h int) string {
+	t.renderRows = &treeRenderRows{}
+	defer func() { t.renderRows = nil }()
 	th := c.Theme
 
 	// Title is a stable "Resource" label. The breadcrumb path lives in the
@@ -1211,6 +1259,17 @@ func (t *Tree) renderBody(c *tuictx.Ctx, innerW, rowsAvail int) string {
 // visibleRows returns the list of refs corresponding to the current rendered
 // rows, in display order — used by SelectedRef and Enter dispatch.
 func (t *Tree) visibleRows() []NodeRef {
+	if t.renderRows == nil {
+		return t.computeVisibleRows()
+	}
+	if !t.renderRows.rowsReady {
+		t.renderRows.rows = t.computeVisibleRows()
+		t.renderRows.rowsReady = true
+	}
+	return t.renderRows.rows
+}
+
+func (t *Tree) computeVisibleRows() []NodeRef {
 	if t.children == nil {
 		return nil
 	}
@@ -1280,68 +1339,33 @@ func (t *Tree) visibleRows() []NodeRef {
 		}
 		return out
 	case k8s.KindApp:
-		apps := t.filteredApps()
-		// "In a folder" means the focus is one of: the virtual All folder,
-		// a user-namespace folder, or a system namespace row. Those are
-		// the levels where the renderer mixes Workloads/Config/Secrets/
-		// Network/Storage fold rows above the apps list (or replaces apps
-		// with fold rows when no filter is active — preserving the old
-		// cluster-root table-of-contents feel one level down).
-		focusKind := t.Focus().Kind
-		inFolder := focusKind == k8s.KindAllNamespacesFold ||
-			focusKind == k8s.KindNamespaceFolder ||
-			focusKind == k8s.KindNamespace
-		out := make([]NodeRef, 0, len(apps)+len(t.enabledResources)+1)
-
-		if inFolder && t.filter.Value() == "" {
-			// Folds are driven by AppConfig.EnabledResources — the user can
-			// add CRDs / hide defaults via the Resource Browser. Labels
-			// stay the plural k8s resource names so the breadcrumb segment
-			// matches what `kubectl get <thing>` would return.
+		if t.appFolderRows() {
 			specs := t.foldSpecsFor(t.enabledResources)
-			for _, spec := range specs {
-				display := t.foldDisplay(spec.Label, spec.CountKind, spec.GVR)
-				if spec.Kind == k8s.KindWorkloadsFold {
-					// Workloads count is already on hand (we always load
-					// apps for the namespace) — skip the cache lookup so
-					// the badge populates without a drill.
-					display = fmt.Sprintf("%s (%d)", spec.Label, len(t.children.Apps))
-				}
-				out = append(out, NodeRef{
-					Kind:    spec.Kind,
-					Name:    spec.Label,
-					Display: display,
-					GVR:     spec.GVR,
-					Health:  k8s.HealthUnknown,
-				})
-			}
-			// If the user hid every fold via the Resource Browser, fall
-			// through to render the apps directly — otherwise the namespace
-			// would look empty even though deployments exist, with no
-			// on-screen way back to the Browser other than the `,` chord.
 			if len(specs) > 0 {
+				out := make([]NodeRef, 0, len(specs))
+				for _, spec := range specs {
+					display := t.foldDisplay(spec.Label, spec.CountKind, spec.GVR)
+					if spec.Kind == k8s.KindWorkloadsFold {
+						display = fmt.Sprintf("%s (%d)", spec.Label, len(t.children.Apps))
+					}
+					out = append(out, NodeRef{Kind: spec.Kind, Name: spec.Label, Display: display, GVR: spec.GVR, Health: k8s.HealthUnknown})
+				}
 				return out
 			}
+			// If every fold is hidden, expose workloads directly so the folder
+			// does not appear empty while deployments still exist.
 		}
-
-		// One level deeper (under Workloads, or via filter-typed search):
-		// the children ARE the apps. Emit them directly.
-		for _, a := range apps {
-			out = append(out, NodeRef{
-				Kind: k8s.KindApp, SubKind: a.Kind,
-				Namespace: a.Namespace, Name: a.Name, UID: a.UID,
-				Display: a.Name, Health: a.Health,
-			})
+		apps := t.filteredApps()
+		out := make([]NodeRef, len(apps))
+		for i := range apps {
+			out[i] = appRowRef(&apps[i])
 		}
 		return out
 	case k8s.KindPod:
 		pods := t.filteredPods()
 		out := make([]NodeRef, len(pods))
-		for i, p := range pods {
-			out[i] = NodeRef{
-				Kind: k8s.KindPod, Namespace: p.Namespace, Name: p.Name,
-				Display: p.Name, Health: k8s.PodHealth(p),
-			}
+		for i := range pods {
+			out[i] = podRowRef(&pods[i])
 		}
 		return out
 	case k8s.KindContainer:
@@ -1442,15 +1466,34 @@ func (t *Tree) visibleRows() []NodeRef {
 	return nil
 }
 
-func (t *Tree) visibleCount() int { return len(t.visibleRows()) }
+func (t *Tree) visibleCount() int {
+	if t.children != nil {
+		switch t.children.Kind {
+		case k8s.KindApp:
+			if !t.appFolderRows() {
+				return len(t.filteredApps())
+			}
+		case k8s.KindPod:
+			return len(t.filteredPods())
+		}
+	}
+	return len(t.visibleRows())
+}
 
 // ── Per-kind row rendering ───────────────────────────────────────────
 
 func (t *Tree) renderAppRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	th := c.Theme
 	apps := t.filteredApps()
-	rows := t.visibleRows()
-	if len(rows) == 0 {
+	// Direct workload rows already have all data needed by the renderer.
+	// Only folder views need a separate reference list.
+	var rows []NodeRef
+	rowCount := len(apps)
+	if t.appFolderRows() {
+		rows = t.visibleRows()
+		rowCount = len(rows)
+	}
+	if rowCount == 0 {
 		return t.treeEmpty(c, "apps")
 	}
 
@@ -1560,7 +1603,7 @@ func (t *Tree) renderAppRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	headerLabels = append(headerLabels, "AGE")
 	header := components.Header(th, headerLabels, cols, aligns)
 
-	start, end := components.VisibleRange(t.cursor, len(rows), rowsAvail-1)
+	start, end := components.VisibleRange(t.cursor, rowCount, rowsAvail-1)
 	out := []string{header}
 	// Compute how many rows precede the apps slice (a Cluster sentinel
 	// occupies index 0 when present), so we can map row index → app index.
@@ -1569,7 +1612,10 @@ func (t *Tree) renderAppRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 		appOffset++
 	}
 	for i := start; i < end; i++ {
-		ref := rows[i]
+		ref := NodeRef{Kind: k8s.KindApp}
+		if rows != nil {
+			ref = rows[i]
+		}
 		selected := i == t.cursor && t.Focused
 		bg := th.RowBgFor(i, selected)
 		if ref.Kind == k8s.KindClusterFold || ref.Kind == k8s.KindSystemFold ||
@@ -2964,71 +3010,87 @@ func (t *Tree) renderContextRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 }
 
 func (t *Tree) filteredApps() []k8s.AppInfo {
+	if t.renderRows == nil {
+		return t.computeFilteredApps()
+	}
+	if !t.renderRows.appsReady {
+		t.renderRows.apps = t.computeFilteredApps()
+		t.renderRows.appsReady = true
+	}
+	return t.renderRows.apps
+}
+
+func (t *Tree) computeFilteredApps() []k8s.AppInfo {
 	if t.children == nil {
 		return nil
 	}
 	apps := t.children.Apps
-	if t.alphaSort {
-		apps = sortAppsAlpha(apps)
-	}
 	if q := t.filter.Value(); q != "" {
-		names := make([]string, len(apps))
-		for i, a := range apps {
-			names[i] = a.Name
+		var less func(*k8s.AppInfo, *k8s.AppInfo) bool
+		if t.alphaSort {
+			less = appAlphaLess
 		}
-		idx := components.FuzzyMatch(q, names)
-		filtered := make([]k8s.AppInfo, 0, len(idx))
-		for _, i := range idx {
-			filtered = append(filtered, apps[i])
-		}
-		apps = filtered
+		return filterTreeRows(apps, q, func(a *k8s.AppInfo) string { return a.Name }, less)
+	}
+	if t.alphaSort {
+		return sortAppsAlpha(apps)
 	}
 	return apps
 }
 
+func appAlphaLess(a, b *k8s.AppInfo) bool {
+	if a.Kind != b.Kind {
+		return a.Kind < b.Kind
+	}
+	return a.Name < b.Name
+}
+
 func sortAppsAlpha(in []k8s.AppInfo) []k8s.AppInfo {
 	out := append([]k8s.AppInfo(nil), in...)
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Kind != out[j].Kind {
-			return out[i].Kind < out[j].Kind
-		}
-		return out[i].Name < out[j].Name
-	})
+	sort.Slice(out, func(i, j int) bool { return appAlphaLess(&out[i], &out[j]) })
 	return out
 }
 
 func (t *Tree) filteredPods() []k8s.PodInfo {
+	if t.renderRows == nil {
+		return t.computeFilteredPods()
+	}
+	if !t.renderRows.podsReady {
+		t.renderRows.pods = t.computeFilteredPods()
+		t.renderRows.podsReady = true
+	}
+	return t.renderRows.pods
+}
+
+func (t *Tree) computeFilteredPods() []k8s.PodInfo {
 	if t.children == nil {
 		return nil
 	}
 	pods := t.children.Pods
-	if !t.alphaSort {
-		pods = sortPodsHealth(pods)
-	}
 	if q := t.filter.Value(); q != "" {
-		names := make([]string, len(pods))
-		for i, p := range pods {
-			names[i] = p.Name
+		var less func(*k8s.PodInfo, *k8s.PodInfo) bool
+		if !t.alphaSort {
+			less = podHealthLess
 		}
-		idx := components.FuzzyMatch(q, names)
-		filtered := make([]k8s.PodInfo, 0, len(idx))
-		for _, i := range idx {
-			filtered = append(filtered, pods[i])
-		}
-		pods = filtered
+		return filterTreeRows(pods, q, func(p *k8s.PodInfo) string { return p.Name }, less)
+	}
+	if !t.alphaSort {
+		return sortPodsHealth(pods)
 	}
 	return pods
 }
 
+func podHealthLess(a, b *k8s.PodInfo) bool {
+	hi, hj := k8s.PodHealth(*a), k8s.PodHealth(*b)
+	if hi != hj {
+		return hi < hj
+	}
+	return a.Name < b.Name
+}
+
 func sortPodsHealth(in []k8s.PodInfo) []k8s.PodInfo {
 	out := append([]k8s.PodInfo(nil), in...)
-	sort.Slice(out, func(i, j int) bool {
-		hi, hj := k8s.PodHealth(out[i]), k8s.PodHealth(out[j])
-		if hi != hj {
-			return hi < hj
-		}
-		return out[i].Name < out[j].Name
-	})
+	sort.Slice(out, func(i, j int) bool { return podHealthLess(&out[i], &out[j]) })
 	return out
 }
 

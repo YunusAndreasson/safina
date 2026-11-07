@@ -47,11 +47,11 @@ func LoadConnections(ctx context.Context, mgr *k8s.Manager, contextName, kind, s
 		case k8s.KindIngress:
 			conns, err = k8s.ConnectionsForIngress(ctx, cs, namespace, name)
 		case k8s.KindConfigMap:
-			conns, err = k8s.ConnectionsForConfigMap(ctx, cs, namespace, name)
+			conns, err = client.ConnectionsForConfigMap(ctx, namespace, name)
 		case k8s.KindSecret:
-			conns, err = k8s.ConnectionsForSecret(ctx, cs, namespace, name)
+			conns, err = client.ConnectionsForSecret(ctx, namespace, name)
 		case k8s.KindServiceAccount:
-			conns, err = k8s.ConnectionsForServiceAccount(ctx, cs, namespace, name)
+			conns, err = client.ConnectionsForServiceAccount(ctx, namespace, name)
 		case k8s.KindHPA:
 			conns, err = k8s.ConnectionsForHPA(ctx, cs, namespace, name)
 		}

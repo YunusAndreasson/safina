@@ -128,6 +128,10 @@ type Model struct {
 	historySelection   *history.Record
 	ctx                *tuictx.Ctx
 
+	cacheWarmTarget cacheWarmTarget
+	cacheWarmEpoch  uint64
+	cacheWarmCancel context.CancelFunc
+
 	tree      sections.Tree
 	chat      sections.Chat
 	logs      sections.Logs
@@ -235,7 +239,11 @@ type Model struct {
 
 	// treeLoadCancel cancels an in-flight tree-children load when a new
 	// drill or pop arrives, so rapid navigation doesn't queue stale data.
-	treeLoadCancel context.CancelFunc
+	treeLoadCancel  context.CancelFunc
+	treeLoadEpoch   uint64
+	overviewStore   *overviewStore
+	overviewPreview bool
+	overviewPending bool
 
 	// now is the wall-clock time displayed in the topbar; updated every
 	// second by clockMsg ticks. Carrying it on the model means re-renders
@@ -381,6 +389,7 @@ func NewModel(mgr *k8s.Manager, cfg *config.AppConfig) Model {
 
 	m := Model{
 		ctx:                c,
+		overviewStore:      newOverviewStore(),
 		tree:               sections.NewTree(c),
 		chat:               sections.NewChat(c, svc),
 		logs:               sections.NewLogs(c),
@@ -438,6 +447,7 @@ func (m *Model) syncChatContext() {
 // optional events fetch). Returns a batched Cmd the caller plumbs into
 // the outer Update return; nil when there's nothing to load.
 func (m *Model) syncSelection() tea.Cmd {
+	warmCmd := m.scheduleCacheWarm()
 	m.syncChatContext()
 	// Inspector rebuilds its base snapshot synchronously and may
 	// request a kind-specific detail fetch when the selection changed.
@@ -445,16 +455,16 @@ func (m *Model) syncSelection() tea.Cmd {
 	connCmd := m.connected.SetSelection(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext, &m.tree)
 
 	if m.ctx.ActiveContext == "" || m.ctx.Manager == nil {
-		return tea.Batch(inspectCmd, connCmd)
+		return tea.Batch(inspectCmd, connCmd, warmCmd)
 	}
 	ref := m.tree.SelectedRef()
 	kind, ns, name := activityTarget(ref, &m.tree)
 	if kind == "" {
 		m.activity.Clear()
-		return tea.Batch(inspectCmd, connCmd)
+		return tea.Batch(inspectCmd, connCmd, warmCmd)
 	}
 	actCmd := m.activity.SetSelection(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext, kind, name, ns)
-	return tea.Batch(inspectCmd, actCmd, connCmd)
+	return tea.Batch(inspectCmd, actCmd, connCmd, warmCmd)
 }
 
 // activityTarget maps a tree NodeRef to the involvedObject triple the
@@ -637,7 +647,16 @@ func (m *Model) loadTreeFocus() tea.Cmd {
 		userNS = m.ctx.AppCfg.UserNamespaces
 		sysNS = m.ctx.AppCfg.SystemNamespaces
 	}
-	return sections.LoadTreeChildren(cctx, m.ctx.Manager, m.ctx.ActiveContext, m.tree.Path(), userNS, sysNS)
+	m.treeLoadEpoch++
+	epoch := m.treeLoadEpoch
+	path := append([]sections.NodeRef(nil), m.tree.Path()...)
+	load := sections.LoadTreeChildren(cctx, m.ctx.Manager, m.ctx.ActiveContext, path, userNS, sysNS)
+	fresh := func() tea.Msg { return treeLoadResultMsg{epoch: epoch, result: load()} }
+	m.overviewPending = m.tree.Focus().Kind == k8s.KindContext && (m.tree.Children() == nil || m.overviewPreview)
+	if m.overviewPending {
+		return tea.Batch(fresh, m.loadOverviewPreview(epoch, path))
+	}
+	return fresh
 }
 
 // clusterHealthRefreshInterval is the throttle between cluster-health

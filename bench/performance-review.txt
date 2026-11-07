@@ -1,0 +1,440 @@
+Safina performance review
+
+Environment: Linux amd64, Intel Core i7-7820HQ, Go 1.27.3.
+These are local synthetic benchmarks, not production cluster latency claims.
+The machine is shared; timings varied between runs. Allocation counts are a
+more stable indicator. Existing unrelated worktree edits were preserved.
+
+Implemented: workload metrics aggregation
+- Read pods by reference in aggregateForSelector instead of copying the large
+  Pod struct on each iteration.
+- Cached workload reads use the informer's namespace index and copy only the
+  namespace's pod snapshot, once per namespace.
+- BenchmarkAggregateForSelector/10000: before 1.08–1.19 ms, after 46–50 us.
+- BenchmarkWorkloadPodSnapshot, 10,000 pods across 100 namespaces and ten
+  workload aggregations: cluster snapshot 7.4–8.1 ms and 12.9 MB/op;
+  namespace snapshot 0.19–0.73 ms and 140 KB/op. Both benchmark branches use
+  the improved aggregation loop, so this isolates snapshot scope.
+
+Implemented: streaming log rendering
+- Retain rendered completed lines and the date/header state preceding the
+  unfinished last raw line. Only that fragment and new lines are re-filtered
+  and recolored on append. Query/timestamp changes rebuild the render.
+- BenchmarkLogsStreaming/1000 (100 chunks of ten timestamped INFO lines):
+  before 752 ms, 93.3 MB/op, 1,215,166 allocations/op;
+  after 102–119 ms, about 8.9 MB/op, about 24,550 allocations/op.
+- Differential tests compare intermediate frames with a fresh full render
+  across byte-sized chunks, split UTF-8, timestamps, smart-case filters,
+  date changes, precision searches, no matches, mode changes and resets.
+- Scroll tests cover following, paused scrolling and soft wrapping.
+- The follow-up CPU profile attributes roughly 72% of sampled CPU to the
+  viewport library's maxLineWidth scan. Every SetContent still scans all
+  displayed lines, so this change does not make total append cost independent
+  of history length. Avoid claiming that long-stream scaling is fully solved.
+
+Implemented: node summaries
+- Group read-only pod pointers by node instead of repeatedly copying full Pod
+  structs. Resource request calculations also read pods by pointer.
+- BenchmarkBuildNodesAndPools/10000, 100 nodes: before 13.0–13.5 ms and
+  32.7 MB/op; after 3.65–4.40 ms and 248 KB/op. For 100 pods, runtime fell
+  from 192–231 us to 90–102 us and allocations from 159 KB to 32 KB.
+- Existing init-container, native-sidecar, overhead and terminating-pod tests
+  remain in place. Added checks for multi-node grouping, unscheduled pods,
+  absent nodes, empty nodes, pool counts and input immutability.
+
+Second pass: reuse history query storage
+- Query now retains the newest bounded batch in its existing slice and clears
+  discarded references. Sorting, filtering, warnings and omitted counts are
+  unchanged. No index format, filesystem cache or retention policy changed.
+- 10,000 records, limit 100: allocations fell from 16.5 MB/op to 4.5 MB/op
+  (about 73%). 1,000 records fell from 1.64 MB/op to 658 KB/op (about 60%).
+- Added differential checks against a full query for six limits, shuffled
+  records across three segments, timestamp ties, namespace filtering,
+  parameter payloads and corrupt-record warnings.
+- CPU profiling still identifies JSON decoding as the largest query cost.
+  Shared-machine timing varied significantly; allocation reductions are the
+  strongest reproducible result of this change.
+
+Second pass: reuse derived tree rows within each render
+- Empty-state checks and row rendering now share sorted/filtered app and pod
+  slices and visible row references for the duration of a single View call.
+  The scope is discarded on return; updates, navigation and subsequent
+  renders always recompute. Styling and metrics are not cached.
+- Added BenchmarkTreeAppView: 10,000 workloads in alphabetical order, with
+  both an empty query and an "api" query matching all workloads.
+- Empty query: allocations fell from 4.98 MB/op to 3.53 MB/op (about 29%).
+- Filtered: allocations fell from 21.4 MB/op to 8.14 MB/op (about 62%);
+  allocation count fell from about 53,930 to 33,860.
+- Observed filtered timings were 30–75 ms before and 12–22 ms after. CPU load
+  varied; these ranges are indicative, not a controlled latency guarantee.
+- Added tests for query edits, sorting, in-place data changes, replacement
+  snapshots, empty results and scope cleanup for both apps and pods.
+
+Third pass: avoid intermediate informer pod snapshots
+- Cached node summaries and owner-filtered pod reads previously copied the
+  complete informer pod list into []Pod before projection. That copy remained
+  even after the earlier grouping optimization, so the converter-only node
+  benchmark did not capture it.
+- Both projections now consume read-only pod iterators. Direct API results
+  yield pointers into their existing value slice; informer results yield their
+  existing pointers. No extra Pod or pointer snapshot is materialized.
+- Owner results grow with matched rows instead of reserving capacity for every
+  pod in the namespace. The empty-result slice remains non-nil.
+- Added BenchmarkCachedPodProjection: 10,000 informer pods across 100 nodes
+  and 100 owners, selecting one owner's 100 pods. Includes the old snapshot
+  conversion in the before measurement and the new iterator in the after.
+- Cached nodes: before 8.0–8.7 ms and 12.65 MB/op; after 1.25–1.57 ms and
+  248 KB/op (about 98% fewer allocated bytes).
+- Cached owner filter: before 7.3–20.9 ms and 13.44 MB/op; after 0.54–0.74 ms
+  and 32.6 KB/op (about 99.8% fewer allocated bytes).
+- The direct resource-accounting benchmark remains around 3.9–4.4 ms for
+  10,000 pods. Iterator setup adds four small allocations (about 432 bytes)
+  to that helper benchmark; the cached paths avoid multi-megabyte copies.
+- Sparse-owner results use more individual small allocations as their output
+  grows (16 versus 5 in this fixture), while total allocated bytes fall sharply.
+  The largest output-memory benefit applies when few namespace pods match.
+- Added direct/informer source equivalence tests with multiple owner refs,
+  health ordering, metrics, no matches, input immutability, and iterator reuse
+  after early termination. Existing cache/direct parity tests also pass.
+- API requests, metric freshness and cache lifecycle are unchanged. Timings
+  remain local CPU measurements on a shared machine, not network latency.
+
+Docs-led follow-up: typed indexes and navigation reuse
+- Read the official documentation for the installed client-go v0.37.2,
+  Go range-over-function iterators, and Bubbles v2.2.1 viewport APIs.
+- client-go v0.37 introduced typed informer/index APIs. Registered a node-name
+  index before the pod informer starts and read it through ByTypedIndex.
+  The speedup comes from indexed lookup, not from typing alone. Registration
+  failures or unsynchronized caches retain the direct-API fallback.
+- BenchmarkPodsOnNodeIndex includes projection and sorting of 100 matching
+  pods from a 10,000-pod cluster. Scan: 1.44–2.78 ms, 812 KB/op, 31 allocs;
+  index: 0.21–0.76 ms, 145 KB/op, 8 allocs. The maintained index adds storage
+  and update work proportional to pod count; these lookup benchmarks do not
+  measure its ingestion cost. Metrics requests are unchanged.
+- Watch tests cover cross-namespace results, newly assigned node membership,
+  removal from the unscheduled bucket, deletion, missing nodes and cold caches.
+- Navigation already starts informers only for the active cluster, cancels
+  obsolete tree fetches, and restores exact-path cached views immediately.
+  A further reuse opportunity was the first namespace -> Workloads drill:
+  its parent already loaded the exact app snapshot for counts and health.
+  Seed the first drill from that snapshot, avoiding a redundant fetch and
+  empty/loading frame. Do not seed unrelated pod drills or invalidated revisits.
+- Regression checks compare the immediate rendered frame byte-for-byte with
+  an ordinary completed load. Normal refresh timing and data remain intact;
+  no animation, visual detail or refresh rate was removed.
+- The viewport API offers SetContent and SetContentLines, but no incremental
+  append/update API in this installed version. Its local implementation still
+  recomputes line widths for either setter; switching setters alone would not
+  solve that measured bottleneck.
+
+Primary API sources
+  https://pkg.go.dev/k8s.io/client-go@v0.37.2/tools/cache#TypedIndexer
+  https://pkg.go.dev/k8s.io/client-go@v0.37.2/tools/cache#SharedIndexInformer
+  https://go.dev/blog/range-functions
+  https://pkg.go.dev/charm.land/bubbles/v2@v2.2.1/viewport#Model.SetContentLines
+
+Lazy resource watches
+- Auxiliary Service, ConfigMap, Secret, PVC and Ingress informers are now
+  constructed/started on first accessor use. Core namespace, workload, pod,
+  node and HPA caches still warm immediately for the primary views.
+- Test-observed informer startup fan-out falls from 15 resource watches to 10
+  (33% fewer) before any auxiliary resource is requested. Actual session totals
+  depend on which screens and features are used; eventually visiting all kinds
+  starts all watches. This is a request-count result, not a wall-time benchmark.
+- Uses the documented SharedInformerFactory.Start behavior for requested
+  informers. Per-kind sync.Once prevents duplicate starts. A short registration
+  lock installs handlers before another Start can run the new informer; no
+  network request or cache synchronization runs under that lock.
+- Accessors still return nil until synchronization. Existing callers issue
+  their direct API read immediately instead of waiting for warmup. A test
+  blocks the informer's initial Secret list and verifies the direct read still
+  returns its rows. Rendering, refresh cadence and loading feedback are intact.
+- Tests check eager request coverage, no premature auxiliary API calls,
+  concurrent first use, exactly one watch per requested kind, preserved Secret
+  transforms, no restart of core watchers, and no late startup after shutdown.
+  Concurrent close is now protected by sync.Once as well.
+- Tradeoff: first visits to auxiliary screens may use a direct API read where
+  the earlier eager implementation might already have had a warm cache.
+  The later selection-driven warming pass below helps hide that latency
+  without broad speculative startup or delaying a first read.
+- API reference: https://pkg.go.dev/k8s.io/client-go@v0.37.2/informers#SharedInformerFactory
+
+Validation
+- Baseline go test ./... passed.
+- make verify passed after production changes: formatting, module checks,
+  static analysis, race tests and build.
+- No live-cluster API benchmark or interactive terminal QA has been run.
+
+Reproduction
+  go test ./internal/k8s -run '^$' -bench 'BenchmarkAggregateForSelector|BenchmarkWorkloadPodSnapshot|BenchmarkBuildNodesAndPools' -benchmem -count 3
+  go test ./internal/tui/sections -run '^$' -bench BenchmarkLogsStreaming -benchmem -count 3
+  go test ./internal/tui/sections -run '^$' -bench BenchmarkTreePodView -benchmem -count 2
+  go test ./internal/history -run '^$' -bench BenchmarkQueryHistory -benchmem -count 2
+  go test ./internal/tui/sections -run '^$' -bench BenchmarkTreeAppView -benchmem -count 3
+  go test ./internal/k8s -run '^$' -bench BenchmarkCachedPodProjection -benchmem -count 3
+  go test ./internal/k8s -run '^$' -bench BenchmarkPodsOnNodeIndex -benchmem -count 3
+  make verify
+
+Residual costs and tradeoffs
+1. Incremental viewport updates for long streams. The library still scans
+   every displayed line for width on SetContent. An upstream append/update
+   API could remove this cost. Changing viewport behavior locally would need
+   dedicated coverage of ANSI text, horizontal scrolling, soft wrapping,
+   resizing, highlights and partial-line replacement. Current change removes
+   repeated syntax work without replacing that behavior.
+2. Table styling. Derived rows are now reused within a render (second pass
+   above). Profiling the 10,000-pod view still points to lipgloss styling and
+   the table Row helper. A broader styled-row cache would have to account for
+   health pulses, metrics, selection, theme and dimensions; it is not needed
+   for the scoped reuse implemented here. Visible-range rendering already
+   bounds the number of styled rows.
+3. History query indexing. BenchmarkQueryHistory, keeping the latest 100:
+   1,000 records take 4.7–7.2 ms and 1.64 MB/op; 10,000 records take 58–70 ms
+   and 16.5 MB/op before the second pass (now about 4.5 MB/op). Query already bounds retained records and skips closed
+   segments outside a time range using sidecar indexes. Reads run in a TUI
+   command, outside the update loop. Additional indexing is useful for much
+   larger histories, but must preserve gap warnings, corrupt-record handling,
+   expiry races and authoritative JSONL fallback.
+4. History quota scans. Source review found per-action directory scans under
+   a cross-process quota lock. Evidence capture already reserves its budget
+   once per capture instead of scanning for each log line. Avoid an in-memory
+   size cache without a cross-process invalidation design; other Safina
+   processes and pruning can change the filesystem. No timing claim is made
+   for quota scans in this review.
+
+Review boundaries
+- Inspected workload and node enrichment, informer access, log streaming and
+  rendering, tree filtering/sorting/visible ranges, history querying and
+  capacity accounting, and investigation journal structure.
+- Measurements isolate local computation. Kubernetes API latency, live
+  cluster scale, end-to-end terminal responsiveness and browser/site metrics
+  were not measured. No cluster was seeded or modified.
+- The marketing site and pre-existing TUI changes were left untouched.
+- No dependency upgrades or history retention/durability changes were needed.
+  A bounded persistent overview-preview cache was added at the user's request;
+  it is separate from authoritative Kubernetes reads and historical records.
+
+Follow-up scope: preserve a smooth UI while pursuing further gains
+- Finer-grained lazy informer startup and bounded selection-driven warming
+  are implemented and verified below. Pending warmups cancel on movement.
+- Prefetch targets only auxiliary cache startup; it introduces no speculative
+  metrics requests. Live-cluster first-visit latency remains unmeasured.
+- Further viewport and table work is documented below. Visible output and
+  refresh/animation rates were preserved, rather than reducing UI detail.
+
+Selection-driven cache warming
+- Auxiliary resource folders schedule a warmup after 200 ms of stable selection.
+  Only the selected kind in an already-active cluster is eligible; no speculative
+  metrics requests or cluster activation are introduced.
+- Repeated selection synchronization does not reset the timer or queue more work.
+  Selection changes cancel pending timers and queued warm commands. The event
+  loop revalidates context, terminal/tree focus, and selection before dispatch.
+- Cache startup remains asynchronous. Opening a folder immediately still uses
+  the normal direct API fallback until its cache synchronizes. Once started,
+  a resource watch remains shared until the cluster is deactivated.
+- Focused tests verify the quiet period, exactly one selected-resource watch,
+  cancellation before/after timer delivery, stale focus/context rejection, and
+  unchanged selection. These are fake-client behavioral checks, not measurements
+  of live-cluster first-open latency.
+- API basis: client-go v0.37.2 SharedInformerFactory documents nonblocking Start
+  and explicitly supports requesting additional informers followed by Start.
+  https://pkg.go.dev/k8s.io/client-go@v0.37.2/informers#SharedInformerFactory
+
+Filtered streaming: skip unchanged viewport content
+- After filtering newly arrived raw records, compare the completed render
+  checkpoint with the full displayed match count and rendered byte length.
+  If every displayed match is already in that reusable prefix, leave the
+  viewport untouched. Raw records are still retained and searchable.
+- BenchmarkLogsFilteredStreaming includes rendering 1,000 matching ERROR
+  records, then receiving 100 chunks containing ten nonmatching INFO records.
+  Before: 99.6–149.0 ms/op, 10.13 MB/op, about 23,617 allocations/op.
+  After: 5.48–7.34 ms/op, 1.07 MB/op, about 23,216 allocations/op.
+  Most allocation-count cost remains initial matching/highlighting; the change
+  removes repeated large strings and viewport scans, not individual log records.
+- Existing differential tests compare every intermediate render against a
+  complete rebuild, including split UTF-8. Added paused/wrapped scrolling,
+  date boundaries after skipped chunks, partial lines becoming matches, and
+  clearing the filter to reveal previously nonmatching records.
+- This does not eliminate full viewport scans when displayed content changes.
+  Unfiltered high-volume streaming still has that known library-level cost.
+
+Profile motivating filtered tree index sorting (implemented below)
+- Fresh CPU profile of BenchmarkTreeAppView/query=api (10,000 workloads)
+  measured 9.81 ms/op, 8.13 MB/op, 33,858 allocations/op on this shared machine.
+  computeFilteredApps accounts for about 35% of CPU samples cumulatively;
+  computeVisibleRows (including filtering) accounts for about 37%. Allocation
+  and GC costs were substantial. That path sorted a full AppInfo copy,
+  built a name slice, then copied matched AppInfo values again.
+- Installed fuzzy v0.1.3 supports FindFromIter with stable score ordering.
+  This motivated sorting lightweight indices and iterating names while
+  preserving match ranking/tie order, without caching across data updates.
+- Final verification for the unchanged-content optimization: make verify passed
+  (formatting, lint, module checks, all race tests, build). Bottom-position
+  calculation now runs only when following and displayed content will change.
+
+Filtered tree rows: sort indices and iterate names
+- Filtered workloads and pods now sort integer indices, feed names through
+  fuzzy.FindFromIter, and copy only the matching resource values. This avoids
+  the full sorted resource snapshot and separate []string name snapshot.
+- The same sort.Slice algorithm and key comparisons run before fuzzy scoring,
+  preserving equal-key order as well as stable equal-score ranking. Unfiltered
+  views keep their previous path. There is no cross-update caching.
+- API inspected in installed github.com/sahilm/fuzzy v0.1.3 and upstream source:
+  https://github.com/sahilm/fuzzy/blob/v0.1.3/fuzzy.go
+  FindFromIter uses the same matcher and stable score sort as Find.
+- Local full-View benchmarks, 10,000 resources, two samples each:
+  Workloads, all matching: 8.15–8.17 MB/op -> 6.62 MB/op;
+    observed timing 12.8–14.5 ms -> 8.12–8.68 ms.
+  Workloads, selective name: 1.66 MB/op -> 123 KB/op;
+    observed timing 4.19–4.66 ms -> 2.52–3.34 ms.
+  Workloads, no matches: 1.62 MB/op -> 96.9 KB/op;
+    observed timing 3.14–3.64 ms -> 2.34–2.68 ms.
+  Pods, all matching: 7.35 MB/op -> 6.20–6.22 MB/op;
+    observed timing 13.8–14.4 ms -> 13.3–13.7 ms.
+  Pods, selective name: 1.26 MB/op -> 120–122 KB/op;
+    observed timing 6.74–6.84 ms -> 4.27–5.14 ms.
+  Pods, no matches: 1.22 MB/op -> 96.0 KB/op;
+    observed timing 4.97–6.49 ms -> 3.14–3.30 ms.
+  Unfiltered workload allocations remain approximately 3.53 MB/op. Timing on
+  this shared machine is noisy; allocation changes are the stronger evidence.
+- Differential tests retain the old full-copy algorithm as an independent
+  oracle. Cases cover zero/one/257 resources, shuffled input, both sort modes,
+  identical names across namespaces, mixed workload kinds and pod health,
+  fuzzy score ties, Unicode queries, no matches, selected row identity and
+  input immutability. Narrow/wide rendered bodies are compared byte-for-byte.
+- Verification: make verify passed after this change, including formatter,
+  lint, all race tests (with frame comparisons), module checks and build.
+
+Avoid off-screen row-reference materialization
+- SelectedRef now projects just the selected workload/pod once the ordered
+  resource slice is available. Counting those rows reads the slice length.
+  Direct workload rendering uses AppInfo values already needed for its cells,
+  rather than projecting the entire list into NodeRef first.
+- Folder views retain their reference-list path, including hidden-folder
+  fallback and configured custom resources. Their reference slice is now sized
+  to the number of folds, not the number of workloads underneath them.
+- Before/after comparison captured 576 complete frames plus selected refs and
+  counts: workloads/pods; Workloads, namespace folder, system namespace and
+  All focuses; default/hidden folders; empty/matching/nonmatching filters;
+  both sort modes; three cursor positions; 40/100-column widths. All matched
+  byte-for-byte. The temporary capture used synthetic fixtures only.
+- Permanent tests compare counts and selected refs to the full reference list
+  across those modes, also covering negative/out-of-range cursors and ensuring
+  rendering does not change selection.
+- BenchmarkTreeSelectedRef with 10,000 rows:
+  Workloads in existing data order: 0.81–1.00 ms and 1.20 MB/op ->
+    58–61 ns and zero allocations. This does not include workload sorting or
+    filtering; it isolates the direct selected-reference lookup.
+  Pods in health order: 2.16–2.17 ms and 2.24 MB/op ->
+    0.65–0.68 ms and 1.04 MB/op. Health sorting still copies the pod snapshot.
+- Full-View allocations for 10,000 rows, compared to the preceding pass:
+  Unfiltered workloads: 3.53 MB/op -> 2.32 MB/op.
+  All-matching workloads: 6.62 MB/op -> 5.41–5.42 MB/op.
+  All-matching pods: 6.20–6.22 MB/op -> 5.02–5.04 MB/op.
+  Timings varied with machine load (including a 24 ms pod outlier), so this
+  pass claims the reproducible allocation reduction rather than a uniform
+  frame-time improvement. No rendering cadence or visible content changed.
+- Verification: make verify passed (including the full race suite and build).
+  Afterwards, redundant render permutations in the new regression test were
+  reduced while retaining the full navigation/count matrix and representative
+  frame checks. That final test passed under -race in 2.79 seconds.
+
+Reuse workload caches for reverse connections
+- ConfigMap, Secret and ServiceAccount connection lookups previously issued
+  five workload List requests for each uncached selection. The Connected
+  loader now uses Client methods that read the active cluster's namespace
+  indexes once all five required workload caches are synchronized.
+- The informer transform retains workload pod templates; the projection uses
+  the existing reference matchers, reads shared objects without mutation, and
+  applies the existing sort order and CronJob-owned Job exclusion.
+- Inactive, partially synchronized, or unavailable caches use the unchanged
+  direct scan. Empty-namespace callers also retain the original direct path.
+  No auxiliary watches, secret-data reads, metrics requests or new persistent
+  result caches are introduced. This has the same eventual-consistency limits
+  as the existing watch-backed tree reads.
+- Fake-client request-count tests show five List calls on the fallback path
+  versus zero API calls on the warm path. This is a request-count result, not
+  a claim about measured production network latency.
+- Differential cases cover all five workload kinds, namespace isolation,
+  missing references, ConfigMap envFrom, Secret envFrom/volume/image-pull
+  references and ServiceAccount use. Watch tests confirm updates and deletions
+  change reverse-reference results. Shared template immutability and absence
+  of auxiliary resource requests are checked explicitly.
+
+Bounded persistent overview previews (user-requested follow-up)
+- Cluster-root namespace/workload summaries now have a versioned, owner-only
+  disk cache plus an in-memory cache: four entries, 24-hour expiry, an 8 MiB
+  file bound and a 2 MiB per-entry bound. Large snapshots skip the cache.
+- Explicit field projection excludes full objects, credentials, Secret values,
+  logs and metric samples. Keys distinguish context/server/CA configuration,
+  username/impersonation identity and namespace classification settings. Cache files live in the OS
+  user-cache directory under safina/overviews, independently of history.
+- Disk reads run concurrently with fresh loading; writes run after fresh data
+  has been delivered to the model. Each tree load has an epoch so late cache
+  reads and old fresh responses cannot overwrite the current view. Cluster
+  root revisits always revalidate in the background.
+- A preview is labelled cached, treated as stale, and never inserted into the
+  descendant navigation cache or ingested as metric samples. Read failures
+  keep the cached label and ordinary error banner. Root refresh succeeds by
+  replacing the preview and removing the label.
+- Cluster switches now reset metric and health history, avoiding cross-cluster
+  carryover when names coincide. Preview namespace health is reconstructed
+  from its own saved summaries, without health-change pulses.
+- Tests cover process-restart round trips, field whitelisting, owner-only file
+  mode, expiry/version/size/entry bounds, corrupt files, older writes, distinct
+  keys, fresh-read blocking, cache-after-fresh delivery, stale load epochs,
+  refresh failures and absence of preview metric/navigation ingestion.
+- Final isolation review added rejection of stale/empty navigation paths,
+  preventing delayed focus commands from activating an off-screen cluster.
+- Final verification: make verify passed after all cache, navigation and
+  isolation changes (formatter, lint, module checks, full race suite, build).
+
+Rate-limit persistent overview writes
+- Every refresh still updates the in-memory overview. For a retained cluster,
+  successful disk writes are limited to one per minute within a process;
+  first visits save immediately. A nonblocking writer lock prevents queued
+  writers, and failed writes do not advance the retry timestamp. Bookkeeping
+  is bounded with the four retained snapshots.
+- BenchmarkOverviewRefresh (1,000 workload summaries, repeated updates):
+  before 3.47–15.53 ms/op, 463–481 KB/op, 1,073–1,076 allocations/op;
+  after 0.96–0.98 ms/op, 74.7–75.9 KB/op, 4 allocations/op. Timing was noisy
+  on this shared machine. The measured allocation reduction is about 84%.
+- Tests check memory freshness during throttling, immediate persistence for
+  another cluster, persistence after the interval, retries after disk failure,
+  bounded timestamps, and concurrent updates retaining the newest snapshot.
+
+Completion audit
+- Broad performance investigation: profiles and benchmarks cover workload
+  aggregation, node projection, history queries, log streaming, filtered tree
+  rendering/selection and persistent overview refresh. Local API-count tests
+  cover lazy watches and reverse-reference scans. Measurements and remaining
+  costs are recorded above; no live-cluster latency claim is made.
+- Modern APIs: installed client-go v0.37.2 typed indexing and informer lifecycle,
+  Go iterator support and fuzzy v0.1.3's iterator matcher were inspected against
+  source/docs and used where they eliminated measured work. Dependency upgrades
+  were not needed. Library viewport setters were inspected; changing setters
+  alone would not eliminate their full-width scan.
+- Lazy loading/prefetch: auxiliary informer tests cover concurrent one-time
+  startup, shutdown and direct-read fallback; cursor warmup tests cover its
+  quiet period, movement cancellation, stale focus/context and duplicate messages.
+- Smart memory/disk caching: bounded, versioned overview DTOs are tested for
+  restart, isolation, stale/fresh races, expiry, corruption, size limits,
+  permissions, atomic replacement and asynchronous first paint. Cache previews
+  are explicitly marked; they do not provide actionable resource details or
+  fabricated metric samples. Descendant views retain normal reads.
+- UI preservation: differential tests compare streamed logs, sorted/filtered
+  rows, narrow/wide render bodies and selected identities. The row-projection
+  pass also compared 576 before/after complete frames. Follow/pause/wrap,
+  partial records, timestamp boundaries, cursor restoration, workload drill
+  reuse and namespace/cluster isolation are covered. Refresh remains 5 seconds;
+  clock/animation behavior was not slowed as an optimization.
+- Data integrity: watch update/delete/index tests, read-only projection tests
+  and bounded-history differential tests cover source immutability and existing
+  filtering/order/warnings. Existing action/edit tests remain in the full gate.
+- Remaining costs are explicit tradeoffs, not silently dropped functionality:
+  viewport scans when visible log content changes, visible-row ANSI styling,
+  history JSON decoding and cross-process quota scans. Replacing these systems
+  would need broader compatibility/durability work; the current pass retains
+  their behavior and has no unverified production dependency upgrade.
+- Final gate after write throttling and the completion audit: make verify passed
+  with zero lint issues, all race tests passing and a successful build.

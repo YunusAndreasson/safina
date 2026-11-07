@@ -21,7 +21,8 @@ import (
 //     renders identically — just off the network instead of memory;
 //   - metrics are ALWAYS fetched direct (metrics-server has no Watch);
 //   - lister results are SHARED with the informer cache: read-only, copy
-//     (`*p`) before handing to converters, never mutate in place.
+//     when a converter requires a value, or pass a read-only iterator.
+//     Never mutate informer objects in place.
 //
 // These are what the 5s auto-refresh tick hits, so the steady-state cost of
 // a parked view is one metrics call — not a per-namespace × kind List fan-out.
@@ -69,18 +70,17 @@ func (c *Client) ListAppsInNamespaces(ctx context.Context, namespaces []string) 
 	// Metrics aren't watchable — direct call, same as the direct path.
 	metrics, _ := ListPodMetrics(ctx, c.Clientset, namespaceScope(namespaces))
 
-	// One cluster-wide pod snapshot for per-app aggregation, dereferenced
-	// once and shared across all namespaces (converters take values).
-	cachedPods, err := podL.List(labels.Everything())
-	if err != nil {
-		return nil, err
-	}
-	podsAll := derefPods(cachedPods)
-
 	var out []AppInfo
 	hpaIdx := make(map[string]*HPABadge)
 	hpaL := inf.HPAs()
 	for _, ns := range namespaces {
+		// Use the informer's namespace index so each workload only scans
+		// pods in its namespace. Copy once per namespace, not per workload.
+		cachedPods, err := podL.Pods(ns).List(labels.Everything())
+		if err != nil {
+			return nil, err
+		}
+		podsAll := derefPods(cachedPods)
 		if items, err := depL.Deployments(ns).List(labels.Everything()); err == nil {
 			for _, d := range items {
 				out = append(out, deploymentToApp(*d, podsAll, metrics))
@@ -151,7 +151,7 @@ func (c *Client) ListNodesAndPools(ctx context.Context) ([]NodePoolInfo, []NodeI
 	for i, n := range cachedNodes {
 		nodes[i] = *n
 	}
-	pools, infos := buildNodesAndPools(nodes, nodeMetrics, derefPods(cachedPods))
+	pools, infos := buildNodesAndPools(nodes, nodeMetrics, slices.Values(cachedPods))
 	return pools, infos, nil
 }
 
@@ -218,35 +218,24 @@ func (c *Client) cachedPodsByOwnerUID(ctx context.Context, namespace string, own
 		return nil, err
 	}
 	metrics, _ := ListPodMetrics(ctx, c.Clientset, namespace)
-	return filterPodsByOwner(derefPods(cached), ownerUIDs, metrics), nil
+	return filterPodsByOwner(slices.Values(cached), ownerUIDs, metrics), nil
 }
 
-// ListPodsOnNode is the cache-aware variant of the package-level function.
-// The direct path's server-side `spec.nodeName` field selector becomes an
-// in-memory filter — same trade the HotPods phase filter already makes.
+// ListPodsOnNode uses the informer's maintained node-name index, avoiding
+// a cluster-wide pod scan on every node drill-down.
 func (c *Client) ListPodsOnNode(ctx context.Context, nodeName string) ([]PodInfo, error) {
-	podL := c.Informers().Pods()
-	if podL == nil {
+	index := c.Informers().PodIndex()
+	if index == nil {
 		return ListPodsOnNode(ctx, c.Clientset, nodeName)
 	}
-	cached, err := podL.List(labels.Everything())
+	onNode, err := index.ByTypedIndex(podNodeIndex, nodeName)
 	if err != nil {
 		return nil, err
 	}
-	onNode := make([]corev1.Pod, 0)
-	for _, p := range cached {
-		if p.Spec.NodeName == nodeName {
-			onNode = append(onNode, *p)
-		}
-	}
 	metrics, _ := ListPodMetrics(ctx, c.Clientset, "")
-	return podInfosSortedNSName(onNode, metrics), nil
+	return podInfosSortedNSName(derefPods(onNode), metrics), nil
 }
 
-// ListContainersForPod is the cache-aware variant of the package-level
-// function. Falls back to a direct Get when the pod isn't in the cache yet
-// (e.g. drilling into a pod created milliseconds ago) — the apiserver is
-// authoritative for misses.
 func (c *Client) ListContainersForPod(ctx context.Context, namespace, name string) ([]ContainerInfo, error) {
 	podL := c.Informers().Pods()
 	if podL == nil {

@@ -29,6 +29,15 @@ const lastAppliedAnnotation = "kubectl.kubernetes.io/last-applied-configuration"
 type kindCache[L any] struct {
 	lister L
 	synced atomic.Bool
+	start  func()
+	once   sync.Once
+}
+
+func (k *kindCache[L]) ready() bool {
+	if k.start != nil {
+		k.once.Do(k.start)
+	}
+	return k.synced.Load()
 }
 
 // informerSet owns the shared informer factory and one lister per kind the
@@ -43,9 +52,12 @@ type kindCache[L any] struct {
 // therefore degrades exactly that kind to direct Lists while everything else
 // stays cache-served.
 type informerSet struct {
-	factory informers.SharedInformerFactory
-	stop    chan struct{}
+	factory  informers.SharedInformerFactory
+	stop     chan struct{}
+	stopOnce sync.Once
+	startMu  sync.Mutex
 
+	podIndex     toolscache.TypedIndexer[*corev1.Pod]
 	pods         kindCache[corev1listers.PodLister]
 	nodes        kindCache[corev1listers.NodeLister]
 	namespaces   kindCache[corev1listers.NamespaceLister]
@@ -71,105 +83,119 @@ type informerSet struct {
 // read-only, never mutate. Copy (`*p`) before editing.
 
 func (s *informerSet) Pods() corev1listers.PodLister {
-	if s == nil || !s.pods.synced.Load() {
+	if s == nil || !s.pods.ready() {
 		return nil
 	}
 	return s.pods.lister
 }
 
+// PodIndex exposes indexed reads only after the pod cache is synchronized.
+func (s *informerSet) PodIndex() toolscache.TypedIndexer[*corev1.Pod] {
+	if s == nil || !s.pods.ready() {
+		return nil
+	}
+	return s.podIndex
+}
+
+const podNodeIndex = "safina/nodeName"
+
+func podNodeIndexKeys(pod *corev1.Pod) ([]string, error) {
+	return []string{pod.Spec.NodeName}, nil
+}
+
 func (s *informerSet) Nodes() corev1listers.NodeLister {
-	if s == nil || !s.nodes.synced.Load() {
+	if s == nil || !s.nodes.ready() {
 		return nil
 	}
 	return s.nodes.lister
 }
 
 func (s *informerSet) Namespaces() corev1listers.NamespaceLister {
-	if s == nil || !s.namespaces.synced.Load() {
+	if s == nil || !s.namespaces.ready() {
 		return nil
 	}
 	return s.namespaces.lister
 }
 
 func (s *informerSet) Services() corev1listers.ServiceLister {
-	if s == nil || !s.services.synced.Load() {
+	if s == nil || !s.services.ready() {
 		return nil
 	}
 	return s.services.lister
 }
 
 func (s *informerSet) ConfigMaps() corev1listers.ConfigMapLister {
-	if s == nil || !s.configmaps.synced.Load() {
+	if s == nil || !s.configmaps.ready() {
 		return nil
 	}
 	return s.configmaps.lister
 }
 
 func (s *informerSet) Secrets() corev1listers.SecretLister {
-	if s == nil || !s.secrets.synced.Load() {
+	if s == nil || !s.secrets.ready() {
 		return nil
 	}
 	return s.secrets.lister
 }
 
 func (s *informerSet) PVCs() corev1listers.PersistentVolumeClaimLister {
-	if s == nil || !s.pvcs.synced.Load() {
+	if s == nil || !s.pvcs.ready() {
 		return nil
 	}
 	return s.pvcs.lister
 }
 
 func (s *informerSet) Deployments() appsv1listers.DeploymentLister {
-	if s == nil || !s.deployments.synced.Load() {
+	if s == nil || !s.deployments.ready() {
 		return nil
 	}
 	return s.deployments.lister
 }
 
 func (s *informerSet) ReplicaSets() appsv1listers.ReplicaSetLister {
-	if s == nil || !s.replicasets.synced.Load() {
+	if s == nil || !s.replicasets.ready() {
 		return nil
 	}
 	return s.replicasets.lister
 }
 
 func (s *informerSet) StatefulSets() appsv1listers.StatefulSetLister {
-	if s == nil || !s.statefulsets.synced.Load() {
+	if s == nil || !s.statefulsets.ready() {
 		return nil
 	}
 	return s.statefulsets.lister
 }
 
 func (s *informerSet) DaemonSets() appsv1listers.DaemonSetLister {
-	if s == nil || !s.daemonsets.synced.Load() {
+	if s == nil || !s.daemonsets.ready() {
 		return nil
 	}
 	return s.daemonsets.lister
 }
 
 func (s *informerSet) Jobs() batchv1listers.JobLister {
-	if s == nil || !s.jobs.synced.Load() {
+	if s == nil || !s.jobs.ready() {
 		return nil
 	}
 	return s.jobs.lister
 }
 
 func (s *informerSet) CronJobs() batchv1listers.CronJobLister {
-	if s == nil || !s.cronjobs.synced.Load() {
+	if s == nil || !s.cronjobs.ready() {
 		return nil
 	}
 	return s.cronjobs.lister
 }
 
 func (s *informerSet) HPAs() autoscalingv2listers.HorizontalPodAutoscalerLister {
-	if s == nil || !s.hpas.synced.Load() {
+	if s == nil || !s.hpas.ready() {
 		return nil
 	}
 	return s.hpas.lister
 }
 
 func (s *informerSet) Ingresses() networkingv1listers.IngressLister {
-	if s == nil || !s.ingresses.synced.Load() {
+	if s == nil || !s.ingresses.ready() {
 		return nil
 	}
 	return s.ingresses.lister
@@ -221,8 +247,9 @@ func stripCacheObject(obj any) (any, error) {
 }
 
 // startInformers builds the factory, registers every tree-browsed kind, and
-// starts the watch streams. It does NOT block on sync: each kind flips its
-// own synced flag from a background goroutine, and accessors return nil until
+// starts core watches. Auxiliary resources start on first use. It does NOT
+// block on sync: each kind flips its flag from a background goroutine.
+// Accessors return nil until
 // then — callers fall back to direct API reads, so entering a cluster renders
 // immediately while the cache warms behind the first paint.
 func startInformers(cs kubernetes.Interface) *informerSet {
@@ -233,18 +260,33 @@ func startInformers(cs kubernetes.Interface) *informerSet {
 
 	pods := factory.Core().V1().Pods()
 	set.pods.lister = pods.Lister()
+	// Register before Start: the informer maintains membership on add/update/delete.
+	typedPods := toolscache.NewTypedSharedIndexInformer[*corev1.Pod](pods.Informer())
+	if err := typedPods.AddTypedIndexers(toolscache.TypedIndexers[*corev1.Pod]{podNodeIndex: podNodeIndexKeys}); err != nil {
+		debug.Errf("informer.index_failed", "kind", "Pod", "err", err.Error())
+	} else {
+		set.podIndex = typedPods.GetTypedIndexer()
+	}
 	nodes := factory.Core().V1().Nodes()
 	set.nodes.lister = nodes.Lister()
 	namespaces := factory.Core().V1().Namespaces()
 	set.namespaces.lister = namespaces.Lister()
-	services := factory.Core().V1().Services()
-	set.services.lister = services.Lister()
-	configmaps := factory.Core().V1().ConfigMaps()
-	set.configmaps.lister = configmaps.Lister()
-	secrets := factory.Core().V1().Secrets()
-	set.secrets.lister = secrets.Lister()
-	pvcs := factory.Core().V1().PersistentVolumeClaims()
-	set.pvcs.lister = pvcs.Lister()
+	deferInformer(set, &set.services, "Service", func() (corev1listers.ServiceLister, toolscache.SharedIndexInformer) {
+		informer := factory.Core().V1().Services()
+		return informer.Lister(), informer.Informer()
+	})
+	deferInformer(set, &set.configmaps, "ConfigMap", func() (corev1listers.ConfigMapLister, toolscache.SharedIndexInformer) {
+		informer := factory.Core().V1().ConfigMaps()
+		return informer.Lister(), informer.Informer()
+	})
+	deferInformer(set, &set.secrets, "Secret", func() (corev1listers.SecretLister, toolscache.SharedIndexInformer) {
+		informer := factory.Core().V1().Secrets()
+		return informer.Lister(), informer.Informer()
+	})
+	deferInformer(set, &set.pvcs, "PersistentVolumeClaim", func() (corev1listers.PersistentVolumeClaimLister, toolscache.SharedIndexInformer) {
+		informer := factory.Core().V1().PersistentVolumeClaims()
+		return informer.Lister(), informer.Informer()
+	})
 	deployments := factory.Apps().V1().Deployments()
 	set.deployments.lister = deployments.Lister()
 	// ReplicaSets exist solely for the Deployment → ReplicaSet → Pod owner
@@ -261,8 +303,10 @@ func startInformers(cs kubernetes.Interface) *informerSet {
 	set.cronjobs.lister = cronjobs.Lister()
 	hpas := factory.Autoscaling().V2().HorizontalPodAutoscalers()
 	set.hpas.lister = hpas.Lister()
-	ingresses := factory.Networking().V1().Ingresses()
-	set.ingresses.lister = ingresses.Lister()
+	deferInformer(set, &set.ingresses, "Ingress", func() (networkingv1listers.IngressLister, toolscache.SharedIndexInformer) {
+		informer := factory.Networking().V1().Ingresses()
+		return informer.Lister(), informer.Informer()
+	})
 
 	regs := []struct {
 		kind   string
@@ -272,10 +316,6 @@ func startInformers(cs kubernetes.Interface) *informerSet {
 		{"Pod", pods.Informer(), &set.pods.synced},
 		{"Node", nodes.Informer(), &set.nodes.synced},
 		{"Namespace", namespaces.Informer(), &set.namespaces.synced},
-		{"Service", services.Informer(), &set.services.synced},
-		{"ConfigMap", configmaps.Informer(), &set.configmaps.synced},
-		{"Secret", secrets.Informer(), &set.secrets.synced},
-		{"PersistentVolumeClaim", pvcs.Informer(), &set.pvcs.synced},
 		{"Deployment", deployments.Informer(), &set.deployments.synced},
 		{"ReplicaSet", replicasets.Informer(), &set.replicasets.synced},
 		{"StatefulSet", statefulsets.Informer(), &set.statefulsets.synced},
@@ -283,7 +323,6 @@ func startInformers(cs kubernetes.Interface) *informerSet {
 		{"Job", jobs.Informer(), &set.jobs.synced},
 		{"CronJob", cronjobs.Informer(), &set.cronjobs.synced},
 		{"HorizontalPodAutoscaler", hpas.Informer(), &set.hpas.synced},
-		{"Ingress", ingresses.Informer(), &set.ingresses.synced},
 	}
 
 	// Route watch failures (RBAC Forbidden, apiserver timeouts) to the debug
@@ -291,12 +330,7 @@ func startInformers(cs kubernetes.Interface) *informerSet {
 	// and would otherwise spam. Must be registered before Start.
 	for i := range regs {
 		r := &regs[i]
-		var once sync.Once
-		_ = r.inf.SetWatchErrorHandler(func(_ *toolscache.Reflector, err error) {
-			once.Do(func() {
-				debug.Errf("informer.watch_failed", "kind", r.kind, "err", err.Error())
-			})
-		})
+		configureWatchErrors(r.inf, r.kind)
 	}
 
 	factory.Start(set.stop)
@@ -319,10 +353,36 @@ func (s *informerSet) close() {
 	if s == nil {
 		return
 	}
-	select {
-	case <-s.stop:
-		// already closed
-	default:
-		close(s.stop)
+	s.stopOnce.Do(func() { close(s.stop) })
+}
+
+// deferInformer registers a non-blocking first-use initializer. Factory.Start
+// is idempotent and starts only newly requested informers; it never restarts
+// the already running core caches.
+func deferInformer[L any](set *informerSet, kind *kindCache[L], name string, build func() (L, toolscache.SharedIndexInformer)) {
+	kind.start = func() {
+		set.startMu.Lock()
+		defer set.startMu.Unlock()
+		select {
+		case <-set.stop:
+			return
+		default:
+		}
+		lister, informer := build()
+		kind.lister = lister
+		configureWatchErrors(informer, name)
+		set.factory.Start(set.stop)
+		go func() {
+			if toolscache.WaitForCacheSync(set.stop, informer.HasSynced) {
+				kind.synced.Store(true)
+			}
+		}()
 	}
+}
+
+func configureWatchErrors(informer toolscache.SharedIndexInformer, name string) {
+	var once sync.Once
+	_ = informer.SetWatchErrorHandler(func(_ *toolscache.Reflector, err error) {
+		once.Do(func() { debug.Errf("informer.watch_failed", "kind", name, "err", err.Error()) })
+	})
 }

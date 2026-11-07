@@ -455,7 +455,7 @@ func TestPodEffectiveRequests(t *testing.T) {
 				}},
 			},
 		}
-		cpu, mem := podEffectiveRequests(p)
+		cpu, mem := podEffectiveRequests(&p)
 		assert.Equal(t, int64(100), cpu)
 		assert.Equal(t, int64(134217728), mem) // 128 Mi in bytes
 	})
@@ -473,7 +473,7 @@ func TestPodEffectiveRequests(t *testing.T) {
 				},
 			},
 		}
-		cpu, _ := podEffectiveRequests(p)
+		cpu, _ := podEffectiveRequests(&p)
 		assert.Equal(t, int64(500), cpu)
 	})
 
@@ -494,7 +494,7 @@ func TestPodEffectiveRequests(t *testing.T) {
 				}},
 			},
 		}
-		cpu, _ := podEffectiveRequests(p)
+		cpu, _ := podEffectiveRequests(&p)
 		assert.Equal(t, int64(500), cpu, "init container max should override regular container sum")
 	})
 
@@ -517,7 +517,7 @@ func TestPodEffectiveRequests(t *testing.T) {
 				}},
 			},
 		}
-		cpu, _ := podEffectiveRequests(p)
+		cpu, _ := podEffectiveRequests(&p)
 		assert.Equal(t, int64(300), cpu, "sidecar init should add to regular containers sum")
 	})
 
@@ -535,7 +535,7 @@ func TestPodEffectiveRequests(t *testing.T) {
 				},
 			},
 		}
-		cpu, _ := podEffectiveRequests(p)
+		cpu, _ := podEffectiveRequests(&p)
 		assert.Equal(t, int64(250), cpu)
 	})
 
@@ -545,7 +545,7 @@ func TestPodEffectiveRequests(t *testing.T) {
 				Containers: []corev1.Container{{Name: "app"}},
 			},
 		}
-		cpu, mem := podEffectiveRequests(p)
+		cpu, mem := podEffectiveRequests(&p)
 		assert.Equal(t, int64(0), cpu)
 		assert.Equal(t, int64(0), mem)
 	})
@@ -556,7 +556,7 @@ func TestPodEffectiveRequests(t *testing.T) {
 func TestSumPodRequests(t *testing.T) {
 	t.Run("terminating_pod_skipped", func(t *testing.T) {
 		now := metav1.Now()
-		pods := []corev1.Pod{
+		pods := []*corev1.Pod{
 			{
 				ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &now},
 				Spec: corev1.PodSpec{
@@ -579,7 +579,7 @@ func TestSumPodRequests(t *testing.T) {
 
 	t.Run("terminating_succeeded_skipped", func(t *testing.T) {
 		now := metav1.Now()
-		pods := []corev1.Pod{
+		pods := []*corev1.Pod{
 			{
 				ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &now},
 				Spec: corev1.PodSpec{
@@ -599,7 +599,7 @@ func TestSumPodRequests(t *testing.T) {
 
 	t.Run("terminating_running_still_counted", func(t *testing.T) {
 		now := metav1.Now()
-		pods := []corev1.Pod{
+		pods := []*corev1.Pod{
 			{
 				ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &now},
 				Spec: corev1.PodSpec{
@@ -619,7 +619,7 @@ func TestSumPodRequests(t *testing.T) {
 	})
 
 	t.Run("normal_pod_counted", func(t *testing.T) {
-		pods := []corev1.Pod{
+		pods := []*corev1.Pod{
 			{
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{{
@@ -1038,4 +1038,30 @@ func TestAggregateForSelector_Expressions(t *testing.T) {
 	cpu, mem := aggregateForSelector("ns", invalid, pods, metrics)
 	assert.Zero(t, cpu)
 	assert.Zero(t, mem)
+}
+
+func TestBuildNodesAndPoolsPodGrouping(t *testing.T) {
+	nodes := []corev1.Node{{ObjectMeta: metav1.ObjectMeta{Name: "node-b"}}, {ObjectMeta: metav1.ObjectMeta{Name: "node-a"}}, {ObjectMeta: metav1.ObjectMeta{Name: "empty"}}}
+	pods := make([]corev1.Pod, 5)
+	for i, node := range []string{"node-a", "node-b", "node-a", "", "absent"} {
+		pods[i].Spec.NodeName = node
+		pods[i].Spec.Containers = []corev1.Container{{Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{
+			corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("128Mi"),
+		}}}}
+	}
+	before := (&corev1.PodList{Items: pods}).DeepCopy()
+	pools, infos := buildNodesAndPools(nodes, nil, podPointers(pods))
+	require.Len(t, infos, 3)
+	assert.Equal(t, "empty", infos[0].Name)
+	assert.Equal(t, int32(0), infos[0].PodsCurrent)
+	assert.Equal(t, "node-a", infos[1].Name)
+	assert.Equal(t, int32(2), infos[1].PodsCurrent)
+	assert.Equal(t, int64(200), infos[1].CPURequest)
+	assert.Equal(t, int64(256<<20), infos[1].MemRequest)
+	assert.Equal(t, "node-b", infos[2].Name)
+	assert.Equal(t, int32(1), infos[2].PodsCurrent)
+	assert.Equal(t, int64(100), infos[2].CPURequest)
+	require.Len(t, pools, 1)
+	assert.Equal(t, int32(3), pools[0].PodsCurrent)
+	assert.Equal(t, before.Items, pods, "aggregation must not mutate informer objects")
 }

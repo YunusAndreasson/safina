@@ -1,6 +1,8 @@
 package components
 
 import (
+	"iter"
+	"slices"
 	"strings"
 
 	"charm.land/bubbles/v2/textinput"
@@ -129,11 +131,17 @@ func (f *Filter) HandleKey(msg tea.KeyPressMsg) (tea.Cmd, FilterKeyAction) {
 // FuzzyMatch returns the indices of items whose strings best match query, in
 // rank order. Empty query returns nil so callers can short-circuit.
 func FuzzyMatch(query string, items []string) []int {
+	return FuzzyMatchIter(query, slices.Values(items))
+}
+
+// FuzzyMatchIter matches names in iteration order without an intermediate name
+// slice. Returned indices refer to that order; equal scores keep their order.
+func FuzzyMatchIter(query string, items iter.Seq[string]) []int {
 	q := strings.TrimSpace(query)
 	if q == "" {
 		return nil
 	}
-	matches := fuzzy.Find(q, items)
+	matches := fuzzy.FindFromIter(q, items)
 	out := make([]int, 0, len(matches))
 	for _, m := range matches {
 		out = append(out, m.Index)

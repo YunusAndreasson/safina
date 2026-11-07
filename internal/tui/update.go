@@ -59,6 +59,15 @@ func (m *Model) startChatStream(prompt string) tea.Cmd {
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case treeLoadResultMsg:
+		if msg.epoch != m.treeLoadEpoch {
+			return m, nil
+		}
+		return m.Update(msg.result)
+	case overviewPreviewMsg:
+		return m, m.applyOverviewPreview(msg)
+	case cacheWarmMsg:
+		return m, m.handleCacheWarm(msg)
 	case incomingTickMsg:
 		var detail tea.Cmd
 		if m.state == stateIncoming && m.incoming.mode == "outcome" && !m.incoming.busy {
@@ -161,11 +170,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.clockTick()
 
 	case sections.TreeFocusChangedMsg:
+		// Navigation commands may arrive after another key has moved the tree.
+		// Never activate a cluster for a path that is no longer on screen.
+		if len(msg.Path) == 0 || !slices.Equal(msg.Path, m.tree.Path()) {
+			return m, nil
+		}
 		// The tree pushed or popped a level. If we landed on a context (the
 		// user picked / switched a cluster, or auto-drilled on startup), wire
 		// it up: set ActiveContext, drop stale caches, re-stamp the window
 		// title, and persist. The load fires from the cache-miss check below.
 		focus := msg.Path[len(msg.Path)-1]
+		m.overviewPreview = false
+		m.overviewPending = false
 		cluster := m.ctx.ActiveContext
 		if focus.Kind == k8s.KindContext {
 			cluster = focus.Name
@@ -245,12 +261,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.tree.StartLoad()
 			return m, tea.Batch(m.loadTreeFocus(), actCmd, discoCmd)
 		}
+		if focus.Kind == k8s.KindContext {
+			m.overviewPreview = true
+			m.tree.StartRefresh()
+			return m, tea.Batch(m.loadTreeFocus(), actCmd, discoCmd, m.finishPaletteNavigation())
+		}
 		return m, tea.Batch(actCmd, discoCmd, m.finishPaletteNavigation())
 
 	case sections.TreeChildrenLoadedMsg:
 		if !slices.Equal(msg.Path, m.tree.Path()) {
 			return m, nil
 		}
+		m.overviewPending = false
 		m.tree.Loading = false
 		m.tree.FinishRefresh()
 		m.tree.FinishLoad()
@@ -278,7 +300,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			})
 		}
 		m.tree.SetChildren(msg.Path, msg.Children)
+		m.overviewPreview = false
 		m.lastRefresh = time.Now()
+		persistOverview := m.saveOverview(msg.Children, m.lastRefresh)
 		if m.startupNamespace != "" && focus.Kind == k8s.KindContext &&
 			m.tree.Focus() == focus && msg.Children != nil {
 			ns := m.startupNamespace
@@ -293,16 +317,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !found {
 				return m, m.raiseError(fmt.Sprintf("--namespace=%q not found in context %q", ns, focus.Name))
 			}
-			return m, m.tree.Push(sections.NodeRef{
+			return m, tea.Batch(persistOverview, m.tree.Push(sections.NodeRef{
 				Kind: k8s.KindNamespaceFolder, Name: ns, Namespace: ns, Display: ns,
-			})
+			}))
 		}
 		actCmd := m.syncSelection()
 		debug.Log("tree.loaded",
 			"kind", focus.Kind,
 			"name", focus.Name,
 			"children", childCount(msg.Children))
-		return m, tea.Batch(actCmd, m.finishPaletteNavigation())
+		return m, tea.Batch(actCmd, persistOverview, m.finishPaletteNavigation())
 
 	case sections.ActivityLoadedMsg:
 		// Right-stack Activity tile got its events back. Apply drops the

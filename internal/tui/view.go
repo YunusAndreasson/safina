@@ -588,6 +588,9 @@ func (m *Model) topbarClusterHealth() components.ClusterHealth {
 // considered fresh — desaturating "just refreshed" data would punish
 // every normal tick.
 func (m *Model) dataLooksStale() bool {
+	if m.overviewPreview {
+		return true
+	}
 	if m.ctx.ActiveContext == "" {
 		return false
 	}
@@ -607,6 +610,9 @@ func (m *Model) dataLooksStale() bool {
 // or "" when there's nothing live to display (we're at the picker, or the
 // first load hasn't landed yet). The topbar uses this for the "↻ Ns" pill.
 func (m *Model) refreshAge() string {
+	if m.overviewPreview {
+		return "cached"
+	}
 	if m.lastRefresh.IsZero() {
 		return ""
 	}

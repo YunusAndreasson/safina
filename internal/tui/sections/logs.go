@@ -30,9 +30,10 @@ type Logs struct {
 	streamErr   error
 	namespace   string
 
-	lines    []string // raw lines, unfiltered
-	filtered []int    // indices into lines that match current filter
-	rendered string   // cached, filter-aware render fed to the viewport
+	lines      []string            // raw lines, unfiltered
+	filtered   []int               // indices into lines that match current filter
+	rendered   string              // cached, filter-aware render fed to the viewport
+	renderTail logRenderCheckpoint // state before the unfinished final raw line
 
 	vp     viewport.Model
 	follow bool
@@ -50,6 +51,15 @@ type Logs struct {
 	// modal outer dimensions, recomputed on resize and filter toggle
 	modalW int
 	modalH int
+}
+
+// A stream can only change its last raw line. Keep the rendering state before
+// that line so the next chunk reuses all completed lines, including date headers.
+type logRenderCheckpoint struct {
+	bytes   int
+	matches int
+	lastDay string
+	compact bool
 }
 
 // NewLogs constructs the log modal. ctx is captured for theme + spinner
@@ -78,6 +88,7 @@ func (l *Logs) Reset(pod, namespace string) {
 	l.lines = l.lines[:0]
 	l.filtered = l.filtered[:0]
 	l.rendered = ""
+	l.renderTail = logRenderCheckpoint{}
 	l.follow = true
 	l.filter.Clear()
 	l.filter.Close()
@@ -180,9 +191,9 @@ func (l *Logs) Append(s string) {
 	if s == "" {
 		return
 	}
-	wasAtBottom := l.vp.AtBottom()
 	// HTTP reads are arbitrary chunks, not records. Continue the final
 	// fragment so split reads neither break lines nor insert blank rows.
+	start := max(0, len(l.lines)-1)
 	parts := strings.Split(s, "\n")
 	if len(l.lines) == 0 {
 		l.lines = parts
@@ -190,21 +201,35 @@ func (l *Logs) Append(s string) {
 		l.lines[len(l.lines)-1] += parts[0]
 		l.lines = append(l.lines, parts[1:]...)
 	}
-	l.recomputeFilter()
-	l.refreshContent()
+	// Recheck the old final fragment: appending can both introduce and remove
+	// a match (for example, completing a split UTF-8 character).
+	for len(l.filtered) > 0 && l.filtered[len(l.filtered)-1] >= start {
+		l.filtered = l.filtered[:len(l.filtered)-1]
+	}
+	l.appendFiltered(start)
+	// If the reusable prefix already contains every match, incoming records
+	// changed only raw storage. Keep the viewport (and its scroll position)
+	// intact instead of rescanning the unchanged displayed backlog.
+	if l.renderTail.bytes == len(l.rendered) && l.renderTail.matches == len(l.filtered) {
+		return
+	}
+	wasAtBottom := l.follow && l.vp.AtBottom()
+	l.renderContent(l.renderTail)
 	if l.follow && wasAtBottom {
 		l.vp.GotoBottom()
 	}
 }
 
-// recomputeFilter rebuilds the filtered index list from scratch. Cheap enough
-// for the log volumes we're dealing with; correct in the face of streaming
-// arrivals.
+// recomputeFilter rebuilds matches after a query change.
 func (l *Logs) recomputeFilter() {
 	l.filtered = l.filtered[:0]
+	l.appendFiltered(0)
+}
+
+func (l *Logs) appendFiltered(start int) {
 	q := l.filter.Value()
 	if q == "" {
-		for i := range l.lines {
+		for i := start; i < len(l.lines); i++ {
 			l.filtered = append(l.filtered, i)
 		}
 		return
@@ -214,10 +239,10 @@ func (l *Logs) recomputeFilter() {
 	if !cs {
 		needle = strings.ToLower(q)
 	}
-	for i, line := range l.lines {
-		hay := line
+	for i := start; i < len(l.lines); i++ {
+		hay := l.lines[i]
 		if !cs {
-			hay = strings.ToLower(line)
+			hay = strings.ToLower(hay)
 		}
 		if strings.Contains(hay, needle) {
 			l.filtered = append(l.filtered, i)
@@ -230,15 +255,26 @@ func (l *Logs) recomputeFilter() {
 // match omitted timestamp precision show the original line so the match is
 // visible. Copy always uses raw lines.
 func (l *Logs) refreshContent() {
+	l.renderContent(logRenderCheckpoint{})
+}
+
+func (l *Logs) renderContent(prefix logRenderCheckpoint) {
 	if l.theme == nil {
 		return
 	}
 	q := l.filter.Value()
 	var b strings.Builder
+	b.Grow(len(l.rendered))
+	b.WriteString(l.rendered[:prefix.bytes])
 	hl := lipgloss.NewStyle().Background(l.theme.P.Yellow).Foreground(l.theme.P.BG).Bold(true)
-	lastDay := ""
-	l.compactTimeShown = false
-	for n, idx := range l.filtered {
+	lastDay := prefix.lastDay
+	l.compactTimeShown = prefix.compact
+	lowerQuery, caseSensitive := strings.ToLower(q), hasUpper(q)
+	for n := prefix.matches; n < len(l.filtered); n++ {
+		idx := l.filtered[n]
+		if idx == len(l.lines)-1 {
+			l.renderTail = logRenderCheckpoint{b.Len(), n, lastDay, l.compactTimeShown}
+		}
 		if n > 0 {
 			b.WriteByte('\n')
 		}
@@ -246,7 +282,7 @@ func (l *Logs) refreshContent() {
 		if !l.fullTimestamps {
 			compact, day := compactLogTimestamp(line)
 			// A search for timestamp precision must still show its match.
-			if q == "" || strings.Contains(strings.ToLower(compact), strings.ToLower(q)) {
+			if q == "" || strings.Contains(strings.ToLower(compact), lowerQuery) {
 				line = compact
 				if day != "" {
 					l.compactTimeShown = true
@@ -261,8 +297,12 @@ func (l *Logs) refreshContent() {
 		if q == "" {
 			b.WriteString(colorizeLogLine(line, l.theme))
 		} else {
-			b.WriteString(highlight(line, q, hasUpper(q), hl))
+			b.WriteString(highlight(line, q, caseSensitive, hl))
 		}
+	}
+	// If the unfinished line did not match, the whole render is reusable.
+	if len(l.filtered) == 0 || l.filtered[len(l.filtered)-1] != len(l.lines)-1 {
+		l.renderTail = logRenderCheckpoint{b.Len(), len(l.filtered), lastDay, l.compactTimeShown}
 	}
 	l.rendered = b.String()
 	l.vp.SetContent(l.rendered)

@@ -103,7 +103,12 @@ func Query(dir string, f Filter) (Result, error) {
 			if len(result.Records) > f.Limit*2 {
 				sortRecords(result.Records)
 				result.Omitted += len(result.Records) - f.Limit
-				result.Records = append([]Record(nil), result.Records[len(result.Records)-f.Limit:]...)
+				// Reuse the bounded buffer instead of reallocating and growing
+				// it for every batch. Clear discarded payloads so their strings
+				// and parameter maps do not stay live through the backing array.
+				copy(result.Records, result.Records[len(result.Records)-f.Limit:])
+				clear(result.Records[f.Limit:])
+				result.Records = result.Records[:f.Limit]
 			}
 		}
 		if e = scanner.Err(); e != nil {

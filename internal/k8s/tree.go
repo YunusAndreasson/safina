@@ -3,6 +3,7 @@ package k8s
 import (
 	"context"
 	"fmt"
+	"iter"
 	"sort"
 	"strings"
 	"sync"
@@ -802,7 +803,8 @@ func aggregateForSelector(namespace string, sel *metav1.LabelSelector, pods []co
 	if err != nil {
 		return 0, 0
 	}
-	for _, p := range pods {
+	for i := range pods {
+		p := &pods[i]
 		if p.Namespace != namespace {
 			continue
 		}
@@ -960,19 +962,31 @@ func podsByOwnerUID(ctx context.Context, cs kubernetes.Interface, namespace stri
 		return nil, err
 	}
 	metrics, _ := ListPodMetrics(ctx, cs, namespace)
-	return filterPodsByOwner(list.Items, ownerUIDs, metrics), nil
+	return filterPodsByOwner(podPointers(list.Items), ownerUIDs, metrics), nil
+}
+
+// podPointers lets read-only projections share direct-API value slices and
+// informer pointer slices without materializing another Pod snapshot.
+func podPointers(pods []corev1.Pod) iter.Seq[*corev1.Pod] {
+	return func(yield func(*corev1.Pod) bool) {
+		for i := range pods {
+			if !yield(&pods[i]) {
+				return
+			}
+		}
+	}
 }
 
 // filterPodsByOwner is the shared tail of podsByOwnerUID: keep pods owned by
 // one of ownerUIDs, enrich with metrics, sort worst-health-first. Shared
 // between the direct-API path and the cache-aware Client method.
-func filterPodsByOwner(pods []corev1.Pod, ownerUIDs []types.UID, metrics map[string]ResourceUsage) []PodInfo {
+func filterPodsByOwner(pods iter.Seq[*corev1.Pod], ownerUIDs []types.UID, metrics map[string]ResourceUsage) []PodInfo {
 	allow := make(map[types.UID]bool, len(ownerUIDs))
 	for _, u := range ownerUIDs {
 		allow[u] = true
 	}
-	out := make([]PodInfo, 0, len(pods))
-	for _, p := range pods {
+	out := make([]PodInfo, 0)
+	for p := range pods {
 		matched := false
 		for _, o := range p.OwnerReferences {
 			if allow[o.UID] {
@@ -983,7 +997,7 @@ func filterPodsByOwner(pods []corev1.Pod, ownerUIDs []types.UID, metrics map[str
 		if !matched {
 			continue
 		}
-		info := podToInfo(p)
+		info := podToInfo(*p)
 		if metrics != nil {
 			if u, ok := metrics[p.Namespace+"/"+p.Name]; ok {
 				info.CPU = u.CPU
@@ -1130,16 +1144,16 @@ func ListNodesAndPools(ctx context.Context, cs kubernetes.Interface) ([]NodePool
 	if allPods != nil {
 		podItems = allPods.Items
 	}
-	pools, infos := buildNodesAndPools(nodes.Items, nodeMetrics, podItems)
+	pools, infos := buildNodesAndPools(nodes.Items, nodeMetrics, podPointers(podItems))
 	return pools, infos, nil
 }
 
 // buildNodesAndPools is the shared tail of ListNodesAndPools: bucket pods by
 // node for request math, build NodeInfos, sort, and group into pools. Shared
 // between the direct-API path and the cache-aware Client method.
-func buildNodesAndPools(nodes []corev1.Node, nodeMetrics map[string]ResourceUsage, allPods []corev1.Pod) ([]NodePoolInfo, []NodeInfo) {
-	podsByNode := make(map[string][]corev1.Pod)
-	for _, p := range allPods {
+func buildNodesAndPools(nodes []corev1.Node, nodeMetrics map[string]ResourceUsage, allPods iter.Seq[*corev1.Pod]) ([]NodePoolInfo, []NodeInfo) {
+	podsByNode := make(map[string][]*corev1.Pod)
+	for p := range allPods {
 		if p.Spec.NodeName == "" {
 			continue
 		}
@@ -1162,7 +1176,7 @@ func buildNodesAndPools(nodes []corev1.Node, nodeMetrics map[string]ResourceUsag
 	return groupIntoPools(infos), infos
 }
 
-func nodeToInfo(n corev1.Node, metrics map[string]ResourceUsage, pods []corev1.Pod) NodeInfo {
+func nodeToInfo(n corev1.Node, metrics map[string]ResourceUsage, pods []*corev1.Pod) NodeInfo {
 	ni := NodeInfo{
 		Name:  n.Name,
 		UID:   n.UID,
@@ -1530,7 +1544,7 @@ func podInfosSortedNSName(pods []corev1.Pod, metrics map[string]ResourceUsage) [
 // honoring init-container/sidecar semantics and pod overhead. Pods that are
 // truly terminating (DeletionTimestamp set AND phase Failed/Succeeded) are
 // skipped — they no longer hold their slot.
-func sumPodRequests(pods []corev1.Pod) (cpu, mem int64, count int32) {
+func sumPodRequests(pods []*corev1.Pod) (cpu, mem int64, count int32) {
 	for _, p := range pods {
 		if p.DeletionTimestamp != nil &&
 			(p.Status.Phase == corev1.PodFailed || p.Status.Phase == corev1.PodSucceeded) {
@@ -1548,7 +1562,7 @@ func sumPodRequests(pods []corev1.Pod) (cpu, mem int64, count int32) {
 // for. Computed as max(sum(containers), max(initContainers)) per kubelet
 // scheduling rules, plus pod.spec.overhead if set, plus all native sidecar
 // init containers (k8s ≥1.29 with restartPolicy=Always count as regular).
-func podEffectiveRequests(p corev1.Pod) (cpu, mem int64) {
+func podEffectiveRequests(p *corev1.Pod) (cpu, mem int64) {
 	var regC, regM int64
 	for _, c := range p.Spec.Containers {
 		regC += quantityMilli(c.Resources.Requests, corev1.ResourceCPU)

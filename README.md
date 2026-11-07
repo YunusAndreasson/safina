@@ -237,6 +237,29 @@ tests. Both run in the existing test and race gates without a cluster or new too
 
 MIT
 
+## Cluster overview cache
+
+Reopening a cluster can show its last namespace/workload overview immediately
+while a fresh read runs in the background. The refresh indicator says **cached**
+until validation succeeds. Opening a namespace or resource still uses the normal
+read path; cached previews do not seed metric history or action checks.
+
+The cache keeps up to four overviews for 24 hours, in memory and in
+`$XDG_CACHE_HOME/safina/overviews` (normally `~/.cache/safina/overviews` on Linux;
+the OS user-cache directory is used on other platforms). Files are owner-only.
+The versioned JSON file is capped at 8 MiB, with a 2 MiB limit per overview;
+oversized overviews use the normal loading path. It stores namespace names,
+workload names/kinds and last-known health, never credentials, Secret values,
+logs, full manifests or metric samples. Cache keys separate context, server,
+CA configuration, username/impersonation identity and namespace classification preferences.
+
+Repeated refreshes update memory immediately; disk writes are limited to once
+a minute per retained cluster during a session. First visits save immediately.
+
+Deleting that directory clears the disk cache. Unreadable, expired or corrupt
+entries are ignored. If the fresh read fails after a preview appears, the
+preview stays labelled **cached** and the normal read-error banner remains visible.
+
 ## Logbook: saved cluster activity
 
 Safina automatically saves timestamped actions across sessions under
