@@ -31,7 +31,6 @@ func pinForward(fm *ForwardManager, id string, started time.Time, ports int) *Po
 		RemotePort:  ports,
 		StartedAt:   started,
 		stop:        make(chan struct{}),
-		ready:       make(chan struct{}),
 		errCh:       make(chan error, 1),
 	}
 	fm.mu.Lock()
@@ -292,3 +291,25 @@ func assertError(s string) error { return &simpleError{s: s} }
 type simpleError struct{ s string }
 
 func (e *simpleError) Error() string { return e.s }
+
+func TestForwardManager_List_ExitedSuccessfullyIsStale(t *testing.T) {
+	fm := NewForwardManager()
+	pf := pinForward(fm, "finished", time.Now(), 8080)
+	pf.errCh <- nil
+	for range 2 {
+		got := fm.List()
+		require.Len(t, got, 1)
+		assert.True(t, got[0].Stale)
+	}
+}
+
+func TestForwardManager_List_OrdersEqualTimestamps(t *testing.T) {
+	fm := NewForwardManager()
+	now := time.Now()
+	pinForward(fm, "b", now, 8080)
+	pinForward(fm, "a", now, 8081)
+	got := fm.List()
+	require.Len(t, got, 2)
+	assert.Equal(t, "a", got[0].ID)
+	assert.Equal(t, "b", got[1].ID)
+}

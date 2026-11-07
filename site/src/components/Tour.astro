@@ -1,0 +1,270 @@
+---
+import Frame from "./Frame.astro";
+import KeyGlyph from "./KeyGlyph.astro";
+import { tour } from "../data/tour";
+import { unrunt } from "../lib/typeset";
+
+// The tour window is the product itself, so on wide screens it breaks out
+// of the 1240px text column to as much as 1400px (24px from the edges), where
+// a 140-column screen reads at about 16px. From 1400px wide only, where the
+// break-out is a clear 56px or more a side.
+const sizes = "(width >= 1448px) 1400px, (width >= 1400px) calc(100vw - 48px), (width >= 1368px) 1240px, calc(100vw - 2 * clamp(16px, 4.2vw, 64px))";
+---
+
+<section id="tour" class="tour" aria-labelledby="tour-title" data-tour>
+  <h2 id="tour-title" class="visually-hidden">A tour of safina, one key at a time</h2>
+
+  <div class="tour__screen wrap">
+    {
+      tour.map((s, i) => (
+        <div class="tour__panel" role="tabpanel" id={`panel-${s.id}`} aria-labelledby={`tab-${s.id}`} hidden={i !== 0}>
+          <Frame src={s.shot} crop={s.crop} alt={s.alt} eager={i === 0} sizes={sizes} />
+        </div>
+      ))
+    }
+  </div>
+
+  <div class="tour__controls wrap">
+    <div class="tour__bar">
+      <div class="tour__keys" role="tablist" aria-label="Keys to try">
+        {
+          tour.map((s, i) => (
+            <button
+              class="tour__key"
+              role="tab"
+              type="button"
+              id={`tab-${s.id}`}
+              aria-controls={`panel-${s.id}`}
+              aria-selected={i === 0 ? "true" : "false"}
+              tabindex={i === 0 ? 0 : -1}
+              data-key={s.key}
+              data-caption={unrunt(s.caption)}
+              aria-keyshortcuts={s.key}
+            >
+              <kbd class="cap" aria-hidden="true">
+                <KeyGlyph glyph={s.glyph} />
+              </kbd>
+              <span>{s.name}</span>
+            </button>
+          ))
+        }
+      </div>
+      <p class="tour__hint">
+        <span class="hint--keys">Press a key on your keyboard, or click one.</span>
+        <span class="hint--touch">Tap a key to see that screen.</span>
+      </p>
+    </div>
+    <p class="tour__caption" data-caption-out aria-live="polite">{unrunt(tour[0].caption)}</p>
+  </div>
+</section>
+
+<script src="../scripts/tour.ts"></script>
+
+<style>
+  /* The window rises over the held opening frame. */
+  .tour {
+    position: relative;
+    z-index: 2;
+    margin-top: calc(-75svh - var(--peek));
+    /* The controls' full-bleed floor is sized in vw, which counts a classic
+       scrollbar; clip it to the page sideways only. */
+    overflow-x: clip;
+  }
+  /* Only the window bleeds; its controls and caption stay on the page grid. */
+  @media (width >= 1400px) {
+    .tour__screen {
+      width: min(100% - 48px, 1400px);
+    }
+  }
+  .tour__screen {
+    view-transition-name: tour-screen;
+    view-transition-class: tour-swap;
+  }
+
+  .tour__controls {
+    position: relative;
+    padding-top: var(--s2);
+  }
+  /* Everything under the window sits on black, so the controls never
+     share the screen with the photograph behind them. */
+  .tour__controls::before {
+    content: "";
+    position: absolute;
+    z-index: -1;
+    inset: -64px calc(50% - 50vw) 0;
+    background: linear-gradient(180deg, rgb(from var(--abyss) r g b / 0%), var(--abyss) 52px);
+  }
+
+  .tour__bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px 32px;
+  }
+  /* One control, like a segmented switch: the keys share a single tray. */
+  .tour__keys {
+    display: flex;
+    gap: 2px;
+    padding: 4px;
+    border-radius: 16px;
+    border: 1px solid var(--hairline);
+    background: rgb(from var(--spray) r g b / 2.5%);
+
+    /* Stacked, the tray takes the shared measure, so it ends on the same
+       right edge as the text and the install steps. */
+    @media (740px <= width <= 1100px) {
+      width: var(--measure);
+    }
+  }
+  .tour__key {
+    display: inline-flex;
+    align-items: center;
+    gap: 11px;
+    min-height: 48px;
+    padding: 5px 16px 5px 5px;
+    border: 0;
+    border-radius: 12px;
+    background: transparent;
+    color: var(--fog);
+    font-size: var(--t-ui);
+    white-space: nowrap;
+    cursor: pointer;
+    transition:
+      color 160ms,
+      background-color 160ms,
+      box-shadow 160ms;
+
+    /* Side by side, roomier, so the tray ends clearly past the text line
+       below it and clear of every edge near it, never a few pixels off. */
+    @media (width > 1100px) {
+      padding-right: 25px;
+    }
+  }
+  .tour__key .cap {
+    min-width: 2.3em;
+    height: 2.3em;
+    font-size: var(--t-ui);
+    transition:
+      color 160ms,
+      border-color 160ms,
+      translate 90ms;
+  }
+  .tour__key:hover {
+    color: var(--spray);
+    background: rgb(from var(--spray) r g b / 4%);
+  }
+  .tour__key[aria-selected="true"] {
+    color: #fff;
+    background: rgb(from var(--spray) r g b / 7.5%);
+    box-shadow: 0 0 0 1px var(--hairline) inset;
+  }
+  .tour__key[aria-selected="true"] .cap {
+    color: var(--beacon);
+    border-color: rgb(from var(--beacon) r g b / 55%);
+  }
+  .tour__key:focus-visible {
+    outline-offset: 1px;
+    border-radius: 12px;
+  }
+  .tour__key:active .cap,
+  .tour__key.is-pressed .cap {
+    animation: keypress 180ms var(--ease-out);
+  }
+  @keyframes keypress {
+    40% {
+      translate: 0 2px;
+      border-bottom-width: 1px;
+    }
+  }
+
+  .tour__hint {
+    font-size: var(--t-small);
+    color: var(--fog);
+  }
+  .hint--touch {
+    display: none;
+  }
+  @media (hover: none) and (pointer: coarse) {
+    .hint--keys {
+      display: none;
+    }
+    .hint--touch {
+      display: inline;
+    }
+  }
+
+  .tour__caption {
+    max-width: 58ch;
+    min-height: 3.1em;
+    margin-top: var(--s2);
+    font-size: var(--t-lead);
+    line-height: 1.45;
+    color: var(--spray);
+    view-transition-name: tour-caption;
+    view-transition-class: tour-swap;
+  }
+
+  /* Narrow screens: the five keys fill the column as one row, label under
+     the key, ending with the window above. Up to 740px: below that a
+     one-line tray either overflows its column or stops just short of the
+     window's edge, a near miss. */
+  @media (width < 740px) {
+    .tour__keys {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      width: 100%;
+    }
+    .tour__key {
+      flex-direction: column;
+      justify-content: center;
+      gap: 7px;
+      min-height: 76px;
+      padding: 10px 2px 8px;
+      font-size: 0.75rem;
+      line-height: 1.2;
+      white-space: normal;
+      text-align: center;
+    }
+    .tour__caption {
+      min-height: 4.4em;
+    }
+  }
+
+  /* Rising out of the frame: the window gains its full brightness as it clears the bars. */
+  @supports (animation-timeline: view()) {
+    @media (prefers-reduced-motion: no-preference) {
+      .tour__screen {
+        animation: rise linear both;
+        animation-timeline: view();
+        animation-range: entry 0% cover 42%;
+      }
+    }
+  }
+  @keyframes rise {
+    from {
+      translate: 0 3svh;
+      scale: 0.975;
+      filter: brightness(0.7);
+    }
+    to {
+      translate: none;
+      scale: none;
+      filter: none;
+    }
+  }
+
+  /* A key swap animates only the window and its caption. The page itself is
+     never snapshotted, so everything else stays live and clickable
+     mid-swap, and the keys keep their own transitions. */
+  :global(:root) {
+    view-transition-name: none;
+  }
+  :global(::view-transition) {
+    pointer-events: none;
+  }
+  :global(::view-transition-group(.tour-swap)) {
+    animation-duration: 240ms;
+    animation-timing-function: var(--ease-out);
+  }
+</style>

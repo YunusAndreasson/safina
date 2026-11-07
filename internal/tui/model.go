@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
@@ -149,16 +150,23 @@ type Model struct {
 	// per safina process; subsequent turns resume the same conversation.
 	claudeSvc *claude.Service
 
-	// chatStreamCh is the active turn's event channel, set by
-	// ChatStreamStartedMsg and read once per ChatTokenMsg / ChatRetryMsg.
+	// chatStreamCh identifies the active turn and rejects late events from
+	// cancelled turns. Only the update loop replaces it.
 	chatStreamCh <-chan claude.Event
 
-	state state
+	workspaceExpanded bool
+	helpReturnState   state
+	helpViewport      viewport.Model
+	state             state
+	paletteTarget     *sections.PaletteEntry
+	paletteAction     string
 
 	scaleInput textinput.Model
+	scaleError string
 	// pfInput collects the "L:R" pair for a new port-forward. Reused across
 	// every start; cleared on each open.
 	pfInput textinput.Model
+	pfError string
 	// pfTarget remembers the (kind, ns, name) the user pressed `f` on so the
 	// confirm-enter path doesn't re-query the tree (the tree cursor may have
 	// moved before the user finishes typing).
@@ -198,9 +206,20 @@ type Model struct {
 	// same slot (newer overwrites older); bannerEpoch is the single-flight
 	// token that lets a still-pending clear timer for an older banner
 	// no-op itself instead of wiping the live one.
-	bannerMsg   string
-	bannerErr   bool
-	bannerEpoch uint64
+	bannerMsg        string
+	bannerContext    string
+	bannerErr        bool
+	bannerEpoch      uint64
+	notifications    []notification
+	choices          *choiceDialog
+	logTarget        logTarget
+	logSource        sections.NodeRef
+	logRequest       uint64
+	logPickerRequest uint64
+	logCancel        context.CancelFunc
+	searchRequest    uint64
+	searchLoading    bool
+	operations       map[string]operation
 
 	logCh chan k8s.PodLogEvent
 
@@ -286,12 +305,15 @@ type Model struct {
 	// startupBanner is a one-shot error message raised in Init(), used by
 	// main to surface CLI-flag mistakes (e.g. --context=does-not-exist)
 	// without spilling a stderr line into the user's scrollback.
-	startupBanner string
+	startupBanner    string
+	startupContext   string
+	startupNamespace string
 
 	// edit holds the active YAML-edit session between $EDITOR exit and the
 	// y/n confirm. nil at all other times. Cleanup (tempfile unlink) is the
 	// model's responsibility on every exit path.
-	edit *editSession
+	edit         *editSession
+	editViewport viewport.Model
 }
 
 // NewModel constructs the root model. Caller must follow up with SetContexts
@@ -308,7 +330,8 @@ func NewModel(mgr *k8s.Manager, cfg *config.AppConfig) Model {
 
 	scale := textinput.New()
 	scale.Placeholder = "replicas"
-	scale.CharLimit = 4
+	scale.CharLimit = 0 // validate the whole value; never silently truncate a replica count
+	scale.SetWidth(12)
 	scale.Prompt = "› "
 	scaleStyles := scale.Styles()
 	prompt := lipgloss.NewStyle().Foreground(t.P.Pink).Bold(true)
@@ -330,7 +353,8 @@ func NewModel(mgr *k8s.Manager, cfg *config.AppConfig) Model {
 
 	pf := textinput.New()
 	pf.Placeholder = "8080:80"
-	pf.CharLimit = 12
+	pf.CharLimit = 0 // validate the entire pasted port pair
+	pf.SetWidth(16)
 	pf.Prompt = "› "
 	pfStyles := pf.Styles()
 	pfStyles.Focused.Prompt = prompt
@@ -368,6 +392,8 @@ func NewModel(mgr *k8s.Manager, cfg *config.AppConfig) Model {
 		state:              stateMain,
 		scaleInput:         scale,
 		pfInput:            pf,
+		editViewport:       viewport.New(),
+		helpViewport:       viewport.New(),
 		now:                time.Now(),
 		title:              "safina",
 		discoveryByContext: make(map[string]bool),
@@ -467,15 +493,15 @@ func (m *Model) SetContexts(items []config.ContextInfo) {
 	m.allContexts = items
 }
 
-// SetActiveContext is the CLI hook (--context). It just sets the active
-// context; the actual drill-in happens in Init() once the tree is seeded.
+// SetActiveContext queues an explicit CLI choice (--context). The drill-in
+// happens in Init() once the tree is seeded.
 func (m *Model) SetActiveContext(name string) {
-	m.ctx.ActiveContext = name
+	m.startupContext = name
 }
 
 // SetActiveNamespace stores the namespace passed via --namespace.
 func (m *Model) SetActiveNamespace(ns string) {
-	m.ctx.ActiveNamespace = ns
+	m.startupNamespace = ns
 }
 
 // SetStartupBanner queues a one-shot error banner to be raised when the TUI
@@ -523,8 +549,8 @@ func (m *Model) shutdown() {
 }
 
 // Init satisfies tea.Model. Kicks off the auto-refresh tick, the wall-clock
-// tick, and the spinner. The app always starts at the context picker — the
-// user explicitly chooses which cluster to enter on every launch.
+// tick, and the spinner. Without --context the app starts at the picker;
+// an explicit CLI choice follows the same drill-in path as a picker choice.
 //
 // RequestBackgroundColor asks the terminal what its background is so we can
 // warn (once) when safina is loaded in a light-mode terminal — the TokyoNight
@@ -538,6 +564,12 @@ func (m *Model) Init() tea.Cmd {
 		m.clockTick(),
 		m.ctx.Spinner.Tick,
 		tea.RequestBackgroundColor,
+	}
+	// An explicit CLI context is a cluster choice, unlike a remembered
+	// default. Route it through the normal focus handler to start watches.
+	if m.startupContext != "" {
+		cmds = append(cmds, m.tree.PushContext(m.startupContext))
+		m.startupContext = ""
 	}
 	// If kubeconfig contained contexts that couldn't be built into a Client
 	// at startup, raise a one-shot banner so the user understands why their
@@ -673,28 +705,28 @@ func (m *Model) clockTick() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return clockMsg(t) })
 }
 
-// Banner TTLs follow a φ progression so dwell time scales with severity in
-// a perceptually-natural way. A confirmation is a breadcrumb (read in
-// peripheral vision); a warning needs a glance; an error needs reading.
-// Ratios 1 : φ : φ² ≈ 1 : 1.618 : 2.618 anchored at 1.5s.
-const (
-	bannerStatusTTL = 1500 * time.Millisecond
-	bannerWarnTTL   = 2425 * time.Millisecond // 1.5s × φ
-	bannerErrorTTL  = 3925 * time.Millisecond // 1.5s × φ²
-)
+// Successful confirmations expire; errors remain until explicitly dismissed.
+const bannerStatusTTL = 1500 * time.Millisecond
 
 // raiseBanner sets a new banner and schedules its dismissal. Bumps the epoch
 // so any in-flight clear timer for a prior banner becomes a no-op when it
 // fires, preventing stacked timers from prematurely wiping newer banners.
 func (m *Model) raiseBanner(msg string, isErr bool) tea.Cmd {
+	m.recordNotification(msg, isErr)
+	if m.bannerErr && !isErr {
+		return nil
+	}
 	m.bannerEpoch++
 	m.bannerMsg = msg
+	if m.ctx != nil {
+		m.bannerContext = m.ctx.ActiveContext
+	}
 	m.bannerErr = isErr
 	epoch := m.bannerEpoch
 	ttl := bannerStatusTTL
 	if isErr {
-		ttl = bannerErrorTTL
 		debug.Errf("banner.error", "msg", msg)
+		return nil
 	} else {
 		debug.Log("banner.status", "msg", msg)
 	}

@@ -8,6 +8,7 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yunus/safina/internal/k8s"
 	"github.com/yunus/safina/internal/tui/components"
@@ -39,11 +40,12 @@ import (
 func (m *Model) View() tea.View {
 	content := m.render()
 	v := tea.View{
-		Content:     content,
-		AltScreen:   true,
-		MouseMode:   tea.MouseModeCellMotion,
-		ReportFocus: true,
-		WindowTitle: m.title,
+		Content:       content,
+		AltScreen:     true,
+		MouseMode:     tea.MouseModeCellMotion,
+		ReportFocus:   true,
+		WindowTitle:   m.title,
+		ProgramStatus: m.programStatus(),
 		KeyboardEnhancements: tea.KeyboardEnhancements{
 			ReportAlternateKeys: true,
 		},
@@ -60,6 +62,8 @@ func (m *Model) View() tea.View {
 	// chat cursor would be a lie about where input is going. The chat
 	// surface stays rendered with its blurred-input styling; pressing
 	// Tab again restores the cursor and the textarea focus.
+	// This feature applies only to the states listed; all others use the fallback.
+	//exhaustive:ignore
 	switch m.state {
 	case stateChatView:
 		if !m.treeFocusInImmersive {
@@ -72,7 +76,31 @@ func (m *Model) View() tea.View {
 	default:
 		// remaining states carry no textinput cursor to project
 	}
+	if m.choices != nil {
+		v.Cursor = nil
+	}
 	return v
+}
+
+// programStatus lets supporting terminals show activity in background tabs.
+// Keep messages generic so resource names and chat content stay in the TUI.
+func (m *Model) programStatus() *tea.ProgramStatus {
+	status := &tea.ProgramStatus{App: "safina", State: tea.ProgramStateIdle}
+	// This feature applies only to the states listed; all others use the fallback.
+	//exhaustive:ignore
+	switch m.state {
+	case stateDeleteConfirm, stateRollbackConfirm, stateRestartConfirm,
+		stateRestartPodConfirm, stateEditConfirm, stateCordonConfirm, stateDrainConfirm:
+		status.State = tea.ProgramStateBlocked
+		status.Kind = tea.ProgramStatusKindPermission
+		status.Message = "Waiting for confirmation"
+	default:
+		if m.chat.Streaming() {
+			status.State = tea.ProgramStateWorking
+			status.Message = "Chat is responding"
+		}
+	}
+	return status
 }
 
 // modalInputCursor translates a textinput's locally-rooted cursor (X
@@ -96,7 +124,7 @@ func (m *Model) modalInputCursor(cur *tea.Cursor) *tea.Cursor {
 func (m *Model) render() string {
 	w, h := m.ctx.Width, m.ctx.Height
 	if w < 50 || h < 14 {
-		return m.ctx.Theme.DimPad.Render("terminal too small")
+		return m.ctx.Theme.DimPad.Render(fmt.Sprintf("Resize terminal to at least 50 × 14.\nCurrent size: %d × %d. Ctrl+C quits.", w, h))
 	}
 
 	// Shell takes the full screen — it owns a pty session, so the tree /
@@ -106,20 +134,25 @@ func (m *Model) render() string {
 	}
 
 	base := m.renderBase(w, h)
+	if m.choices != nil {
+		return m.composeCard(base, m.choicesCard())
+	}
 
 	// Overlays compose ON TOP of the base — the tree and workspace stay
 	// visible underneath a dimmed backdrop. This is the cosmic-horizon
 	// design choice: nothing swallows the screen except shells. Confirms,
 	// pickers, palette, help, cluster switcher all float.
+	// This feature applies only to the states listed; all others use the fallback.
+	//exhaustive:ignore
 	switch m.state {
 	case stateHelp:
 		return m.composeCard(base, m.renderHelpModal())
 	case statePalette:
-		return m.composeOverlay(base, m.palette.View(m.ctx, w, h))
+		return m.composeCard(base, m.palette.Card(m.ctx, w, h))
 	case stateClusters:
-		return m.composeOverlay(base, m.clusters.View(m.ctx, w, h, m.ctx.ActiveContext))
+		return m.composeCard(base, m.clusters.Card(m.ctx, w, h, m.ctx.ActiveContext))
 	case stateBrowser:
-		return m.composeOverlay(base, m.browser.View(m.ctx, w, h))
+		return m.composeCard(base, m.browser.Card(m.ctx, w, h))
 	case stateScaleInput:
 		return m.composeCard(base, m.renderScaleModal())
 	case stateDeleteConfirm:
@@ -153,77 +186,37 @@ func (m *Model) render() string {
 	}
 }
 
-// composeOverlay layers an overlay (palette / browser / cluster switcher)
-// over the base via lipgloss.Compositor. Each overlay is a full-screen
-// Place-positioned string today (its own dotted backdrop), so layering it
-// at z=1 over base at z=0 is a faithful preservation of the current look
-// — the value is the z-buffered architecture, which lets future overlays
-// drop the backdrop and have the live tree show through underneath.
-//
-// The render side-effects of base (sizing, selection sync, tab hitbox
-// stashing) still run because base is always rendered; we now also draw
-// it as the bottom layer instead of throwing it away.
-func (m *Model) composeOverlay(base, overlay string) string {
-	w, h := m.ctx.Width, m.ctx.Height
-	comp := lipgloss.NewCompositor(
-		lipgloss.NewLayer(base).X(0).Y(0).Z(0),
-		lipgloss.NewLayer(overlay).X(0).Y(0).Z(1),
-	)
-	return lipgloss.NewCanvas(w, h).Compose(comp).Render()
-}
-
-// composeCard layers a self-contained card (a small confirm / scale /
-// help / edit / port-forward modal that doesn't carry its own backdrop)
-// centred over the base, with the standard dim-dot backdrop drawn as the
-// middle layer. The card layer reads "floating over data" instead of
-// "data swapped for a static fullscreen frame" — proper z-ordering with
-// lipgloss.Compositor.
-//
-// Centring math: x = (w - cardW) / 2, y = (h - cardH) / 2 — same result
-// lipgloss.Place computes, but exposed as a Layer so the card paints
-// only its own bounds (no fullscreen overwrite of base).
+// composeCard keeps the current screen visible but subdued behind a floating
+// dialog. Lip Gloss owns cell clipping and z-order, including the offset shadow.
 func (m *Model) composeCard(base, card string) string {
 	w, h := m.ctx.Width, m.ctx.Height
 	cardW, cardH := lipgloss.Size(card)
-	cx := (w - cardW) / 2
-	if cx < 0 {
-		cx = 0
-	}
-	cy := (h - cardH) / 2
-	if cy < 0 {
-		cy = 0
-	}
-	// Stash the centered card origin so View() can place a hardware
-	// cursor inside an input-bearing modal without re-running the same
-	// centering math. Cheap (two ints, overwritten every frame).
-	m.modalCardX = cx
-	m.modalCardY = cy
-	// Backdrop layer: a full-screen field of dim dots that paints over the
-	// base so the modal reads as gated ("don't keep typing into the tree").
-	// Same visual signature as the lipgloss.Place backdrop the old path
-	// produced; rendered explicitly here so the layer order is obvious.
-	backdrop := m.renderModalBackdrop(w, h)
+	cx, cy := max(0, (w-cardW)/2), max(0, (h-cardH)/2)
+	m.modalCardX, m.modalCardY = cx, cy
+	t := m.ctx.Theme
+	backdrop := lipgloss.NewStyle().Foreground(t.P.Dim).Background(t.P.BG).Render(ansi.Strip(base))
+	shadow := lipgloss.NewStyle().Background(t.P.BG).Width(cardW).Height(cardH).Render("")
 	comp := lipgloss.NewCompositor(
-		lipgloss.NewLayer(base).X(0).Y(0).Z(0),
-		lipgloss.NewLayer(backdrop).X(0).Y(0).Z(1),
+		lipgloss.NewLayer(backdrop).Z(0),
+		lipgloss.NewLayer(shadow).X(cx+2).Y(cy+1).Z(1),
 		lipgloss.NewLayer(card).X(cx).Y(cy).Z(2),
 	)
-	return lipgloss.NewCanvas(w, h).Compose(comp).Render()
-}
-
-// renderModalBackdrop paints a w×h field of dim dots used as the
-// translucent-feeling backdrop layer under a modal card. Same dots and
-// dim-foreground style the lipgloss.Place backdrop used to draw via
-// WithWhitespaceChars — extracted so the Compositor path can layer it
-// explicitly.
-func (m *Model) renderModalBackdrop(w, h int) string {
-	t := m.ctx.Theme
-	dot := lipgloss.NewStyle().Foreground(t.P.BG3).Render(strings.Repeat("·", w))
-	rows := make([]string, h)
-	for i := range rows {
-		rows[i] = dot
+	canvas := lipgloss.NewCanvas(w, h).Compose(comp)
+	// Nested styled text resets to the terminal's default background. Fill only
+	// unspecified backgrounds inside the card, preserving explicit input/error
+	// surfaces and leaving the rounded border untouched. The library still owns
+	// ANSI parsing, wide cells and composition.
+	for y := cy + 1; y < min(h, cy+cardH-1); y++ {
+		for x := cx + 1; x < min(w, cx+cardW-1); x++ {
+			cell := canvas.CellAt(x, y)
+			if cell != nil && cell.Width > 0 && cell.Style.Bg == nil {
+				filled := *cell
+				filled.Style.Bg = t.P.BG2
+				canvas.SetCell(x, y, &filled)
+			}
+		}
 	}
-	return strings.Join(rows, "\n")
+	return canvas.Render()
 }
 
 // renderBase composes the steady-state frame: topbar / optional banner /
@@ -250,15 +243,16 @@ func (m *Model) renderBase(w, h int) string {
 		m.ctx.Theme, w,
 		m.tree.BreadcrumbCrumbs(),
 		m.refreshAge(),
-		m.now.Format("15:04:05"),
+		m.now.Format("15:04"),
 		fwdCount,
 		m.topbarClusterHealth(),
 	))
 	used++
 
-	if m.bannerMsg != "" {
-		parts = append(parts, m.renderBanner(w))
-		used++
+	if m.hasFeedback() {
+		banner := m.renderBanner(w)
+		parts = append(parts, banner)
+		used += lipgloss.Height(banner)
 	}
 
 	botH := h - used
@@ -276,18 +270,27 @@ func (m *Model) renderBase(w, h int) string {
 // active surface (tree vs workspace) is implied by which tab is active:
 // Inspector tab → tree drives, immersive tabs (Logs/Events/Yaml/Chat/Hot
 // /Forwards/Drain) → workspace drives.
+const minSplitWidth = 60
+
 func (m *Model) renderMainSplit(w, h int) string {
-	const treeMin = 28
-	treeW, wsW := theme.PhiSplit(w, 0, treeMin)
+	workspaceFocused := m.workspaceOwnsFocus()
+	treeW, wsW := theme.PhiSplit(w, 0, 28)
 	if wsW < 32 {
 		wsW = 32
 		treeW = w - wsW
-		if treeW < treeMin {
-			treeW = treeMin
+	}
+	if w < minSplitWidth {
+		if !workspaceFocused {
+			m.tree.Focused = true
+			m.tabHitboxes = nil
+			return m.tree.View(m.ctx, w, h)
 		}
+		treeW, wsW = 0, w
+	}
+	if m.workspaceExpanded && m.canExpandWorkspace() && !m.treeFocusInImmersive {
+		treeW, wsW = 0, w
 	}
 
-	workspaceFocused := m.workspaceOwnsFocus()
 	// Only one pane wears the gradient border. Tree.Focused is the
 	// persistent canonical value — set it here so a single source of
 	// truth flows both rendering (border / row highlight) and update.go
@@ -302,8 +305,8 @@ func (m *Model) renderMainSplit(w, h int) string {
 	// hardware cursor lands at the right pixel when the user types.
 	originX := treeW
 	originY := 1
-	if m.bannerMsg != "" {
-		originY = 2
+	if m.hasFeedback() {
+		originY += lipgloss.Height(m.renderBanner(w))
 	}
 	m.chat.SetScreenOrigin(originX, originY)
 
@@ -316,10 +319,13 @@ func (m *Model) renderMainSplit(w, h int) string {
 	m.tabStripOriginY = originY + 1
 	availability := m.workspaceTabAvailability()
 	tabs := sections.AvailableTabs(availability)
-	m.tabHitboxes = sections.WorkspaceTabHitboxes(tabs, sections.WorkspaceBodyWidth(wsW))
+	m.tabHitboxes = sections.WorkspaceTabHitboxes(tabs, m.activeWorkspaceTab(), sections.WorkspaceBodyWidth(wsW))
 
-	treeView := m.tree.View(m.ctx, treeW, h)
 	workspaceView := m.renderWorkspace(wsW, h, workspaceFocused)
+	if treeW == 0 {
+		return workspaceView
+	}
+	treeView := m.tree.View(m.ctx, treeW, h)
 	return lipgloss.JoinHorizontal(lipgloss.Top, treeView, workspaceView)
 }
 
@@ -370,6 +376,8 @@ func (m *Model) workspaceOwnsFocus() bool {
 	if m.peekWorkspace {
 		return true
 	}
+	// This feature applies only to the states listed; all others use the fallback.
+	//exhaustive:ignore
 	switch m.state {
 	case stateLogView, stateEventsView, stateDescribeView,
 		stateHotView, stateForwardsList, stateDrainProgress,
@@ -385,6 +393,8 @@ func (m *Model) workspaceOwnsFocus() bool {
 // hot / forwards / drain) drive the matching tab; everything else falls
 // back to Inspector (the default).
 func (m *Model) activeWorkspaceTab() sections.WorkspaceTab {
+	// This feature applies only to the states listed; all others use the fallback.
+	//exhaustive:ignore
 	switch m.state {
 	case stateLogView:
 		return sections.WSTabLogs
@@ -431,6 +441,8 @@ func (m *Model) workspaceTabAvailability() sections.WSTabAvailability {
 	}
 	// Pinned tabs: appear only while their state is active. The user can
 	// switch back to Inspector by pressing 1 (or Esc on the tab).
+	// This feature applies only to the states listed; all others use the fallback.
+	//exhaustive:ignore
 	switch m.state {
 	case stateHotView:
 		av.Hot = true
@@ -444,17 +456,30 @@ func (m *Model) workspaceTabAvailability() sections.WSTabAvailability {
 	return av
 }
 
-// workspaceTitle always returns "" — every workspace tab renders with a
-// clean top border. The topbar breadcrumb names *what* is selected (left
-// side, brightest segment), and the tab strip on the panel's first
-// content row names *which surface* is active. Painting a per-tab title
-// on the panel rule on top of that was a third register for the same
-// information, and the rule's text would shift as the user switched
-// tabs — a small visual jitter at every Tab/click that read as a glitch.
-// Constant-empty title keeps the border identical across tabs.
+// Source identity must stay visible when tree focus moves while reading.
 func (m *Model) workspaceTitle(tab sections.WorkspaceTab) string {
-	_ = tab
-	return ""
+	//exhaustive:ignore
+	switch tab {
+	case sections.WSTabLogs:
+		return m.logs.PaneTitle()
+	case sections.WSTabEvents:
+		return m.events.PaneTitle()
+	case sections.WSTabYaml:
+		return m.describe.PaneTitle()
+	case sections.WSTabHot:
+		return m.hot.PaneTitle()
+	case sections.WSTabForwards:
+		return m.forwards.PaneTitle()
+	case sections.WSTabDrain:
+		return m.drain.PaneTitle()
+	default:
+		return ""
+	}
+}
+
+func (m *Model) canExpandWorkspace() bool {
+	return m.state == stateLogView || m.state == stateEventsView || m.state == stateDescribeView ||
+		m.state == stateHotView || m.state == stateForwardsList
 }
 
 // renderTabBody dispatches to the section that owns the active tab's
@@ -499,11 +524,19 @@ func (m *Model) renderTabBody(tab sections.WorkspaceTab, w, h int) string {
 // renderBanner draws the transient status/error line above the main split.
 // Errors render in red (✗), successful action confirmations in green (✓).
 func (m *Model) renderBanner(w int) string {
+	if m.bannerMsg == "" {
+		return m.ctx.Theme.Hint.Width(w).MaxHeight(3).Render("  ◌  " + m.operationSummary())
+	}
 	t := m.ctx.Theme
 	if m.bannerErr {
-		return t.ErrLine.Width(w).Render("  ✗  " + m.bannerMsg)
+		text := m.bannerMsg
+		if m.bannerContext != "" && m.bannerContext != m.ctx.ActiveContext {
+			text = m.bannerContext + ": " + text
+		}
+		hints := "ctrl+d dismiss · ctrl+n history"
+		return t.ErrLine.Width(w).Render("  ✗  " + ansi.Truncate(strings.ReplaceAll(text, "\n", " "), max(1, w-5), "…") + "\n  " + hints)
 	}
-	return t.OkLine.Width(w).Render("  ✓  " + m.bannerMsg)
+	return t.OkLine.Width(w).MaxHeight(3).Render("  ✓  " + m.bannerMsg)
 }
 
 // topbarClusterHealth packages the model's cluster-health snapshot into
@@ -617,15 +650,25 @@ func (m *Model) deleteConfirmText() (verb, subject string) {
 
 func (m *Model) renderFooter() string {
 	t := m.ctx.Theme
+	if ((m.state == stateMain || m.treeFocusInImmersive) && m.tree.FilterActive()) ||
+		(m.state != stateChatView && m.sectionHasFilterFocus()) {
+		return t.Hint.Render(" type to filter · enter apply · esc cancel")
+	}
 	var view string
-	switch m.state {
-	case stateChatView:
-		view = m.renderChatFooter()
-	case stateLogView, stateEventsView, stateDescribeView,
-		stateHotView, stateForwardsList:
-		view = m.renderImmersiveFooter()
-	case stateDrainProgress:
+	// This feature applies only to the states listed; all others use the fallback.
+	//exhaustive:ignore
+	switch {
+	case m.state == stateDrainProgress:
 		view = m.renderDrainFooter()
+	case m.treeFocusInImmersive && m.isImmersiveState():
+		view = m.renderTreeFooter()
+	case m.state == stateMain && m.peekWorkspace:
+		view = components.RenderBoundedHints(t, []components.KeyDesc{{Key: "tab", Desc: "tree"}, {Key: "←/→", Desc: "tabs"}, {Key: "1", Desc: "back"}, {Key: "?", Desc: "help"}}, m.ctx.Width-2, components.KeyDesc{Key: "?", Desc: "help"})
+	case m.state == stateChatView:
+		view = m.renderChatFooter()
+	case m.state == stateLogView || m.state == stateEventsView || m.state == stateDescribeView ||
+		m.state == stateHotView || m.state == stateForwardsList:
+		view = m.renderImmersiveFooter()
 	default:
 		view = m.renderTreeFooter()
 	}
@@ -637,72 +680,48 @@ func (m *Model) renderFooter() string {
 		Render(view)
 }
 
-// renderTreeFooter renders contextual short help with two visual layers:
-// action verbs are bright; chrome keys (refresh/filter/help/quit) are dim
-// so global affordances read as a separate visual register.
+// renderTreeFooter follows the selected resource even while another tab stays open.
 func (m *Model) renderTreeFooter() string {
-	t := m.ctx.Theme
 	bindings := m.contextualShortHelp()
-	chromeKeys := map[string]bool{
-		m.ctx.Keys.Refresh.Help().Key: true,
-		m.ctx.Keys.Filter.Help().Key:  true,
-		m.ctx.Keys.Help.Help().Key:    true,
-		m.ctx.Keys.Quit.Help().Key:    true,
-		m.ctx.Keys.Enter.Help().Key:   true,
+	hints := make([]components.KeyDesc, 0, len(bindings)+1)
+	if m.ctx.Width < minSplitWidth || m.treeFocusInImmersive {
+		hints = append(hints, components.KeyDesc{Key: "tab", Desc: "pane"})
 	}
-	dim := lipgloss.NewStyle().Foreground(t.P.Dim)
-	parts := make([]string, 0, len(bindings))
-	for _, b := range bindings {
-		h := b.Help()
-		if chromeKeys[h.Key] {
-			parts = append(parts, dim.Render(h.Key)+" "+dim.Render(h.Desc))
-		} else {
-			parts = append(parts, t.HelpKey.Render(h.Key)+" "+t.HelpDesc.Render(h.Desc))
+	for _, binding := range bindings {
+		h := binding.Help()
+		if m.treeFocusInImmersive && h.Key == m.ctx.Keys.Quit.Help().Key {
+			h.Desc = "close view"
 		}
+		hints = append(hints, components.KeyDesc{Key: h.Key, Desc: h.Desc})
 	}
-	sep := t.DimTxt.Render(" · ")
-	return strings.Join(parts, sep)
+	return components.RenderBoundedHints(m.ctx.Theme, hints, m.ctx.Width-2, components.KeyDesc{Key: "?", Desc: "all keys"})
 }
 
-// renderChatFooter mirrors contextualShortHelp's role for chat.
 func (m *Model) renderChatFooter() string {
-	t := m.ctx.Theme
-	pair := func(k, d string) string {
-		return t.HelpKey.Render(k) + " " + t.HelpDesc.Render(d)
-	}
-	sep := t.HelpDesc.Render(" · ")
-	send := pair("↵", "send")
+	action := components.KeyDesc{Key: "↵", Desc: "send"}
 	if m.chat.Streaming() {
-		send = pair("esc", "cancel")
+		action = components.KeyDesc{Key: "esc", Desc: "cancel"}
 	}
-	parts := []string{
-		send,
-		pair("⇧↵", "newline"),
-		pair("tab", "tree"),
-		pair("⌃l", "clear"),
-		pair("⌃n", "new"),
-	}
-	return strings.Join(parts, sep)
+	return components.RenderBoundedHints(m.ctx.Theme, []components.KeyDesc{
+		action,
+		{Key: "tab", Desc: "tree"},
+		{Key: "⇧↵", Desc: "newline"},
+		{Key: "⌃l", Desc: "clear"},
+		{Key: "⌃n", Desc: "new"},
+	}, m.ctx.Width-2, components.KeyDesc{})
 }
 
-// renderImmersiveFooter renders just the global chrome row for any
-// workspace-tab state. Each immersive section (logs / events / describe /
-// hot / forwards) already paints a verb-hint row inside its own body
-// that includes "esc close" plus the section's own keys — so the footer
-// here intentionally does NOT restate esc, to avoid the double-render the
-// old layout had. What stays is the universal chrome (help / quit) the
-// section bodies don't surface themselves, in dim so it reads as ambient.
 func (m *Model) renderImmersiveFooter() string {
-	t := m.ctx.Theme
-	dim := lipgloss.NewStyle().Foreground(t.P.Dim)
-	pair := func(k, d string) string {
-		return dim.Render(k) + " " + dim.Render(d)
+	hints := []components.KeyDesc{{Key: "tab", Desc: "tree"}, {Key: "esc/q", Desc: "close"}}
+	if m.ctx.Width >= minSplitWidth {
+		zoom := "expand"
+		if m.workspaceExpanded {
+			zoom = "split"
+		}
+		hints = append(hints, components.KeyDesc{Key: "z", Desc: zoom})
 	}
-	sep := dim.Render(" · ")
-	return strings.Join([]string{
-		pair("?", "help"),
-		pair("q", "quit"),
-	}, sep)
+	hints = append(hints, components.KeyDesc{Key: "←/→", Desc: "tabs"}, components.KeyDesc{Key: "?", Desc: "help"})
+	return components.RenderBoundedHints(m.ctx.Theme, hints, m.ctx.Width-2, components.KeyDesc{Key: "?", Desc: "help"})
 }
 
 // renderDrainFooter omits esc/help/quit — esc is intentionally a no-op
@@ -729,6 +748,9 @@ func (m *Model) renderDrainFooter() string {
 func (m *Model) contextualShortHelp() []key.Binding {
 	k := m.ctx.Keys
 	tail := []key.Binding{k.Filter, k.Help, k.Quit}
+	if m.tree.SelectedRef().Kind != "" && m.tree.SelectedRef().Kind != k8s.KindContainer {
+		tail = append([]key.Binding{key.NewBinding(key.WithKeys("enter"), key.WithHelp("↵", "open"))}, tail...)
+	}
 	if m.tree.Focus().Kind != k8s.KindContextList {
 		tail = append([]key.Binding{k.Refresh}, tail...)
 	}
@@ -796,33 +818,15 @@ func (m *Model) contextualShortHelp() []key.Binding {
 // ── modals ────────────────────────────────────────────────────────────
 
 func (m *Model) renderScaleModal() string {
-	t := m.ctx.Theme
 	deploy := m.deployName()
-	subtitle := ""
+	subtitle := "Replicas"
 	if app, ok := m.tree.SelectedAppInfo(); ok {
 		if cur := currentDesiredReplicas(app); cur >= 0 {
-			subtitle = fmt.Sprintf("now: %d replicas", cur)
+			subtitle = fmt.Sprintf("Replicas · current: %d", cur)
 		}
 	}
-	parts := []string{t.BlueBold.Render("scale " + deploy)}
-	if subtitle != "" {
-		parts = append(parts, t.DimTxt.Render(subtitle))
-	}
-	// Input row index within the content stack — title (+ optional
-	// subtitle) + blank spacer = where the textinput sits. Stashed for
-	// the View() hardware-cursor translation.
-	m.modalInputRow = len(parts) + 1
-	parts = append(parts,
-		"",
-		m.scaleInput.View(),
-		"",
-		components.RenderHintRow(t, []components.KeyDesc{
-			{Key: "↵", Desc: "confirm"},
-			{Key: "esc", Desc: "cancel"},
-		}),
-	)
-	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
-	return t.Modal.Render(content)
+	return m.renderInputDialog("Scale "+deploy, m.tree.SelectedRef().Namespace,
+		subtitle, m.scaleInput.View(), "0 stops all replicas", m.scaleError, "scale")
 }
 
 func currentDesiredReplicas(app k8s.AppInfo) int {
@@ -841,26 +845,35 @@ func currentDesiredReplicas(app k8s.AppInfo) int {
 }
 
 func (m *Model) renderPortForwardModal() string {
-	t := m.ctx.Theme
 	subject := strings.ToLower(m.pfTarget.Kind) + " " + m.pfTarget.Name
-	// Fixed layout: title, blank, input → input row is always 2.
-	m.modalInputRow = 2
-	content := lipgloss.JoinVertical(lipgloss.Left,
-		t.BlueBold.Render("port-forward "+subject),
-		"",
-		m.pfInput.View(),
-		"",
-		t.Hint.Render("L:R or single port (same on both sides)"),
-		components.RenderHintRow(t, []components.KeyDesc{
-			{Key: "↵", Desc: "confirm"},
-			{Key: "esc", Desc: "cancel"},
-		}),
-	)
-	return t.Modal.Render(content)
+	return m.renderInputDialog("Port forward "+subject, m.pfTarget.Namespace,
+		"Ports · local:remote", m.pfInput.View(), "One port uses the same port on both sides", m.pfError, "start")
+}
+
+// renderInputDialog owns form spacing, scope, feedback, and cursor placement.
+// Measure the rendered header so wrapped resource names cannot move the cursor
+// away from its input. Both forms share the same modal envelope.
+func (m *Model) renderInputDialog(title, namespace, label, input, help, validation, action string) string {
+	t := m.ctx.Theme
+	w := max(1, min(66, m.ctx.Width-8))
+	parts := []string{t.CyanBold.Width(w).Render(title), t.DimTxt.Width(w).Render(m.actionScope(namespace))}
+	if label != "" {
+		parts = append(parts, t.DimTxt.Width(w).Render(label))
+	}
+	m.modalInputRow = lipgloss.Height(strings.Join(parts, "\n")) + 1
+	feedback := t.Hint.Width(w).Render(help)
+	if validation != "" {
+		feedback = t.ErrLine.Width(w).Render(validation)
+	}
+	parts = append(parts, "", input, feedback, "", components.RenderHintRow(t, []components.KeyDesc{
+		{Key: "↵", Desc: action}, {Key: "esc", Desc: "cancel"},
+	}))
+	return t.Modal.Width(w + 6).Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
 }
 
 func (m *Model) renderEditConfirmModal() string {
 	t := m.ctx.Theme
+	w := max(10, min(100, m.ctx.Width-10))
 	subject := "edit"
 	resource := ""
 	stat := ""
@@ -875,20 +888,25 @@ func (m *Model) renderEditConfirmModal() string {
 			t.DimTxt.Render(" lines")
 		body = renderUnifiedDiff(t, m.edit.Orig, m.edit.Edited)
 	}
+	m.editViewport.SetWidth(w)
+	m.editViewport.SetHeight(max(1, min(20, m.ctx.Height-17)))
+	m.editViewport.SoftWrap = true
+	m.editViewport.SetContent(body)
 
 	yellow := lipgloss.NewStyle().Foreground(t.P.Yellow).Bold(true)
-	red := lipgloss.NewStyle().Foreground(t.P.Red).Bold(true)
+	resourceStyle := lipgloss.NewStyle().Foreground(t.P.FG).Bold(true)
 	parts := []string{
-		yellow.Render(subject),
+		yellow.Width(w).Render(subject),
 		"",
-		red.Render(resource),
+		resourceStyle.Width(w).Render(resource),
+		t.DimTxt.Width(w).Render("cluster: " + m.ctx.ActiveContext),
 		"",
 		stat,
 	}
 	if body != "" {
-		parts = append(parts, "", body)
+		parts = append(parts, "", m.editViewport.View())
 	}
-	parts = append(parts, "", components.RenderConfirmHint(t, "apply"))
+	parts = append(parts, "", components.RenderConfirmHint(t, "apply"), t.Hint.Render("↑/↓ · pgup/pgdown scroll diff"))
 
 	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
 	return t.Modal.Render(content)
@@ -897,42 +915,49 @@ func (m *Model) renderEditConfirmModal() string {
 func (m *Model) renderConfirmModal(action, resource string) string {
 	t := m.ctx.Theme
 	yellow := lipgloss.NewStyle().Foreground(t.P.Yellow).Bold(true)
-	red := lipgloss.NewStyle().Foreground(t.P.Red).Bold(true)
+	resourceStyle := lipgloss.NewStyle().Foreground(t.P.FG).Bold(true)
 	content := lipgloss.JoinVertical(lipgloss.Left,
 		yellow.Render(action),
 		"",
-		red.Render(resource),
+		resourceStyle.Render(resource),
+		t.DimTxt.Render(m.actionScope(m.tree.SelectedRef().Namespace)),
 		"",
-		components.RenderConfirmHint(t, "confirm"),
+		components.RenderConfirmHint(t, strings.Fields(action)[0]),
 	)
-	return t.Modal.Render(content)
+	return t.Modal.Width(max(20, min(72, m.ctx.Width-2))).Render(content)
+}
+
+// actionScope makes the target explicit even when the dialog hides the header.
+func (m *Model) actionScope(namespace string) string {
+	scope := "cluster: " + m.ctx.ActiveContext
+	if namespace != "" {
+		scope += "\nnamespace: " + namespace
+	}
+	return scope
 }
 
 func (m *Model) renderHelpModal() string {
 	t := m.ctx.Theme
+	w := max(1, min(94, m.ctx.Width-8))
 	groups := m.ctx.Keys.Groups()
-	gutter := lipgloss.NewStyle().PaddingRight(4)
 	cols := make([]string, 0, len(groups))
-	for i, g := range groups {
-		c := renderHelpGroup(t, g)
-		if i < len(groups)-1 {
-			c = gutter.Render(c)
-		}
-		cols = append(cols, c)
+	for _, g := range groups {
+		cols = append(cols, renderHelpGroup(t, g))
 	}
-	body := lipgloss.JoinHorizontal(lipgloss.Top, cols...)
-	bodyW := lipgloss.Width(body)
+	body := lipgloss.JoinHorizontal(lipgloss.Top,
+		lipgloss.NewStyle().PaddingRight(3).Render(cols[0]),
+		lipgloss.NewStyle().PaddingRight(3).Render(cols[1]), cols[2])
+	if lipgloss.Width(body) > w {
+		body = strings.Join(cols, "\n\n")
+	}
+	m.helpViewport.SetWidth(w)
+	m.helpViewport.SetHeight(max(1, min(lipgloss.Height(body), m.ctx.Height-10)))
+	m.helpViewport.SoftWrap = true
+	m.helpViewport.SetContent(body)
 	content := lipgloss.JoinVertical(lipgloss.Left,
-		t.Divider("keybindings", bodyW),
-		"",
-		body,
-		"",
-		components.RenderHintRow(t, []components.KeyDesc{
-			{Key: "esc", Desc: "close"},
-			{Key: "?", Desc: "close"},
-		}),
-	)
-	return t.Modal.Padding(1, 2).Render(content)
+		t.CyanBold.Render("Keyboard shortcuts"), "", m.helpViewport.View(), "",
+		t.Hint.Render("↑↓/pgup/pgdn scroll · esc/? close"))
+	return t.Modal.Padding(1, 2).Width(w + 6).Render(content)
 }
 
 func renderHelpGroup(t *theme.Theme, g keys.Group) string {
@@ -969,5 +994,5 @@ func widestKey(g keys.Group) int {
 }
 
 func helpRow(t *theme.Theme, keyW int, k, desc string) string {
-	return t.HelpKey.Width(keyW).Render(k) + t.HelpDesc.Render(desc)
+	return t.HelpKey.Width(keyW+2).Render(k) + t.HelpDesc.Render(desc)
 }

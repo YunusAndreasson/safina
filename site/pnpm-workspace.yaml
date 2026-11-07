@@ -1,0 +1,4 @@
+# @astrojs/check pulls @emnapi/runtime 2.0 beta against @emnapi/core 1.11, which
+# crashes its WASM type-checker. Keep the pair on matching versions.
+overrides:
+  "@emnapi/runtime": 1.11.3

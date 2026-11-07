@@ -12,11 +12,11 @@ import (
 
 // brailleFloor is the 1-cell "flat floor" pattern (h=1 dots on both halves)
 // the idle branch of Sparkline emits — single bottom-row dots in each half.
-var brailleFloor = string(brailleBase + rune(brailleLeft[1]+brailleRight[1]))
+var brailleFloor = string(brailleBase + (brailleLeft[1] + brailleRight[1]))
 
 // brailleFull is the 1-cell solid block (h=4 on both halves) the busy
 // branch emits at full magnitude — every dot lit.
-var brailleFull = string(brailleBase + rune(brailleLeft[4]+brailleRight[4]))
+var brailleFull = string(brailleBase + (brailleLeft[4] + brailleRight[4]))
 
 // TestSparkline_IdleRendersAsFloor is the regression test for the bug the
 // user surfaced: a pod stable at 1 millicore previously rendered ████ in
@@ -189,7 +189,7 @@ func brailleMaxLevel(r rune) int {
 	if r < brailleBase || r > brailleBase+0xFF {
 		return -1
 	}
-	pat := int(r - brailleBase)
+	pat := r - brailleBase
 	left := decodeHalf(pat&0x47, brailleLeft[:])
 	right := decodeHalf(pat&0xB8, brailleRight[:])
 	if left > right {
@@ -198,7 +198,7 @@ func brailleMaxLevel(r rune) int {
 	return right
 }
 
-func decodeHalf(bits int, table []int) int {
+func decodeHalf(bits rune, table []rune) int {
 	for i, v := range table {
 		if v == bits {
 			return i

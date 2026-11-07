@@ -85,7 +85,12 @@ func Load() (*AppConfig, error) {
 		seedDefaults(cfg)
 		return cfg, nil //nolint:nilerr // return empty config when home dir unavailable
 	}
-	data, err := os.ReadFile(path)
+	return loadFile(path)
+}
+
+func loadFile(path string) (*AppConfig, error) {
+	cfg := &AppConfig{}
+	data, err := os.ReadFile(path) // #nosec G304 -- Reads the application config path resolved from the current user home directory.
 	if err != nil {
 		seedDefaults(cfg)
 		return cfg, nil //nolint:nilerr // return empty config when file missing
@@ -112,20 +117,41 @@ func Save(cfg *AppConfig) error {
 	if cfg == nil {
 		return errors.New("config is nil")
 	}
-	dir, err := ConfigDir()
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
 	path, err := ConfigPath()
 	if err != nil {
+		return err
+	}
+	return saveFile(cfg, path)
+}
+
+func saveFile(cfg *AppConfig, path string) error {
+	if cfg == nil {
+		return errors.New("config is nil")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	// Write beside the destination so rename atomically replaces it. Readers
+	// see either the old config or the complete new one, never a partial file.
+	f, err := os.CreateTemp(filepath.Dir(path), ".config-*")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(f.Name()) }()
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
 }

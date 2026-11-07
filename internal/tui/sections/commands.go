@@ -160,60 +160,16 @@ func DeleteResource(ctx context.Context, mgr *k8s.Manager, contextName, kind, na
 	})
 }
 
-func ScaleDeployment(ctx context.Context, mgr *k8s.Manager, contextName, namespace, name string, replicas int32) tea.Cmd {
-	return actionCmd(mgr, contextName, "scale", fmt.Sprintf("%s → %d", name, replicas), func(c *k8s.Client) error {
-		return k8s.ScaleDeployment(ctx, c.Clientset, namespace, name, replicas)
-	})
+func ScaleWorkload(ctx context.Context, mgr *k8s.Manager, contextName, namespace, kind, name string, replicas int32) tea.Cmd {
+	return trackedAction(actionCmd(mgr, contextName, "scale", fmt.Sprintf("%s → %d", name, replicas), func(c *k8s.Client) error {
+		return k8s.ScaleWorkload(ctx, c.Clientset, namespace, kind, name, replicas)
+	}), WorkloadTarget{Context: contextName, Namespace: namespace, Kind: kind, Name: name})
 }
 
 func RollbackDeployment(ctx context.Context, mgr *k8s.Manager, contextName, namespace, name string) tea.Cmd {
 	return actionCmd(mgr, contextName, "rollback", name, func(c *k8s.Client) error {
 		return k8s.RollbackDeployment(ctx, c.Clientset, namespace, name)
 	})
-}
-
-// StreamAppLogs resolves a streamable pod for the given App (Deployment /
-// StatefulSet / DaemonSet / CronJob / Job) and emits a PodSelectedMsg, which
-// the root model already handles by switching to the log view and starting
-// a stream. Lets the user press `l` on an App row at any level (root or
-// drilled-in) without first opening the pod list.
-//
-// Pod selection: prefer the first Running pod; fall back to the first pod
-// that exists. Reports an ActionDoneMsg error when no pod is found.
-func StreamAppLogs(ctx context.Context, mgr *k8s.Manager, contextName string, app k8s.AppRef) tea.Cmd {
-	return func() tea.Msg {
-		client, ok := mgr.GetClient(contextName)
-		if !ok {
-			return ActionDoneMsg{Action: "logs", Err: errContextNotFound}
-		}
-		pods, err := client.ListPodsForApp(ctx, app)
-		if err != nil {
-			return ActionDoneMsg{Action: "logs", Err: err}
-		}
-		if len(pods) == 0 {
-			return ActionDoneMsg{Action: "logs", Err: fmt.Errorf("no pods for %s", app.Name)}
-		}
-		target := pods[0]
-		for _, p := range pods {
-			if p.Status == "Running" {
-				target = p
-				break
-			}
-		}
-		return PodSelectedMsg{Name: target.Name, Namespace: target.Namespace}
-	}
-}
-
-func StreamLogs(ctx context.Context, mgr *k8s.Manager, contextName, namespace, podName, container string) tea.Cmd {
-	return func() tea.Msg {
-		client, ok := mgr.GetClient(contextName)
-		if !ok {
-			return ActionDoneMsg{Action: "logs", Err: errContextNotFound}
-		}
-		ch := make(chan k8s.PodLogEvent)
-		go k8s.StreamPodContainerLogs(ctx, client.Clientset, namespace, podName, container, false, ch)
-		return LogStreamStartedMsg{Pod: podName, Ch: ch}
-	}
 }
 
 // OpenShell dials a remotecommand exec stream into the named pod/container.
@@ -264,7 +220,22 @@ func RestartPod(ctx context.Context, mgr *k8s.Manager, contextName, namespace, n
 // RestartApp triggers a rolling restart for an App by patching the pod
 // template's annotations. Works for Deployment / StatefulSet / DaemonSet.
 func RestartApp(ctx context.Context, mgr *k8s.Manager, contextName, namespace, kind, name string) tea.Cmd {
-	return actionCmd(mgr, contextName, "restart", name, func(c *k8s.Client) error {
+	return trackedAction(actionCmd(mgr, contextName, "restart", name, func(c *k8s.Client) error {
 		return k8s.RestartWorkload(ctx, c.Clientset, namespace, kind, name)
-	})
+	}), WorkloadTarget{Context: contextName, Namespace: namespace, Kind: kind, Name: name})
+}
+
+// trackedAction attaches resource identity to acceptance so the UI can observe
+// convergence independently of the current selection.
+func trackedAction(cmd tea.Cmd, target WorkloadTarget) tea.Cmd {
+	return func() tea.Msg {
+		msg, ok := cmd().(ActionDoneMsg)
+		if !ok {
+			return ActionDoneMsg{Err: errors.New("unexpected action result")}
+		}
+		if msg.Err == nil {
+			msg.Target = &target
+		}
+		return msg
+	}
 }

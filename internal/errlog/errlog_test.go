@@ -23,6 +23,13 @@ func TestInit_CapturesKlogAndStderrSilent(t *testing.T) {
 		t.Fatalf("Init returned %q, want %q", got, path)
 	}
 	t.Cleanup(Close)
+	logInfo, statErr := os.Stat(path)
+	if statErr != nil {
+		t.Fatal(statErr)
+	}
+	if logInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("log mode = %o, want 600", logInfo.Mode().Perm())
+	}
 
 	// Swap os.Stderr to a pipe so we can prove klog isn't leaking onto
 	// fd 2 after Init. Bubble Tea's alt-screen can't hide stderr, so the
@@ -42,7 +49,7 @@ func TestInit_CapturesKlogAndStderrSilent(t *testing.T) {
 		t.Errorf("klog leaked to stderr: %q", stderrBytes)
 	}
 
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) // #nosec G304 -- Reads a fixture log created in t.TempDir.
 	if err != nil {
 		t.Fatalf("read errlog: %v", err)
 	}

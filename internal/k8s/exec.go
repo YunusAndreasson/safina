@@ -163,7 +163,7 @@ func looksLikeNoShell(msg string) bool {
 // We copy each chunk because the executor reuses its read buffer.
 type chanWriter struct {
 	ch  chan<- ShellEvent
-	ctx context.Context
+	ctx context.Context //nolint:containedctx // Adapts cancellation to an interface whose methods cannot accept a context.
 }
 
 func (w chanWriter) Write(p []byte) (int, error) {
@@ -183,7 +183,7 @@ func (w chanWriter) Write(p []byte) (int, error) {
 // parked on the resize chan forever and leak a goroutine per session.
 type sizeQueue struct {
 	ch  <-chan remotecommand.TerminalSize
-	ctx context.Context
+	ctx context.Context //nolint:containedctx // Adapts cancellation to an interface whose methods cannot accept a context.
 }
 
 func (q *sizeQueue) Next() *remotecommand.TerminalSize {

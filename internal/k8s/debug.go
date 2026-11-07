@@ -57,13 +57,13 @@ func AttachDebugContainer(
 	}
 	current.Spec.EphemeralContainers = append(current.Spec.EphemeralContainers, ec)
 
-	if _, err := cs.CoreV1().Pods(namespace).UpdateEphemeralContainers(
+	if _, err = cs.CoreV1().Pods(namespace).UpdateEphemeralContainers(
 		ctx, pod, current, metav1.UpdateOptions{},
 	); err != nil {
 		return nil, fmt.Errorf("create ephemeral container: %w", err)
 	}
 
-	if err := waitEphemeralRunning(ctx, cs, namespace, pod, name, 60*time.Second); err != nil {
+	if err = waitEphemeralRunning(ctx, cs, namespace, pod, name, 60*time.Second); err != nil {
 		return nil, err
 	}
 

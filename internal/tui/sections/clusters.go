@@ -3,6 +3,9 @@ package sections
 import (
 	"strings"
 
+	"github.com/charmbracelet/x/ansi"
+
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/sahilm/fuzzy"
 
@@ -19,7 +22,7 @@ import (
 // would, so behavior is identical to picking from the cold-start picker.
 type ClusterSwitcher struct {
 	items  []config.ContextInfo
-	query  string
+	input  components.SearchInput
 	cursor int
 
 	// matches caches the filtered index slice between recomputeMatches and
@@ -37,7 +40,7 @@ func NewClusterSwitcher() ClusterSwitcher {
 // query / cursor. Called on Ctrl+K.
 func (s *ClusterSwitcher) Open(items []config.ContextInfo, activeContext string) {
 	s.items = items
-	s.query = ""
+	s.input.SetValue("")
 	s.cursor = 0
 	// Position cursor on the active context so the operator immediately sees
 	// "you are here". This is the one place the app shows a current-context
@@ -54,13 +57,24 @@ func (s *ClusterSwitcher) Open(items []config.ContextInfo, activeContext string)
 
 // SetQuery updates the fuzzy filter; cursor resets to first match.
 func (s *ClusterSwitcher) SetQuery(q string) {
-	s.query = q
+	s.input.SetValue(q)
 	s.cursor = 0
 	s.recomputeMatches()
 }
 
+// UpdateQuery delegates editing to the shared Bubbles input and reranks only
+// when its value changes; cursor movement does not reset result selection.
+func (s *ClusterSwitcher) UpdateQuery(msg tea.Msg) tea.Cmd {
+	cmd, changed := s.input.Update(msg)
+	if changed {
+		s.cursor = 0
+		s.recomputeMatches()
+	}
+	return cmd
+}
+
 // Query returns the live query string.
-func (s *ClusterSwitcher) Query() string { return s.query }
+func (s *ClusterSwitcher) Query() string { return s.input.Value() }
 
 // CursorUp / CursorDown move within the filtered list, clamped.
 func (s *ClusterSwitcher) CursorUp() {
@@ -90,7 +104,7 @@ func (s *ClusterSwitcher) Selected() (config.ContextInfo, bool) {
 
 func (s *ClusterSwitcher) recomputeMatches() {
 	s.matches = s.matches[:0]
-	if s.query == "" {
+	if s.input.Value() == "" {
 		for i := range s.items {
 			s.matches = append(s.matches, i)
 		}
@@ -100,7 +114,7 @@ func (s *ClusterSwitcher) recomputeMatches() {
 	for i, it := range s.items {
 		corpus[i] = it.Name
 	}
-	for _, m := range fuzzy.Find(s.query, corpus) {
+	for _, m := range fuzzy.Find(s.input.Value(), corpus) {
 		s.matches = append(s.matches, m.Index)
 	}
 }
@@ -108,57 +122,23 @@ func (s *ClusterSwitcher) recomputeMatches() {
 // View renders the centered overlay sized to the terminal. The backdrop is
 // the standard modal dot pattern, dimming the main view behind it.
 func (s *ClusterSwitcher) View(c *tuictx.Ctx, termW, termH int, activeContext string) string {
+	return lipgloss.Place(termW, termH, lipgloss.Center, lipgloss.Center, s.Card(c, termW, termH, activeContext), components.ModalBackdrop(c.Theme)...)
+}
+
+// Card renders only the dialog; the application owns its layered backdrop.
+func (s *ClusterSwitcher) Card(c *tuictx.Ctx, termW, termH int, activeContext string) string {
 	t := c.Theme
 
-	// φ-sized overlay: ~62% of width, capped at 80 cols. Height grows with
-	// the list up to ~62% of available rows.
-	w := termW * 62 / 100
-	if w > 80 {
-		w = 80
-	}
-	if w < 40 {
-		w = 40
-	}
-	rowsAvail := len(s.matches)
-	if rowsAvail < 3 {
-		rowsAvail = 3
-	}
-	h := rowsAvail + 6 // prompt + 2 dividers + spacer + 2 borders
-	maxH := termH * 62 / 100
-	if h > maxH {
-		h = maxH
-	}
-	if h < 10 {
-		h = 10
-	}
-
-	inner := components.PanelContentWidth(w)
-	title := t.CyanBold.Render("switch cluster")
-	hint := components.RenderHintRow(t, []components.KeyDesc{
-		{Key: "type", Desc: "filter"},
-		{Key: "↑↓", Desc: "select"},
-		{Key: "↵", Desc: "switch"},
-		{Key: "esc", Desc: "cancel"},
-	})
-
-	prompt := t.FilterPrompt.Render("⎈ ") + t.FilterText.Render(s.query) + t.FilterPrompt.Render("▌")
-	divider := lipgloss.NewStyle().Foreground(t.P.Dim).Render(strings.Repeat("─", inner))
-
-	listH := h - 6 // prompt + 2 dividers + 2 borders + hint
-	if listH < 3 {
-		listH = 3
-	}
-	list := s.renderList(t, inner, listH, activeContext)
-
+	inner := max(1, min(70, termW-8))
+	listH := max(1, min(12, termH-10))
+	prompt := s.input.View(t, inner)
 	stack := lipgloss.JoinVertical(lipgloss.Left,
-		title, "",
-		prompt, divider,
-		list, divider,
-		hint,
-	)
-	panel := components.PanelWithAccent(t, "", w, h, stack, true, t.P.Pink, t.P.Cyan)
-	return lipgloss.Place(termW, termH, lipgloss.Center, lipgloss.Center, panel,
-		components.ModalBackdrop(t)...)
+		t.CyanBold.Render("Switch cluster · ● current"),
+		ansi.Truncate(prompt, inner, "…"), "",
+		s.renderList(t, inner, listH, activeContext), "",
+		t.Hint.Render("↑↓ select · ↵ switch · esc cancel"))
+	panel := t.Modal.Padding(1, 2).Width(inner + 6).Render(stack)
+	return panel
 }
 
 func (s *ClusterSwitcher) renderList(t *theme.Theme, w, rows int, activeContext string) string {

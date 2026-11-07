@@ -1,0 +1,36 @@
+---
+// What a keycap shows. Letters are type; the arrow keys are drawn, because
+// neither bundled font has ↵ ← → and a system fallback would look different
+// on every machine.
+interface Props {
+  glyph: string;
+}
+
+const { glyph } = Astro.props;
+const drawn: Record<string, { name: string; d: string }> = {
+  "↵": { name: "Enter", d: "M12.5 3.5v4.25a1.75 1.75 0 0 1-1.75 1.75H3.5M6.25 6.75 3.5 9.5l2.75 2.75" },
+  "←": { name: "Left arrow", d: "M12.5 8h-9M7 4.5 3.5 8 7 11.5" },
+  "→": { name: "Right arrow", d: "M3.5 8h9M9 4.5 12.5 8 9 11.5" },
+};
+const icon = drawn[glyph];
+---
+
+{
+  icon ? (
+    <>
+      <svg class="key-glyph" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+        <path d={icon.d} fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+      <span class="visually-hidden">{icon.name}</span>
+    </>
+  ) : (
+    glyph
+  )
+}
+
+<style>
+  .key-glyph {
+    width: 1.05em;
+    height: 1.05em;
+  }
+</style>

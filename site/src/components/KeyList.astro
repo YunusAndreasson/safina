@@ -1,0 +1,125 @@
+---
+// The safety convention as a two-column key table: what reads, what writes.
+const reads = [
+  ["d", "Describe"],
+  ["l", "Logs"],
+  ["e", "Events"],
+  ["s", "Shell"],
+  ["f", "Port-forward"],
+  ["v", "Reveal secret"],
+  ["y", "Copy"],
+  ["n", "Next failing"],
+  ["h", "Hot pods"],
+];
+const changes = [
+  ["S", "Scale"],
+  ["U", "Roll back"],
+  ["R", "Restart"],
+  ["E", "Edit YAML"],
+  ["C", "Cordon"],
+  ["D", "Drain"],
+  ["K", "Kill"],
+];
+---
+
+<div class="keylist">
+  <div class="keylist__col">
+    <h3 class="label">Read</h3>
+    <dl>
+      {
+        reads.map(([k, v]) => (
+          <div>
+            <dt>
+              <kbd class="cap">{k}</kbd>
+            </dt>
+            <dd>{v}</dd>
+          </div>
+        ))
+      }
+    </dl>
+  </div>
+  <div class="keylist__col keylist__col--change">
+    <h3 class="label">Write, after you confirm</h3>
+    <dl>
+      {
+        changes.map(([k, v]) => (
+          <div>
+            <dt>
+              <kbd class="cap">
+                <span class="visually-hidden">Shift </span>
+                {k}
+              </kbd>
+            </dt>
+            <dd>{v}</dd>
+          </div>
+        ))
+      }
+    </dl>
+  </div>
+</div>
+
+<style>
+  /* On the page grid: "Write" starts on the text line, right under the
+     section's text. Below 1100px there is no text line, so it halves. */
+  .keylist {
+    container: keylist / inline-size;
+    display: grid;
+    grid-template-columns: var(--split);
+    gap: var(--s3) var(--col-gap);
+  }
+  @media (width <= 1100px) {
+    .keylist {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+  h3 {
+    padding-bottom: var(--s1);
+    border-bottom: 1px solid var(--hairline);
+  }
+  /* Key and label at the UI size, like the tour's key tray: the same role,
+     the same size, and every label fits its cell on one line. Read and
+     Write are parallel groups, so they share one column count: three each
+     once the narrower Read column holds three cells, two each before. */
+  dl {
+    --key-cols: 3;
+    display: grid;
+    grid-template-columns: repeat(var(--key-cols), minmax(0, 1fr));
+    gap: 4px 20px;
+    margin-top: var(--s1);
+    font-size: var(--t-ui);
+    white-space: nowrap;
+  }
+  @container keylist (width < 1120px) {
+    dl {
+      --key-cols: 2;
+    }
+  }
+  dl > div {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    min-height: 48px;
+  }
+  dd {
+    margin: 0;
+    color: var(--spray);
+  }
+  .keylist__col--change .cap {
+    color: var(--beacon);
+    border-color: rgb(from var(--beacon) r g b / 40%);
+    background:
+      linear-gradient(rgb(from var(--beacon) r g b / 14%), rgb(from var(--beacon) r g b / 4%)),
+      linear-gradient(var(--shelf), var(--deep));
+    box-shadow: 0 1px 0 0 rgb(from var(--beacon) r g b / 30%) inset;
+  }
+  /* One column of groups: each list fills the width, three keys a row
+     where they fit, two on a phone. */
+  @media (width <= 760px) {
+    .keylist {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    dl {
+      grid-template-columns: repeat(auto-fill, minmax(min(100%, 9.5rem), 1fr));
+    }
+  }
+</style>

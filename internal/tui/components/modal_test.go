@@ -95,7 +95,7 @@ func TestRenderModalStatusBar_DefaultHint(t *testing.T) {
 	tm := theme.Default()
 	f := NewFilter(tm)
 	got := RenderModalStatusBar(tm, 120, f, nil)
-	assert.Contains(t, got, "press / to filter")
+	assert.Contains(t, got, "/ filter")
 }
 
 func TestRenderModalStatusBar_WithFilterValue(t *testing.T) {

@@ -55,6 +55,9 @@ func colorizeLogLine(line string, t *theme.Theme) string {
 			b.WriteString(styleDim(t).Render(frame))
 			rest = rest[len(frame):]
 		}
+	} else if m := reLogTimeOnly.FindString(rest); m != "" {
+		b.WriteString(styleDim(t).Render(m))
+		rest = rest[len(m):]
 	} else if m := reLogBracketTS.FindString(rest); m != "" {
 		b.WriteString(styleDim(t).Render(m))
 		rest = rest[len(m):]
@@ -86,6 +89,8 @@ func colorizeLogLine(line string, t *theme.Theme) string {
 // comma — Python's logging module and Java logback default to a comma
 // separator) and optional timezone (Z, ±HH:MM, ±HHMM). Trailing space
 // is included so the caller can drop it cleanly without re-trimming.
+var reLogTimeOnly = regexp.MustCompile(`^\d{2}:\d{2}:\d{2} `)
+
 var reLogTimestampISO = regexp.MustCompile(
 	`^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?\s?`,
 )

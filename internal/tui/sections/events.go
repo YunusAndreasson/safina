@@ -8,6 +8,7 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yunus/safina/internal/k8s"
 	"github.com/yunus/safina/internal/tui/components"
@@ -30,10 +31,7 @@ type Events struct {
 
 	vp     viewport.Model
 	filter components.Filter
-	// wrap drives the viewport's soft-wrap mode. Default off — event
-	// messages are usually short and the table-like layout reads
-	// better with truncation; `w` toggles wrap for the rare wide
-	// message that needs full reading.
+	// Full messages are the default; w switches to compact single-line rows.
 	wrap bool
 
 	loading bool
@@ -50,8 +48,10 @@ type Events struct {
 func NewEvents(c *tuictx.Ctx) Events {
 	vp := viewport.New()
 	vp.MouseWheelEnabled = true
+	vp.SoftWrap = true
 	return Events{
 		vp:     vp,
+		wrap:   true,
 		filter: components.NewFilter(c.Theme),
 		theme:  c.Theme,
 	}
@@ -196,32 +196,28 @@ func (s *Events) refreshContent() {
 
 func (s *Events) renderRow(e k8s.EventInfo, w int) string {
 	t := s.theme
-	const ageW, typeW, reasonW, gap = 5, 8, 22, 1
-	msgW := w - ageW - typeW - reasonW - 3*gap
-	if msgW < 10 {
-		msgW = 10
-	}
-
 	typeStyle := t.Meta
 	if e.Type == "Warning" {
 		typeStyle = lipgloss.NewStyle().Foreground(t.P.Red).Bold(true)
 	}
-
-	age := t.Meta.Width(ageW).AlignHorizontal(lipgloss.Right).Render(components.TruncPad(e.Age, ageW))
-	typ := typeStyle.Width(typeW).Render(components.TruncPad(e.Type, typeW))
-	reason := t.NameStrong.Width(reasonW).Render(components.TruncPad(e.Reason, reasonW))
-
-	msgText := e.Message
+	meta := t.Meta.Render(e.Age+" ago") + "  " + typeStyle.Render(e.Type) + "  " + t.NameStrong.Render(e.Reason)
 	if e.Count > 1 {
-		msgText = fmt.Sprintf("%s (×%d)", msgText, e.Count)
+		meta += t.Meta.Render(fmt.Sprintf("  ×%d", e.Count))
 	}
-	msg := lipgloss.NewStyle().Width(msgW).Render(components.TruncPad(msgText, msgW))
-
-	return age + " " + typ + " " + reason + " " + msg
+	if !s.wrap {
+		return ansi.Truncate(meta+"  "+e.Message, w, "…")
+	}
+	return ansi.Wrap(meta, w, "") + "\n" + indent(ansi.Wrap(e.Message, max(1, w-2), ""), "  ") + "\n"
 }
 
 // Update returns (cmd, leave). leave=true closes the modal.
 func (s *Events) Update(msg tea.Msg, c *tuictx.Ctx) (tea.Cmd, bool) {
+	if paste, ok := msg.(tea.PasteMsg); ok && s.filter.Active() {
+		cmd := s.filter.Update(paste)
+		s.recomputeFilter()
+		s.refreshContent()
+		return cmd, false
+	}
 	km, ok := msg.(tea.KeyPressMsg)
 	if !ok {
 		var cmd tea.Cmd
@@ -255,6 +251,7 @@ func (s *Events) Update(msg tea.Msg, c *tuictx.Ctx) (tea.Cmd, bool) {
 	case key.Matches(km, c.Keys.Wrap):
 		s.wrap = !s.wrap
 		s.vp.SoftWrap = s.wrap
+		s.refreshContent()
 		return nil, false
 	}
 
@@ -313,9 +310,9 @@ func (s *Events) renderStatusRow(c *tuictx.Ctx) string {
 }
 
 func (s *Events) renderKeysRow() string {
-	wrapDesc := "wrap"
+	wrapDesc := "full messages"
 	if s.wrap {
-		wrapDesc = "wrap on"
+		wrapDesc = "compact rows"
 	}
 	return components.RenderModalKeysRow(s.theme, []components.KeyDesc{
 		{Key: "/", Desc: "filter"},

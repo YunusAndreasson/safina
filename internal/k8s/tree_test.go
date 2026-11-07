@@ -1008,3 +1008,34 @@ func TestDaemonSetToApp_UnavailableIsDegraded(t *testing.T) {
 	assert.Equal(t, "3/5", a.Ready)
 	assert.Equal(t, HealthDegraded, a.Health)
 }
+
+func TestLabelsMatch_EmptyValueRequiresPresentKey(t *testing.T) {
+	assert.False(t, labelsMatch(map[string]string{}, map[string]string{"app": ""}))
+	assert.True(t, labelsMatch(map[string]string{"app": ""}, map[string]string{"app": ""}))
+}
+
+func TestAggregateForSelector_Expressions(t *testing.T) {
+	pods := []corev1.Pod{
+		{ObjectMeta: metav1.ObjectMeta{Name: "selected", Namespace: "ns", Labels: map[string]string{"app": "web", "tier": "frontend"}}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "excluded", Namespace: "ns", Labels: map[string]string{"app": "web", "tier": "backend"}}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "other", Namespace: "other", Labels: map[string]string{"app": "web", "tier": "frontend"}}},
+	}
+	metrics := map[string]ResourceUsage{
+		"ns/selected": {CPU: 10, Memory: 20},
+		"ns/excluded": {CPU: 100, Memory: 200},
+		"other/other": {CPU: 1000, Memory: 2000},
+	}
+	for _, matchLabels := range []map[string]string{nil, {"app": "web"}} {
+		sel := &metav1.LabelSelector{
+			MatchLabels:      matchLabels,
+			MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "tier", Operator: metav1.LabelSelectorOpIn, Values: []string{"frontend"}}},
+		}
+		cpu, mem := aggregateForSelector("ns", sel, pods, metrics)
+		assert.Equal(t, int64(10), cpu)
+		assert.Equal(t, int64(20), mem)
+	}
+	invalid := &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "tier", Operator: "invalid"}}}
+	cpu, mem := aggregateForSelector("ns", invalid, pods, metrics)
+	assert.Zero(t, cpu)
+	assert.Zero(t, mem)
+}

@@ -7,7 +7,7 @@
 #   NS_COUNT      number of bench-N namespaces (default: 10)
 #   DEPLOY_COUNT  deployments per namespace (default: 50)
 #   REPLICAS      replicas per deployment (default: 1)  # keep low: minikube
-#   K8S_VERSION   minikube --kubernetes-version (default: v1.31.0)
+#   K8S_VERSION   minikube --kubernetes-version (default: v1.37.2)
 
 set -euo pipefail
 
@@ -15,8 +15,9 @@ PROFILE="${PROFILE:-safina-bench}"
 NS_COUNT="${NS_COUNT:-10}"
 DEPLOY_COUNT="${DEPLOY_COUNT:-50}"
 REPLICAS="${REPLICAS:-1}"
-K8S_VERSION="${K8S_VERSION:-v1.31.0}"
-FIXTURE="$(cd "$(dirname "$0")/../../bench/fixtures" && pwd)/manifests.yaml"
+K8S_VERSION="${K8S_VERSION:-v1.37.2}"
+FIXTURE_DIR="$(cd "$(dirname "$0")/../../bench" && pwd)/fixtures"
+FIXTURE="$FIXTURE_DIR/manifests.yaml"
 
 if ! command -v minikube >/dev/null; then
     echo "minikube not installed — see https://minikube.sigs.k8s.io/" >&2
@@ -67,7 +68,7 @@ spec:
     spec:
       containers:
       - name: pause
-        image: registry.k8s.io/pause:3.9
+        image: registry.k8s.io/pause:3.10.2
         resources:
           requests:
             cpu: 1m
@@ -99,6 +100,7 @@ EOF
         done
     done
 }
+mkdir -p "$FIXTURE_DIR"
 generate_fixture > "$FIXTURE"
 echo "→ fixture written to $FIXTURE ($(wc -l < "$FIXTURE") lines)"
 

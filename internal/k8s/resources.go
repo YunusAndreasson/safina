@@ -2,10 +2,12 @@ package k8s
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -18,121 +20,43 @@ import (
 // ListConfigMapsAcrossNamespaces lists ConfigMaps across the given
 // namespaces, returning a flat slice sorted by namespace then name.
 func ListConfigMapsAcrossNamespaces(ctx context.Context, cs kubernetes.Interface, namespaces []string) ([]ConfigMapInfo, error) {
-	if len(namespaces) == 0 {
-		return nil, nil
-	}
-	var (
-		mu  sync.Mutex
-		out []ConfigMapInfo
-		wg  sync.WaitGroup
-	)
-	for _, ns := range namespaces {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			list, err := cs.CoreV1().ConfigMaps(ns).List(ctx, metav1.ListOptions{})
-			if err != nil {
-				// Don't fail the whole fan-out for one denied namespace —
-				// the UI surfaces partials in Phase 1. For now, the debug
-				// log is the only way an SRE notices a silent RBAC gap.
-				debug.Errf("k8s.list_partial", "kind", "ConfigMap", "namespace", ns, "err", err.Error())
-				return
-			}
-			rows := make([]ConfigMapInfo, 0, len(list.Items))
-			for _, cm := range list.Items {
-				rows = append(rows, configMapToInfo(cm))
-			}
-			mu.Lock()
-			out = append(out, rows...)
-			mu.Unlock()
-		}()
-	}
-	wg.Wait()
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Namespace != out[j].Namespace {
-			return out[i].Namespace < out[j].Namespace
+	out, err := listNamespaceRows(ctx, namespaces, "ConfigMap", func(ctx context.Context, ns string) ([]corev1.ConfigMap, error) {
+		list, err := cs.CoreV1().ConfigMaps(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, err
 		}
-		return out[i].Name < out[j].Name
-	})
-	return out, nil
+		return list.Items, nil
+	}, configMapToInfo)
+	sortByNSName(out, func(r ConfigMapInfo) (string, string) { return r.Namespace, r.Name })
+	return out, err
 }
 
 // ListServicesAcrossNamespaces lists Services across the given namespaces,
 // returning a flat slice sorted by namespace then name.
 func ListServicesAcrossNamespaces(ctx context.Context, cs kubernetes.Interface, namespaces []string) ([]ServiceInfo, error) {
-	if len(namespaces) == 0 {
-		return nil, nil
-	}
-	var (
-		mu  sync.Mutex
-		out []ServiceInfo
-		wg  sync.WaitGroup
-	)
-	for _, ns := range namespaces {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			list, err := cs.CoreV1().Services(ns).List(ctx, metav1.ListOptions{})
-			if err != nil {
-				debug.Errf("k8s.list_partial", "kind", "Service", "namespace", ns, "err", err.Error())
-				return
-			}
-			rows := make([]ServiceInfo, 0, len(list.Items))
-			for _, s := range list.Items {
-				rows = append(rows, serviceToInfo(s))
-			}
-			mu.Lock()
-			out = append(out, rows...)
-			mu.Unlock()
-		}()
-	}
-	wg.Wait()
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Namespace != out[j].Namespace {
-			return out[i].Namespace < out[j].Namespace
+	out, err := listNamespaceRows(ctx, namespaces, "Service", func(ctx context.Context, ns string) ([]corev1.Service, error) {
+		list, err := cs.CoreV1().Services(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, err
 		}
-		return out[i].Name < out[j].Name
-	})
-	return out, nil
+		return list.Items, nil
+	}, serviceToInfo)
+	sortByNSName(out, func(r ServiceInfo) (string, string) { return r.Namespace, r.Name })
+	return out, err
 }
 
 // ListIngressesAcrossNamespaces lists Ingresses across the given namespaces,
 // returning a flat slice sorted by namespace then name.
 func ListIngressesAcrossNamespaces(ctx context.Context, cs kubernetes.Interface, namespaces []string) ([]IngressInfo, error) {
-	if len(namespaces) == 0 {
-		return nil, nil
-	}
-	var (
-		mu  sync.Mutex
-		out []IngressInfo
-		wg  sync.WaitGroup
-	)
-	for _, ns := range namespaces {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			list, err := cs.NetworkingV1().Ingresses(ns).List(ctx, metav1.ListOptions{})
-			if err != nil {
-				debug.Errf("k8s.list_partial", "kind", "Ingress", "namespace", ns, "err", err.Error())
-				return
-			}
-			rows := make([]IngressInfo, 0, len(list.Items))
-			for _, ing := range list.Items {
-				rows = append(rows, ingressToInfo(ing))
-			}
-			mu.Lock()
-			out = append(out, rows...)
-			mu.Unlock()
-		}()
-	}
-	wg.Wait()
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Namespace != out[j].Namespace {
-			return out[i].Namespace < out[j].Namespace
+	out, err := listNamespaceRows(ctx, namespaces, "Ingress", func(ctx context.Context, ns string) ([]networkingv1.Ingress, error) {
+		list, err := cs.NetworkingV1().Ingresses(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, err
 		}
-		return out[i].Name < out[j].Name
-	})
-	return out, nil
+		return list.Items, nil
+	}, ingressToInfo)
+	sortByNSName(out, func(r IngressInfo) (string, string) { return r.Namespace, r.Name })
+	return out, err
 }
 
 // ListIngressesForService filters Ingresses to those that reference the
@@ -173,79 +97,29 @@ func ingressReferencesService(ing networkingv1.Ingress, serviceName string) bool
 // ListSecretsAcrossNamespaces lists Secrets across the given namespaces,
 // returning a flat slice sorted by namespace then name.
 func ListSecretsAcrossNamespaces(ctx context.Context, cs kubernetes.Interface, namespaces []string) ([]SecretInfo, error) {
-	if len(namespaces) == 0 {
-		return nil, nil
-	}
-	var (
-		mu  sync.Mutex
-		out []SecretInfo
-		wg  sync.WaitGroup
-	)
-	for _, ns := range namespaces {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			list, err := cs.CoreV1().Secrets(ns).List(ctx, metav1.ListOptions{})
-			if err != nil {
-				debug.Errf("k8s.list_partial", "kind", "Secret", "namespace", ns, "err", err.Error())
-				return
-			}
-			rows := make([]SecretInfo, 0, len(list.Items))
-			for _, s := range list.Items {
-				rows = append(rows, secretToInfo(s))
-			}
-			mu.Lock()
-			out = append(out, rows...)
-			mu.Unlock()
-		}()
-	}
-	wg.Wait()
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Namespace != out[j].Namespace {
-			return out[i].Namespace < out[j].Namespace
+	out, err := listNamespaceRows(ctx, namespaces, "Secret", func(ctx context.Context, ns string) ([]corev1.Secret, error) {
+		list, err := cs.CoreV1().Secrets(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, err
 		}
-		return out[i].Name < out[j].Name
-	})
-	return out, nil
+		return list.Items, nil
+	}, secretToInfo)
+	sortByNSName(out, func(r SecretInfo) (string, string) { return r.Namespace, r.Name })
+	return out, err
 }
 
 // ListPVCsAcrossNamespaces lists PVCs across the given namespaces,
 // returning a flat slice sorted by namespace then name.
 func ListPVCsAcrossNamespaces(ctx context.Context, cs kubernetes.Interface, namespaces []string) ([]PVCInfo, error) {
-	if len(namespaces) == 0 {
-		return nil, nil
-	}
-	var (
-		mu  sync.Mutex
-		out []PVCInfo
-		wg  sync.WaitGroup
-	)
-	for _, ns := range namespaces {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			list, err := cs.CoreV1().PersistentVolumeClaims(ns).List(ctx, metav1.ListOptions{})
-			if err != nil {
-				debug.Errf("k8s.list_partial", "kind", "PersistentVolumeClaim", "namespace", ns, "err", err.Error())
-				return
-			}
-			rows := make([]PVCInfo, 0, len(list.Items))
-			for _, pvc := range list.Items {
-				rows = append(rows, pvcToInfo(pvc))
-			}
-			mu.Lock()
-			out = append(out, rows...)
-			mu.Unlock()
-		}()
-	}
-	wg.Wait()
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Namespace != out[j].Namespace {
-			return out[i].Namespace < out[j].Namespace
+	out, err := listNamespaceRows(ctx, namespaces, "PVC", func(ctx context.Context, ns string) ([]corev1.PersistentVolumeClaim, error) {
+		list, err := cs.CoreV1().PersistentVolumeClaims(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, err
 		}
-		return out[i].Name < out[j].Name
-	})
-	return out, nil
+		return list.Items, nil
+	}, pvcToInfo)
+	sortByNSName(out, func(r PVCInfo) (string, string) { return r.Namespace, r.Name })
+	return out, err
 }
 
 // RevealSecretYAML fetches a Secret and serializes it with Data decoded into
@@ -261,15 +135,7 @@ func RevealSecretYAML(ctx context.Context, cs kubernetes.Interface, namespace, n
 	s.ManagedFields = nil
 	s.APIVersion = "v1"
 	s.Kind = "Secret"
-	if len(s.Data) > 0 {
-		if s.StringData == nil {
-			s.StringData = make(map[string]string, len(s.Data))
-		}
-		for k, v := range s.Data {
-			s.StringData[k] = string(v)
-		}
-		s.Data = nil
-	}
+	decodeSecretText(s)
 	return marshalYAML(s)
 }
 
@@ -420,4 +286,83 @@ func GetPVByName(ctx context.Context, cs kubernetes.Interface, name string) (*PV
 		Reclaim:      string(pv.Spec.PersistentVolumeReclaimPolicy),
 		Age:          HumanAge(pv.CreationTimestamp.Time),
 	}, nil
+}
+
+// namespaceListConcurrency bounds outstanding API calls even on clusters with
+// thousands of namespaces. The worker pool also bounds goroutine allocation.
+const namespaceListConcurrency = 8
+
+// listNamespaceRows preserves accessible namespaces on partial RBAC failures,
+// but reports complete failures instead of displaying a misleading empty list.
+func listNamespaceRows[T, R any](ctx context.Context, namespaces []string, kind string,
+	list func(context.Context, string) ([]T, error), convert func(T) R,
+) ([]R, error) {
+	var (
+		mu        sync.Mutex
+		wg        sync.WaitGroup
+		out       []R
+		failures  []error
+		successes int
+	)
+	jobs := make(chan string)
+	for range min(namespaceListConcurrency, len(namespaces)) {
+		wg.Go(func() {
+			for ns := range jobs {
+				if ctx.Err() != nil {
+					continue
+				}
+				items, err := list(ctx, ns)
+				if err != nil {
+					debug.Errf("k8s.list_partial", "kind", kind, "namespace", ns, "err", err.Error())
+					mu.Lock()
+					failures = append(failures, fmt.Errorf("%s in namespace %s: %w", kind, ns, err))
+					mu.Unlock()
+					continue
+				}
+				rows := make([]R, len(items))
+				for i, item := range items {
+					rows[i] = convert(item)
+				}
+				mu.Lock()
+				successes++
+				out = append(out, rows...)
+				mu.Unlock()
+			}
+		})
+	}
+enqueue:
+	for _, ns := range namespaces {
+		select {
+		case jobs <- ns:
+		case <-ctx.Done():
+			break enqueue
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if successes == 0 {
+		return nil, errors.Join(failures...)
+	}
+	return out, nil
+}
+
+// decodeSecretText makes text editable without corrupting binary keys through
+// JSON's replacement of invalid UTF-8. Binary values remain base64 in data.
+// Call only on a fresh API object, never on a shared informer-cache object.
+func decodeSecretText(secret *corev1.Secret) {
+	for key, value := range secret.Data {
+		if !utf8.Valid(value) {
+			continue
+		}
+		if secret.StringData == nil {
+			secret.StringData = make(map[string]string)
+		}
+		if _, exists := secret.StringData[key]; !exists {
+			secret.StringData[key] = string(value)
+		}
+		delete(secret.Data, key)
+	}
 }

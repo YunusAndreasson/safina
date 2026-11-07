@@ -26,7 +26,7 @@ func fixtureDir(tb testing.TB) string {
 func readJSON(tb testing.TB, name string) []byte {
 	tb.Helper()
 	path := filepath.Join(fixtureDir(tb), name)
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) // #nosec G304 -- Loads a test fixture selected by the test caller, not cluster data.
 	if err != nil {
 		tb.Fatalf("testutil: read fixture %s: %v", name, err)
 	}

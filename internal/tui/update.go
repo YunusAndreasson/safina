@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -28,9 +29,37 @@ func isCtxDone(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
+// Register the stream in the update loop before scheduling any reads. Send
+// launches its subprocess asynchronously, so this does not block the UI.
+func (m *Model) startChatStream(prompt string) tea.Cmd {
+	m.chatStreamCh = m.claudeSvc.Send(m.ctx.Background, prompt)
+	return sections.NextChatEvent(m.chatStreamCh)
+}
+
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
+	case operationCheckMsg:
+		return m, m.checkOperation(msg.key, msg.revision)
+	case operationProgressMsg:
+		return m, m.updateOperation(msg)
+	case logTargetsMsg:
+		return m, m.setLogTargets(msg)
+	case sections.NamespaceSearchMsg:
+		if msg.Request != m.searchRequest || msg.Context != m.ctx.ActiveContext || m.state != statePalette {
+			return m, nil
+		}
+		m.searchLoading = false
+		m.palette.SetEntries(msg.Entries)
+		scope := "Namespace " + msg.Namespace + " · core kinds"
+		if msg.Err != nil {
+			scope += " · partial"
+		}
+		m.palette.SetScope(scope)
+		if msg.Err != nil {
+			return m, m.raiseError("Namespace search incomplete: " + msg.Err.Error())
+		}
+		return m, nil
 	case tea.WindowSizeMsg:
 		m.ctx.Width = msg.Width
 		m.ctx.Height = msg.Height
@@ -80,8 +109,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if focus.Kind == k8s.KindContext && m.ctx.ActiveContext != focus.Name {
 			m.ctx.ActiveContext = focus.Name
+			if !m.bannerErr {
+				m.dismissBanner()
+			}
 			m.ctx.ResetBackground()
 			m.tree.ResetForContextSwitch()
+			m.inspector.Clear()
 			m.activity.Clear()          // events from the prior cluster are stale on cluster switch
 			m.connected.Clear()         // cross-cluster connection refs aren't valid
 			m.lastRefresh = time.Time{} // reset staleness clock for the new cluster
@@ -134,9 +167,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.tree.StartLoad()
 			return m, tea.Batch(m.loadTreeFocus(), actCmd, discoCmd)
 		}
-		return m, tea.Batch(actCmd, discoCmd)
+		return m, tea.Batch(actCmd, discoCmd, m.finishPaletteNavigation())
 
 	case sections.TreeChildrenLoadedMsg:
+		if !slices.Equal(msg.Path, m.tree.Path()) {
+			return m, nil
+		}
 		m.tree.Loading = false
 		m.tree.FinishRefresh()
 		m.tree.FinishLoad()
@@ -153,16 +189,42 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// auto-refresh — when stale rows are still on screen — isn't
 			// invisible.
 			m.tree.LoadErr = msg.Err
-			return m, m.raiseError(msg.Err.Error())
+			path := append([]sections.NodeRef(nil), msg.Path...)
+			cluster := m.ctx.ActiveContext
+			return m, m.raiseReadError(msg.Err.Error(), func() tea.Cmd {
+				if m.ctx.ActiveContext != cluster || !slices.Equal(m.tree.Path(), path) {
+					return m.raiseError("Return to the original resource view to retry this read")
+				}
+				m.dismissBanner()
+				return m.loadTreeFocus()
+			})
 		}
 		m.tree.SetChildren(msg.Path, msg.Children)
 		m.lastRefresh = time.Now()
+		if m.startupNamespace != "" && focus.Kind == k8s.KindContext &&
+			m.tree.Focus() == focus && msg.Children != nil {
+			ns := m.startupNamespace
+			m.startupNamespace = ""
+			found := false
+			for _, item := range msg.Children.UserNS {
+				found = found || item.Name == ns
+			}
+			for _, name := range msg.Children.SystemNS {
+				found = found || name == ns
+			}
+			if !found {
+				return m, m.raiseError(fmt.Sprintf("--namespace=%q not found in context %q", ns, focus.Name))
+			}
+			return m, m.tree.Push(sections.NodeRef{
+				Kind: k8s.KindNamespaceFolder, Name: ns, Namespace: ns, Display: ns,
+			})
+		}
 		actCmd := m.syncSelection()
 		debug.Log("tree.loaded",
 			"kind", focus.Kind,
 			"name", focus.Name,
 			"children", childCount(msg.Children))
-		return m, actCmd
+		return m, tea.Batch(actCmd, m.finishPaletteNavigation())
 
 	case sections.ActivityLoadedMsg:
 		// Right-stack Activity tile got its events back. Apply drops the
@@ -191,10 +253,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case sections.PodSelectedMsg:
-		m.state = stateLogView
-		m.logs.Reset(msg.Name, msg.Namespace)
-		m.logs.SetSize(m.ctx.Width, m.ctx.Height)
-		return m, sections.StreamLogs(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext, msg.Namespace, msg.Name, msg.Container)
+		m.logSource = sections.NodeRef{Kind: k8s.KindPod, Name: msg.Name, Namespace: msg.Namespace}
+		if msg.Container != "" {
+			return m, m.startTargetLogs(logTarget{pod: msg.Name, namespace: msg.Namespace, container: msg.Container}, false)
+		}
+		return m, m.openLogTargets(m.logSource)
 
 	case sections.ActionDoneMsg:
 		if msg.Err != nil {
@@ -209,7 +272,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Surface a transient confirmation so the user has visible proof the
 		// action took, without waiting up to 5s for the next refresh tick to
 		// reflect the new state. Doherty Threshold: a sub-second cue.
-		statusCmd := m.raiseStatus(actionSuccessMsg(msg.Action, msg.Subject))
+		var statusCmd tea.Cmd
+		if msg.Target != nil {
+			statusCmd = tea.Batch(m.raiseStatus(msg.Action+" accepted · "+msg.Subject), m.trackOperation(*msg.Target, msg.Action))
+		} else {
+			statusCmd = m.raiseStatus(actionSuccessMsg(msg.Action, msg.Subject))
+		}
 		// If the user has popped back to the picker while the action was in
 		// flight, there's no current view to refresh — issuing a load would
 		// just hit the no-op KindContextList path and wipe the seeded list.
@@ -303,6 +371,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, sections.NextDrainEvent(m.drainCh)
 
 	case sections.LogStreamStartedMsg:
+		if msg.Request != 0 && (msg.Request != m.logRequest || m.state != stateLogView) {
+			if msg.Ch != nil {
+				go func() {
+					for range msg.Ch {
+					}
+				}()
+			}
+			return m, nil
+		}
+		if msg.Err != nil {
+			m.logs.EndStream(msg.Err)
+			return m, m.raiseError("logs: " + msg.Err.Error())
+		}
 		m.logCh = msg.Ch
 		return m, m.nextLogLine()
 
@@ -364,14 +445,22 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sections.EditorExitedMsg:
 		return m, m.handleEditorExit(msg.Err)
 
+	case logEventMsg:
+		if msg.channel != m.logCh {
+			return m, nil
+		}
+		return m.Update(msg.event)
+
 	case k8s.PodLogEvent:
 		if msg.Done {
+			m.logs.EndStream(msg.Err)
 			if msg.Err != nil && !isCtxDone(msg.Err) {
 				return m, m.raiseError(fmt.Sprintf("log: %v", msg.Err))
 			}
 			return m, nil
 		}
 		if msg.Err != nil {
+			m.logs.EndStream(msg.Err)
 			if isCtxDone(msg.Err) {
 				return m, nil
 			}
@@ -470,7 +559,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Only clear if no newer banner has been raised in the meantime.
 		// raiseBanner bumps bannerEpoch on every call so an older timer
 		// firing after a fresh banner sees a stale epoch and no-ops.
-		if msg.epoch == m.bannerEpoch {
+		if msg.epoch == m.bannerEpoch && !m.bannerErr {
 			m.bannerMsg = ""
 			m.bannerErr = false
 		}
@@ -485,13 +574,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if snap.Block != "" {
 			full = snap.Block + "\n\n" + msg.Prompt
 		}
-		return m, sections.NewChatStream(m.ctx.Background, m.claudeSvc, full)
-
-	case sections.ChatStreamStartedMsg:
-		m.chatStreamCh = msg.Ch
-		return m, sections.NextChatEvent(msg.Ch)
+		return m, m.startChatStream(full)
 
 	case sections.ChatTokenMsg:
+		if msg.Ch != m.chatStreamCh || !m.chat.Streaming() {
+			return m, nil
+		}
 		m.chat.IngestToken(msg.Delta)
 		if m.chatStreamCh != nil {
 			return m, sections.NextChatEvent(m.chatStreamCh)
@@ -499,6 +587,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case sections.ChatRetryMsg:
+		if msg.Ch != m.chatStreamCh || !m.chat.Streaming() {
+			return m, nil
+		}
 		m.chat.IngestRetry(msg.Attempt, msg.Of, msg.DelayMS, msg.Reason)
 		if m.chatStreamCh != nil {
 			return m, sections.NextChatEvent(m.chatStreamCh)
@@ -506,6 +597,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case sections.ChatTurnDoneMsg:
+		if msg.Ch != m.chatStreamCh || !m.chat.Streaming() {
+			return m, nil
+		}
 		m.chat.FinishTurn(msg.Err)
 		m.chatStreamCh = nil
 		return m, nil
@@ -516,17 +610,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case tea.PasteMsg:
-		// Bracketed paste only matters where there's a text input. Today
-		// that's the chat textarea (the Chat workspace tab); the scale
-		// modal's input is short enough that v1 fragmented-keystroke
-		// behaviour is fine. Other modals don't accept paste.
-		if m.state == stateChatView {
-			cmd, _, _ := m.chat.Update(msg, m.ctx)
-			return m, cmd
-		}
-		return m, nil
+		return m, m.handlePaste(msg)
 
 	case tea.MouseClickMsg:
+		if m.choices != nil {
+			return m, nil
+		}
 		// Left-click on the workspace tab strip switches to that tab. The
 		// stripe lives at (m.tabStripOriginX, m.tabStripOriginY); hit-test
 		// translates the click column back into a WorkspaceTab. We
@@ -549,12 +638,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseWheelMsg:
+		if m.choices != nil {
+			var cmd tea.Cmd
+			m.choices.model, cmd = m.choices.model.Update(msg)
+			return m, cmd
+		}
 		// Mouse wheel is the natural escape-hatch for "I'm reading and want
 		// to scroll without finding the right keybinding." The scrollable
 		// workspace tabs (logs / events / yaml / chat) each wrap a bubbles
 		// viewport that handles MouseWheelMsg internally — we just forward.
 		// Tree pane doesn't use a viewport, so wheel there is a no-op; that
 		// matches the v1 behaviour and avoids a confusing partial scroll.
+		// This feature applies only to the states listed; all others use the fallback.
+		//exhaustive:ignore
 		switch m.state {
 		case stateLogView:
 			cmd, _ := m.logs.Update(msg, m.ctx)
@@ -619,6 +715,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // going into a search query, not a global hotkey). Used to gate global
 // shortcuts like the `1` tab-switch.
 func (m *Model) sectionHasFilterFocus() bool {
+	if m.treeFocusInImmersive {
+		return false
+	}
+	// This feature applies only to the states listed; all others use the fallback.
+	//exhaustive:ignore
 	switch m.state {
 	case stateLogView:
 		return m.logs.FilterActive()
@@ -644,6 +745,13 @@ func (m *Model) sectionHasFilterFocus() bool {
 // that also do nothing inside a section's Update right now.
 func (m *Model) isImmersiveSwitchKey(msg tea.KeyPressMsg) bool {
 	k := m.ctx.Keys
+	// Section-local verbs take precedence over resource shortcuts. In
+	// particular K in the forwards list must never target the selected pod.
+	if m.state == stateForwardsList && key.Matches(msg, k.Delete) ||
+		m.state == stateLogView && msg.String() == "f" ||
+		(m.state == stateEventsView || m.state == stateDescribeView || m.state == stateHotView) && key.Matches(msg, k.Refresh) {
+		return false
+	}
 	switch {
 	case key.Matches(msg, k.Logs),
 		key.Matches(msg, k.Events),
@@ -699,10 +807,10 @@ func tabActivationKey(tab sections.WorkspaceTab) (tea.KeyPressMsg, bool) {
 		// Ctrl+F: Text is empty for non-printable chords; the matcher reads
 		// Code + Mod.
 		return tea.KeyPressMsg{Code: 'f', Mod: tea.ModCtrl}, true
-	default:
-		// WSTabDrain — no discoverable activation hotkey.
-		return tea.KeyPressMsg{}, false
+	case sections.WSTabDrain:
+		// No discoverable activation hotkey.
 	}
+	return tea.KeyPressMsg{}, false
 }
 
 // cycleWorkspaceTab moves to the next or previous tab in the workspace
@@ -778,6 +886,8 @@ func (m *Model) cycleWorkspaceTab(forward bool) (tea.Model, tea.Cmd) {
 // section, key dispatch bypasses the section and falls through to
 // the stateMain keymap.
 func (m *Model) isImmersiveState() bool {
+	// This feature applies only to the states listed; all others use the fallback.
+	//exhaustive:ignore
 	switch m.state {
 	case stateLogView, stateEventsView, stateDescribeView,
 		stateChatView, stateHotView, stateForwardsList, stateDrainProgress:
@@ -806,16 +916,11 @@ func (m *Model) returnToMain() {
 // focus. Separated from returnToMain so tab-cycle transitions can clean
 // up the prior tab without an intermediate stateMain frame.
 func (m *Model) cleanupImmersiveState() {
+	// This feature applies only to the states listed; all others use the fallback.
+	//exhaustive:ignore
 	switch m.state {
 	case stateLogView:
-		m.ctx.ResetBackground()
-		if ch := m.logCh; ch != nil {
-			go func() {
-				for range ch {
-				}
-			}()
-		}
-		m.logCh = nil
+		m.stopLogStream()
 	case stateChatView:
 		m.chat.SetFocus(false)
 	default:
@@ -824,6 +929,48 @@ func (m *Model) cleanupImmersiveState() {
 }
 
 func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	// Ctrl+C is the terminal-wide exit, including overlays and focused
+	// filters. Shells and drains own it as interrupt/cancel instead.
+	if msg.String() == "ctrl+c" && m.state != stateShellView && m.state != stateDrainProgress {
+		m.shutdown()
+		m.ctx.Cancel()
+		return m, tea.Quit
+	}
+	if m.choices != nil {
+		return m.handleChoices(msg)
+	}
+	if m.state != stateShellView {
+		if msg.String() == "ctrl+n" {
+			m.openNotifications()
+			return m, nil
+		}
+		if msg.String() == "ctrl+d" && m.bannerMsg != "" {
+			m.dismissBanner()
+			return m, nil
+		}
+	}
+	if m.state == stateLogView && !m.treeFocusInImmersive && !m.logs.FilterActive() {
+		if msg.String() == "c" {
+			return m, m.openLogTargets(m.logSource)
+		}
+		if msg.String() == "l" && m.logTarget.pod != "" {
+			return m, m.startTargetLogs(m.logTarget, false)
+		}
+		if msg.String() == "p" && m.logTarget.previous {
+			return m, m.startTargetLogs(m.logTarget, true)
+		}
+	}
+	// A new user interaction cancels any action waiting for a palette load.
+	m.paletteTarget = nil
+	m.paletteAction = ""
+	// Help is an overlay: preserve the current view and its running work.
+	if key.Matches(msg, m.ctx.Keys.Help) && (m.state == stateMain || m.isImmersiveState()) &&
+		!m.tree.FilterActive() && !m.sectionHasFilterFocus() {
+		m.helpReturnState = m.state
+		m.helpViewport.GotoTop()
+		m.state = stateHelp
+		return m, nil
+	}
 	// Yank (`y`) is intercepted before the per-state dispatch in every state
 	// where it makes sense — the section exposes its payload via YankPayload
 	// and a FilterActive guard so the user can still type a literal `y` into
@@ -832,11 +979,17 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	if msg.String() == "z" && m.canExpandWorkspace() && !m.sectionHasFilterFocus() && !m.tree.FilterActive() {
+		m.workspaceExpanded = !m.workspaceExpanded
+		m.treeFocusInImmersive = false
+		return m, nil
+	}
 	// Tab toggles pane focus. In stateMain it's peekWorkspace; in
 	// immersive states it's treeFocusInImmersive (keys go to tree while
 	// the section keeps rendering).
-	if msg.String() == "tab" && !m.sectionHasFilterFocus() {
+	if msg.String() == "tab" && (m.state == stateMain || m.isImmersiveState()) && (m.state == stateChatView || !m.sectionHasFilterFocus()) && !m.tree.FilterActive() {
 		if m.isImmersiveState() {
+			m.workspaceExpanded = false
 			m.treeFocusInImmersive = !m.treeFocusInImmersive
 			m.tree.Focused = m.treeFocusInImmersive
 			if m.state == stateChatView {
@@ -898,26 +1051,19 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	treeOwnsKeysInImmersive := m.treeFocusInImmersive && m.isImmersiveState()
 
 	switch m.state {
+	case stateMain, stateChatView:
+		// Main workspace input is handled below.
 	case stateLogView:
 		if treeOwnsKeysInImmersive {
 			break
 		}
 		cmd, leave := m.logs.Update(msg, m.ctx)
 		if leave {
-			m.ctx.ResetBackground()
-			// Drain the streamer's channel until it closes so its goroutine
-			// can return — its loop blocks on `ch <- PodLogEvent{...}` and
-			// would otherwise leak after we set m.logCh = nil.
-			if ch := m.logCh; ch != nil {
-				go func() {
-					for range ch {
-					}
-				}()
-			}
-			m.logCh = nil
+			m.stopLogStream()
 			m.state = stateMain
 			return m, nil
 		}
+
 		return m, cmd
 
 	case stateEventsView:
@@ -976,9 +1122,12 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case stateHelp:
 		if key.Matches(msg, m.ctx.Keys.Back) || key.Matches(msg, m.ctx.Keys.Help) || msg.String() == "q" {
-			m.state = stateMain
+			m.state = m.helpReturnState
+			return m, nil
 		}
-		return m, nil
+		var cmd tea.Cmd
+		m.helpViewport, cmd = m.helpViewport.Update(msg)
+		return m, cmd
 
 	case stateHotView:
 		if treeOwnsKeysInImmersive {
@@ -1014,17 +1163,12 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Chat tab keystroke routing. When the Chat tab is the active workspace
-	// surface, the textarea consumes keystrokes; pressing Esc / Tab returns
-	// to the Inspector tab (closes the chat surface) — same affordance as
-	// closing any other immersive tab. Skipped when the operator tabbed
+	// surface, the textarea consumes keystrokes. Esc clears a draft, cancels
+	// a stream, or closes an idle chat. Tab is handled above and preserves
+	// the chat while moving pane focus. Skipped when the operator tabbed
 	// to the tree while the chat tab stayed active (treeOwnsKeysInImmersive),
 	// so arrows/drill target the tree instead of the textarea.
 	if m.state == stateChatView && !treeOwnsKeysInImmersive {
-		if msg.String() == "ctrl+c" {
-			m.shutdown()
-			m.ctx.Cancel()
-			return m, tea.Quit
-		}
 		cmd, submit, leave := m.chat.Update(msg, m.ctx)
 		if leave {
 			m.chat.SetFocus(false)
@@ -1038,7 +1182,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if snap.Block != "" {
 				full = snap.Block + "\n\n" + submit.Prompt
 			}
-			return m, tea.Batch(cmd, sections.NewChatStream(m.ctx.Background, m.claudeSvc, full))
+			return m, tea.Batch(cmd, m.startChatStream(full))
 		}
 		return m, cmd
 	}
@@ -1046,6 +1190,10 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Main state — global keys first, then tree. Chat drawer focus is
 	// handled above (the drawer captures keystrokes when open + focused);
 	// here the operator is interacting with the tree / workspace.
+	if m.tree.FilterActive() && msg.String() != "ctrl+c" {
+		cmd := m.tree.Update(msg, m.ctx)
+		return m, tea.Batch(cmd, m.syncSelection())
+	}
 
 	switch {
 	case key.Matches(msg, m.ctx.Keys.Quit):
@@ -1057,11 +1205,15 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// `:` Vim-style command palette. Indexed lazily off the tree's
 		// level cache so it gets richer as the operator drills around.
 		// FilterActive check keeps `:` literal inside the / filter input.
+		m.searchRequest++
+		m.searchLoading = false
 		m.palette.Open(sections.BuildPaletteIndex(m.tree.Cache()))
 		m.state = statePalette
 		return m, nil
 
 	case key.Matches(msg, m.ctx.Keys.Help):
+		m.helpReturnState = m.state
+		m.helpViewport.GotoTop()
 		m.state = stateHelp
 		return m, nil
 
@@ -1146,30 +1298,38 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmd, actCmd)
 }
 
-// handlePalette dispatches keys while the `:` command palette is open.
-// The palette has three keypress categories:
-//
-//  1. Navigation — ↑/↓ moves the result cursor; ↵ submits the highlighted
-//     entry (drill); esc cancels.
-//  2. Verb dispatch — the user types a verb letter (no Tab needed in this
-//     simplified flow) and we route directly to the corresponding action
-//     for the highlighted entry. This is the smart shortcut — operator
-//     fuzzy-matches a Pod, types `l`, sees logs.
-//  3. Query editing — anything else mutates the search query.
-//
-// Verbs are chosen for unambiguous 1-letter mapping per kind. We resolve
-// against the entry's PaletteVerbsFor list so a wrong-kind keypress is a
-// no-op rather than a surprise (e.g. `s` on a Secret does nothing — Secret
-// has no scale verb).
+// handlePalette keeps search text separate from Tab-enabled actions.
 func (m *Model) handlePalette(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if msg.String() == "ctrl+s" {
+		if m.searchLoading {
+			return m, nil
+		}
+		path := m.tree.Path()
+		if entry, ok := m.palette.Selected(); ok && (entry.Kind == k8s.KindNamespace || entry.Kind == k8s.KindNamespaceFolder) {
+			path = entry.Path
+		}
+		for i := len(path) - 1; i >= 0; i-- {
+			if path[i].Kind == k8s.KindNamespaceFolder || path[i].Kind == k8s.KindNamespace {
+				m.searchRequest++
+				m.searchLoading = true
+				m.palette.SetScope("Searching " + path[i].Name + "…")
+				return m, sections.SearchNamespace(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext, path[i].Name, append([]sections.NodeRef(nil), path[:i+1]...), m.searchRequest)
+			}
+		}
+		return m, m.raiseError("Open a namespace first, then use ctrl+s to search its core resources")
+	}
+
 	switch {
+	case msg.String() == "tab":
+		m.palette.ToggleActions()
+		return m, nil
 	case key.Matches(msg, m.ctx.Keys.Back):
 		m.state = stateMain
 		return m, nil
-	case key.Matches(msg, m.ctx.Keys.Up):
+	case msg.String() == "up":
 		m.palette.CursorUp()
 		return m, nil
-	case key.Matches(msg, m.ctx.Keys.Down):
+	case msg.String() == "down":
 		m.palette.CursorDown()
 		return m, nil
 	case key.Matches(msg, m.ctx.Keys.Enter):
@@ -1181,33 +1341,19 @@ func (m *Model) handlePalette(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	s := msg.String()
-	// Verb shortcut: a single letter that maps to a verb on the current
-	// entry's kind dispatches the action immediately. We deliberately
-	// handle this BEFORE generic letter input — the trade-off is that
-	// kind-specific verb letters (l/d/e/x/s/r/v/E/S) won't appear in the
-	// query string when the highlighted match supports them. Operators
-	// can always backspace and retype if their intent was textual.
-	if entry, ok := m.palette.Selected(); ok && len(s) == 1 {
-		for _, v := range sections.PaletteVerbsFor(entry) {
-			if s == v.Letter {
-				m.state = stateMain
-				return m.dispatchPaletteVerb(s, entry)
+	if m.palette.ActionsActive() {
+		if entry, ok := m.palette.Selected(); ok {
+			for _, v := range sections.PaletteVerbsFor(entry) {
+				if s == v.Letter {
+					m.state = stateMain
+					return m.dispatchPaletteVerb(s, entry)
+				}
 			}
-		}
-	}
-
-	// Query editing: backspace pops, single chars append.
-	if s == "backspace" {
-		q := m.palette.Query()
-		if len(q) > 0 {
-			m.palette.SetQuery(q[:len(q)-1])
 		}
 		return m, nil
 	}
-	if len(s) == 1 && s >= " " && s <= "~" {
-		m.palette.SetQuery(m.palette.Query() + s)
-	}
-	return m, nil
+
+	return m, m.palette.UpdateQuery(msg)
 }
 
 // openBrowser opens the Resource Browser modal and kicks off a discovery
@@ -1224,10 +1370,10 @@ func (m *Model) handleClusterSwitch(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.ctx.Keys.Back):
 		m.state = stateMain
 		return m, nil
-	case key.Matches(msg, m.ctx.Keys.Up):
+	case msg.String() == "up":
 		m.clusters.CursorUp()
 		return m, nil
-	case key.Matches(msg, m.ctx.Keys.Down):
+	case msg.String() == "down":
 		m.clusters.CursorDown()
 		return m, nil
 	case key.Matches(msg, m.ctx.Keys.Enter):
@@ -1240,7 +1386,7 @@ func (m *Model) handleClusterSwitch(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// push into the chosen context — same flow as the startup picker.
 		// If the user picked the already-active context, do nothing (avoids
 		// dropping caches for a no-op switch).
-		if it.Name == m.ctx.ActiveContext {
+		if it.Name == m.ctx.ActiveContext && m.tree.Focus().Kind != k8s.KindContextList {
 			return m, nil
 		}
 		// Reset the tree to root so the new context drill behaves like a
@@ -1255,18 +1401,7 @@ func (m *Model) handleClusterSwitch(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, m.tree.PushContext(it.Name)
 	}
 
-	s := msg.String()
-	if s == "backspace" {
-		q := m.clusters.Query()
-		if len(q) > 0 {
-			m.clusters.SetQuery(q[:len(q)-1])
-		}
-		return m, nil
-	}
-	if len(s) == 1 && s >= " " && s <= "~" {
-		m.clusters.SetQuery(m.clusters.Query() + s)
-	}
-	return m, nil
+	return m, m.clusters.UpdateQuery(msg)
 }
 
 func (m *Model) openBrowser() (tea.Model, tea.Cmd) {
@@ -1290,10 +1425,10 @@ func (m *Model) handleBrowser(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.browser.Close()
 		m.state = stateMain
 		return m, nil
-	case key.Matches(msg, m.ctx.Keys.Up):
+	case msg.String() == "up":
 		m.browser.CursorUp()
 		return m, nil
-	case key.Matches(msg, m.ctx.Keys.Down):
+	case msg.String() == "down":
 		m.browser.CursorDown()
 		return m, nil
 	case key.Matches(msg, m.ctx.Keys.Enter):
@@ -1324,119 +1459,50 @@ func (m *Model) handleBrowser(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.browser.Toggle()
 		return m, nil
 	}
-	if s == "backspace" {
-		q := m.browser.Query()
-		if len(q) > 0 {
-			m.browser.SetQuery(q[:len(q)-1])
-		}
-		return m, nil
-	}
-	if len(s) == 1 && s >= " " && s <= "~" {
-		m.browser.SetQuery(m.browser.Query() + s)
-	}
-	return m, nil
+	return m, m.browser.UpdateQuery(msg)
 }
 
-// drillToPaletteEntry navigates the tree to the entry's path and places
-// the cursor on the matching row. Returns a tea.Cmd that triggers the
-// child-load if the destination level isn't already cached.
+// drillToPaletteEntry selects the result once its parent has finished loading.
 func (m *Model) drillToPaletteEntry(e sections.PaletteEntry) (tea.Model, tea.Cmd) {
-	// The entry's Path includes the entry itself as the leaf — for a drill
-	// we want the parent so the row is "highlighted" rather than entered.
-	if len(e.Path) <= 1 {
+	m.paletteTarget = nil
+	if len(e.Path) <= 1 || e.Kind == k8s.KindContext ||
+		(m.paletteAction == "" && (e.Kind == k8s.KindNamespace || e.Kind == k8s.KindNamespaceFolder)) {
+		m.paletteAction = ""
 		return m, m.tree.NavigateTo(e.Path)
 	}
-	parent := e.Path[:len(e.Path)-1]
-	cmd := m.tree.NavigateTo(parent)
+	m.paletteTarget = &e
+	return m, m.tree.NavigateTo(e.Path[:len(e.Path)-1])
+}
+
+func (m *Model) finishPaletteNavigation() tea.Cmd {
+	e := m.paletteTarget
+	if e == nil || m.tree.Children() == nil {
+		return nil
+	}
+	m.paletteTarget = nil
+	verb := m.paletteAction
+	m.paletteAction = ""
+	if !slices.Equal(m.tree.Path(), e.Path[:len(e.Path)-1]) {
+		return nil // the operator navigated away while the load was pending
+	}
 	m.tree.SetCursorByRef(e.Kind, e.Namespace, e.Name)
-	actCmd := m.syncSelection()
-	return m, tea.Batch(cmd, actCmd)
+	ref := m.tree.SelectedRef()
+	if ref.Kind != e.Kind || ref.Namespace != e.Namespace || ref.Name != e.Name {
+		return m.raiseError("resource is no longer available: " + e.Name)
+	}
+	selection := m.syncSelection()
+	if verb == "" {
+		return selection
+	}
+	cmd, _ := m.handleTreeAction(tea.KeyPressMsg{Code: rune(verb[0]), Text: verb})
+	return tea.Batch(selection, cmd)
 }
 
-// dispatchPaletteVerb fires an action against the palette entry without
-// going through the tree's navigation. This is the speed win: from the
-// palette, the operator can jump straight into logs/describe/edit/etc.
-// for any indexed resource — no drilling required. The verb letter is
-// authoritative; we trust the caller has already validated it against
-// PaletteVerbsFor.
+// Palette verbs use the same target selection and confirmation paths as
+// ordinary tree actions. A cold destination loads before the action fires.
 func (m *Model) dispatchPaletteVerb(verb string, e sections.PaletteEntry) (tea.Model, tea.Cmd) {
-	ns := e.Namespace
-	name := e.Name
-	switch verb {
-	case "d":
-		// Describe is universally available; route through the existing
-		// modal so the operator gets the same YAML viewer they'd see
-		// from the tree.
-		m.state = stateDescribeView
-		kind := e.Kind
-		if e.SubKind != "" {
-			kind = e.SubKind
-		}
-		m.describe.Reset(kind, name, ns)
-		m.describe.SetSize(m.ctx.Width, m.ctx.Height)
-		return m, sections.LoadDescribe(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext, ns, kind, name)
-	case "v":
-		if e.Kind != k8s.KindSecret {
-			return m, nil
-		}
-		m.state = stateDescribeView
-		m.describe.Reset("Secret", name, ns)
-		m.describe.MarkRevealed()
-		m.describe.SetSize(m.ctx.Width, m.ctx.Height)
-		return m, sections.LoadSecretReveal(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext, ns, name)
-	case "E":
-		kind := editKindForPalette(e)
-		if kind == "" {
-			return m, nil
-		}
-		return m, sections.LoadEditYAML(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext, ns, kind, name)
-	case "l":
-		if e.Kind != k8s.KindPod && e.Kind != k8s.KindApp {
-			return m, nil
-		}
-		// For the App case we'd usually drill into the deployment first
-		// to pick which pod; from the palette the simpler intent is
-		// "logs from any pod of this app" — but to keep behavior
-		// predictable with the tree path, route through drill-then-logs:
-		// drill, then the operator can press `l` again. Skip for now.
-		return m.drillToPaletteEntry(e)
-	case "e":
-		// Events: same fast-path as describe — we know the resource id.
-		return m.drillToPaletteEntry(e)
-	default:
-		// Any other verb (x/s/r/S) needs the action-key dispatch which
-		// reads from m.tree.SelectedRef(). Drill there first; the user
-		// can press the key again from the destination.
-		return m.drillToPaletteEntry(e)
-	}
-}
-
-// editKindForPalette mirrors editKindFor but accepts a palette entry —
-// the palette's SubKind/Kind shape is already what we need; the tree
-// version expects sections.NodeRef.
-func editKindForPalette(e sections.PaletteEntry) string {
-	switch e.Kind {
-	case k8s.KindApp:
-		switch e.SubKind {
-		case k8s.AppKindDeployment:
-			return k8s.EditKindDeployment
-		case k8s.AppKindStatefulSet:
-			return k8s.EditKindStatefulSet
-		case k8s.AppKindDaemonSet:
-			return k8s.EditKindDaemonSet
-		}
-	case k8s.KindConfigMap:
-		return k8s.EditKindConfigMap
-	case k8s.KindSecret:
-		return k8s.EditKindSecret
-	case k8s.KindService:
-		return k8s.EditKindService
-	case k8s.KindIngress:
-		return k8s.EditKindIngress
-	case k8s.KindPVC:
-		return k8s.EditKindPVC
-	}
-	return ""
+	m.paletteAction = verb
+	return m.drillToPaletteEntry(e)
 }
 
 // handleTreeAction routes resource-action keys (s/r/x/l/e/d/Ctrl-D/S) based
@@ -1447,6 +1513,7 @@ func (m *Model) handleTreeAction(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	case key.Matches(msg, m.ctx.Keys.Scale):
 		if ref.Kind == k8s.KindApp && (ref.SubKind == k8s.AppKindDeployment || ref.SubKind == k8s.AppKindStatefulSet) {
 			m.state = stateScaleInput
+			m.scaleError = ""
 			// Pre-fill with the current desired count so the input acts as
 			// a nudgeable delta (operator usually adjusts by ±1 or ±a few,
 			// not a fresh absolute). Falls back to blank when we can't read
@@ -1501,6 +1568,7 @@ func (m *Model) handleTreeAction(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		m.pfTarget.Namespace = ref.Namespace
 		m.pfTarget.Name = ref.Name
 		m.pfInput.SetValue("")
+		m.pfError = ""
 		m.pfInput.Focus()
 		m.state = statePortForwardInput
 		return nil, true
@@ -1534,25 +1602,14 @@ func (m *Model) handleTreeAction(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 		return sections.CountPodsOnNode(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext, info.Name), true
 	case key.Matches(msg, m.ctx.Keys.Logs):
 		switch ref.Kind {
-		case k8s.KindPod:
-			m.state = stateLogView
-			m.logs.Reset(ref.Name, ref.Namespace)
-			m.logs.SetSize(m.ctx.Width, m.ctx.Height)
-			return sections.StreamLogs(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext, ref.Namespace, ref.Name, ""), true
+		case k8s.KindPod, k8s.KindApp:
+			return m.openLogTargets(ref), true
 		case k8s.KindContainer:
 			pod := m.tree.Focus()
-			m.state = stateLogView
-			m.logs.Reset(pod.Name, pod.Namespace)
-			m.logs.SetSize(m.ctx.Width, m.ctx.Height)
-			return sections.StreamLogs(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext, pod.Namespace, pod.Name, ref.Name), true
-		case k8s.KindApp:
-			return sections.StreamAppLogs(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext, k8s.AppRef{
-				Kind:      ref.SubKind,
-				Namespace: ref.Namespace,
-				Name:      ref.Name,
-				UID:       ref.UID,
-			}), true
+			m.logSource = pod
+			return m.startTargetLogs(logTarget{pod: pod.Name, namespace: pod.Namespace, container: ref.Name}, false), true
 		}
+
 	case key.Matches(msg, m.ctx.Keys.Shell):
 		switch ref.Kind {
 		case k8s.KindPod:
@@ -1681,7 +1738,7 @@ func (m *Model) startEditor(msg sections.EditYAMLLoadedMsg) tea.Cmd {
 	}
 	editor, args := resolveEditor()
 	args = append(args, f.Name())
-	c := exec.CommandContext(m.ctx.Background, editor, args...)
+	c := exec.CommandContext(m.ctx.Background, editor, args...) // #nosec G204 -- Executes the operator-selected editor with the temporary manifest as an argument.
 	return tea.ExecProcess(c, func(err error) tea.Msg {
 		return sections.EditorExitedMsg{Err: err}
 	})
@@ -1750,6 +1807,7 @@ func (m *Model) handleEditorExit(editorErr error) tea.Cmd {
 		return m.raiseStatus("edit: no changes")
 	}
 	ed.Edited = edited
+	m.editViewport.GotoTop()
 	m.state = stateEditConfirm
 	return nil
 }
@@ -1838,20 +1896,18 @@ func (m *Model) handleScaleInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
 		val := m.scaleInput.Value()
-		m.state = stateMain
-		m.scaleInput.Blur()
-		if val == "" {
-			return m, nil
-		}
-		replicas, err := strconv.Atoi(val)
+		replicas, err := strconv.ParseInt(val, 10, 32)
 		if err != nil || replicas < 0 {
-			return m, m.raiseError("invalid replica count")
+			m.scaleError = "Enter a whole number from 0 to 2147483647."
+			return m, nil
 		}
 		ref := m.tree.SelectedRef()
 		if ref.Kind != k8s.KindApp {
 			return m, nil
 		}
-		return m, sections.ScaleDeployment(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext, ref.Namespace, ref.Name, int32(replicas))
+		m.state = stateMain
+		m.scaleInput.Blur()
+		return m, sections.ScaleWorkload(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext, ref.Namespace, ref.SubKind, ref.Name, int32(replicas))
 	case "esc":
 		m.state = stateMain
 		m.scaleInput.Blur()
@@ -1862,6 +1918,7 @@ func (m *Model) handleScaleInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	var cmd tea.Cmd
+	m.scaleError = ""
 	m.scaleInput, cmd = m.scaleInput.Update(msg)
 	return m, cmd
 }
@@ -1876,7 +1933,8 @@ func (m *Model) handlePortForwardInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd)
 		val := m.pfInput.Value()
 		local, remote, err := k8s.ParsePortPair(val)
 		if err != nil {
-			return m, m.raiseError("invalid port pair: " + err.Error())
+			m.pfError = "invalid port pair: " + err.Error()
+			return m, nil
 		}
 		m.state = stateMain
 		m.pfInput.Blur()
@@ -1897,6 +1955,7 @@ func (m *Model) handlePortForwardInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd)
 		return m, nil
 	}
 	var cmd tea.Cmd
+	m.pfError = ""
 	m.pfInput, cmd = m.pfInput.Update(msg)
 	return m, cmd
 }
@@ -1941,6 +2000,8 @@ func (m *Model) handleConfirm(msg tea.KeyPressMsg) tea.Cmd {
 	switch msg.String() {
 	case "y", "Y":
 		ref := m.tree.SelectedRef()
+		// This feature applies only to the states listed; all others use the fallback.
+		//exhaustive:ignore
 		switch m.state {
 		case stateDeleteConfirm:
 			kind, ns, name := deleteTarget(ref)
@@ -2009,7 +2070,17 @@ func (m *Model) handleConfirm(msg tea.KeyPressMsg) tea.Cmd {
 		m.state = stateMain
 		return nil
 	}
+	if m.state == stateEditConfirm {
+		var cmd tea.Cmd
+		m.editViewport, cmd = m.editViewport.Update(msg)
+		return cmd
+	}
 	return nil
+}
+
+type logEventMsg struct {
+	channel <-chan k8s.PodLogEvent
+	event   k8s.PodLogEvent
 }
 
 func (m *Model) nextLogLine() tea.Cmd {
@@ -2020,9 +2091,9 @@ func (m *Model) nextLogLine() tea.Cmd {
 	return func() tea.Msg {
 		event, ok := <-ch
 		if !ok {
-			return k8s.PodLogEvent{Done: true}
+			return logEventMsg{channel: ch, event: k8s.PodLogEvent{Done: true}}
 		}
-		return event
+		return logEventMsg{channel: ch, event: event}
 	}
 }
 
@@ -2110,6 +2181,8 @@ func (m *Model) tryYank(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 	}
 
 	var payload string
+	// This feature applies only to the states listed; all others use the fallback.
+	//exhaustive:ignore
 	switch m.state {
 	case stateLogView:
 		if m.logs.FilterActive() {
@@ -2184,7 +2257,7 @@ func copyToClipboard(payload string) tea.Cmd {
 			// can wedge) we drop the copy instead of stalling the UI.
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
-			cmd := exec.CommandContext(ctx, bin, rest...)
+			cmd := exec.CommandContext(ctx, bin, rest...) // #nosec G204 -- Executes a detected clipboard helper with fixed arguments and payload on stdin.
 			cmd.Stdin = strings.NewReader(body)
 			_ = cmd.Run()
 			return nil

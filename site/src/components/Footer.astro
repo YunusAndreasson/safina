@@ -1,0 +1,58 @@
+---
+const now = new Date();
+const year = now.getFullYear();
+// The same moment on the Hijri calendar (Umm al-Qura), e.g. "1448 AH".
+const hijri = new Intl.DateTimeFormat("en-u-ca-islamic-umalqura", { year: "numeric" }).format(now);
+---
+
+<footer class="footer">
+  <div class="footer__inner wrap split">
+    <p class="wordmark footer__brand">safina</p>
+    <p class="footer__name">
+      Safina (<span lang="ar" dir="rtl" class="ar footer__ar">سفينة</span>) is Arabic for ship. Keep, in calm water,
+      what you promised in&nbsp;the&nbsp;storm.
+    </p>
+    <p class="footer__meta">MIT license. © {year}, {hijri}</p>
+  </div>
+</footer>
+
+<style>
+  .footer {
+    border-top: 1px solid var(--hairline);
+  }
+  /* Identity on the title line (the name, then the licence under it), the
+     story of the name on the text line. */
+  .footer__inner {
+    grid-template-areas:
+      "brand story"
+      "meta story";
+    grid-template-rows: auto 1fr;
+    row-gap: var(--s1);
+    padding-block: var(--s3) var(--s4);
+    font-size: var(--t-small);
+    color: var(--fog);
+  }
+  .footer__brand {
+    --wordmark-size: 1rem;
+    grid-area: brand;
+  }
+  .footer__meta {
+    grid-area: meta;
+  }
+  .footer__name {
+    grid-area: story;
+    line-height: 1.6;
+  }
+  .footer__ar {
+    color: var(--spray);
+  }
+  @media (width <= 1100px) {
+    .footer__inner {
+      grid-template-areas: "brand" "story" "meta";
+      grid-template-rows: none;
+    }
+    .footer__name {
+      max-width: var(--measure);
+    }
+  }
+</style>

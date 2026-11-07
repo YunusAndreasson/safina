@@ -69,7 +69,7 @@ func TestAuditTransport_LogsWhenEnabled(t *testing.T) {
 
 	// Force a flush by closing the sink, then re-read the file.
 	Close()
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) // #nosec G304 -- Reads a fixture log created in t.TempDir.
 	if err != nil {
 		t.Fatalf("read log: %v", err)
 	}

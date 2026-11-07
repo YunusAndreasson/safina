@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yunus/safina/internal/k8s"
 	"github.com/yunus/safina/internal/tui/components"
@@ -87,7 +88,11 @@ func (f *Forwards) View(w int) string {
 	header := lipgloss.NewStyle().Foreground(t.P.Dim).Render(
 		fmt.Sprintf("%-2s %-22s %-12s %-22s %-12s %s", "", "context/namespace", "kind", "name", "ports", "uptime"),
 	)
-	lines := []string{title, "", header}
+	lines := []string{title, ""}
+	compact := w < 90
+	if !compact {
+		lines = append(lines, header)
+	}
 	now := time.Now()
 	for i, r := range f.rows {
 		marker := "  "
@@ -99,6 +104,18 @@ func (f *Forwards) View(w int) string {
 		name := truncMid(r.TargetName, 22)
 		ports := fmt.Sprintf("%d→%d", r.LocalPort, r.RemotePort)
 		up := humanShort(now.Sub(r.StartedAt))
+		if compact {
+			status := ports + " · " + up
+			if r.Stale {
+				status += " · stale"
+			}
+			lines = append(lines,
+				marker+t.BlueBold.Render(ansi.Truncate(status, max(1, w-2), "…")),
+				t.Hint.Render("  "+ansi.Truncate(kind+"/"+r.TargetName, max(1, w-2), "…")),
+				t.Hint.Render("  "+ansi.Truncate(r.ContextName+"/"+r.Namespace, max(1, w-2), "…")),
+			)
+			continue
+		}
 		row := fmt.Sprintf("%-22s %-12s %-22s %-12s %s", ctxNs, kind, name, ports, up)
 		style := lipgloss.NewStyle().Foreground(t.P.FG)
 		if r.Stale {
@@ -112,7 +129,7 @@ func (f *Forwards) View(w int) string {
 	// is no exception. Keeping lowercase `d` here would steal the global
 	// describe letter and break the "uppercase = mutator" convention.
 	lines = append(lines, components.RenderHintRow(t, []components.KeyDesc{
-		{Key: "K", Desc: "kill"},
+		{Key: "K", Desc: "stop"},
 		{Key: "esc", Desc: "close"},
 	}))
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)

@@ -4,9 +4,13 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -61,7 +65,7 @@ func TestDecode_InitTokenResult(t *testing.T) {
 		`{"type":"system","subtype":"init","session_id":"sess-1"}`,
 		`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"hello "}}}`,
 		`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"world"}}}`,
-		`{"type":"result","subtype":"success","session_id":"sess-1"}`,
+		`{"type":"result","subtype":"success","session_id":"sess-1","result":"hello world"}`,
 	}, "\n")
 	events, sid, err := runDecode(t, context.Background(), raw, "")
 	require.NoError(t, err)
@@ -76,6 +80,66 @@ func TestDecode_InitTokenResult(t *testing.T) {
 	// invariant in events.go.
 	got := events[1].Delta + events[2].Delta
 	assert.Equal(t, "hello world", got)
+}
+
+func TestDecode_ErrorResultIsNotAssistantText(t *testing.T) {
+	for _, raw := range []string{
+		`{"type":"result","is_error":true,"result":"usage limit reached"}`,
+		`{"type":"result","subtype":"error_max_turns"}`,
+		`{"type":"result","is_error":true}`,
+	} {
+		events, _, err := runDecode(t, context.Background(), raw, "")
+		require.Error(t, err)
+		require.Empty(t, events)
+	}
+}
+
+func TestService_ResetSessionCancelsActiveTurn(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	s := &Service{cancel: cancel, sessionID: "old", turnID: 7}
+	s.ResetSession()
+	require.ErrorIs(t, ctx.Err(), context.Canceled)
+	require.Empty(t, s.SessionID())
+	require.Equal(t, uint64(8), s.turnID)
+}
+
+func TestServiceReapsProcess(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("process cleanup assertion uses /proc")
+	}
+	for _, mode := range []string{"cancel", "oversized output"} {
+		t.Run(mode, func(t *testing.T) {
+			command := "exec sleep 60"
+			if mode == "oversized output" {
+				command = "exec head -c 5000000 /dev/zero"
+			}
+			path := filepath.Join(t.TempDir(), "claude")
+			script := "#!/bin/sh\nprintf '{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"%s\"}\\n' \"$$\"\n" + command + "\n"
+			require.NoError(t, os.WriteFile(path, []byte(script), 0o700)) // #nosec G306 -- The subprocess fixture must be executable; only its owner has access.
+			s := &Service{bin: path}
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			out := s.Send(ctx, "test")
+			var init Event
+			select {
+			case init = <-out:
+			case <-ctx.Done():
+				t.Fatal("subprocess did not initialize")
+			}
+			require.Equal(t, KindInit, init.Kind)
+			if mode == "cancel" {
+				s.Cancel()
+			}
+			events := collect(t, out, 5*time.Second)
+			if mode == "oversized output" {
+				require.Len(t, events, 1)
+				require.Error(t, events[0].Err)
+			}
+			_, err := os.Stat(filepath.Join("/proc", init.SessionID))
+			require.True(t, os.IsNotExist(err), "child must be reaped before its event channel closes")
+		})
+	}
 }
 
 func TestDecode_NonStreamingResultFallsBackToResultString(t *testing.T) {
@@ -316,16 +380,31 @@ func TestDecode_ResultCarriesUpdatedSessionID(t *testing.T) {
 func TestDecode_NonEOFScannerErrorReturned(t *testing.T) {
 	// io.EOF is normal — decodeStream returns nil. Any other error must
 	// surface so the caller can wrap it as "claude read: …" for the user.
-	r := iotest_errReader{err: errors.New("disk on fire")}
+	r := iotest.ErrReader(errors.New("disk on fire"))
 	out := make(chan Event, 4)
 	_, scanErr, _ := decodeStream(context.Background(), r, out, "")
 	require.Error(t, scanErr)
 	assert.Contains(t, scanErr.Error(), "disk on fire")
 }
 
-// iotest_errReader is a minimal reader that returns a fixed error. We
-// can't use testing/iotest's ErrReader directly because we want the
-// scanner.Err() path inside decodeStream rather than a Read EOF.
-type iotest_errReader struct{ err error }
-
-func (r iotest_errReader) Read(p []byte) (int, error) { return 0, r.err }
+func TestStderrTailBoundsMemoryAndPreservesLastBytes(t *testing.T) {
+	for _, chunks := range [][]string{
+		{strings.Repeat("x", maxStderrBytes*2), "failure"},
+		{strings.Repeat("x", maxStderrBytes-3), "failure"},
+		{"first", strings.Repeat("z", maxStderrBytes*2)},
+		{"short", " message"},
+	} {
+		var buf stderrTail
+		for _, chunk := range chunks {
+			n, err := buf.Write([]byte(chunk))
+			require.NoError(t, err)
+			assert.Equal(t, len(chunk), n)
+			assert.LessOrEqual(t, len(buf.data), maxStderrBytes)
+		}
+		want := strings.Join(chunks, "")
+		if len(want) > maxStderrBytes {
+			want = want[len(want)-maxStderrBytes:]
+		}
+		assert.Equal(t, want, buf.String())
+	}
+}

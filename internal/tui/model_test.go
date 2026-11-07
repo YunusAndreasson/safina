@@ -159,7 +159,7 @@ func TestClearBannerMsg_MatchingEpochClears(t *testing.T) {
 	m := setupModel()
 	m.bannerEpoch = 5
 	m.bannerMsg = "current"
-	m.bannerErr = true
+	m.bannerErr = false
 
 	m.Update(clearBannerMsg{epoch: 5})
 	assert.Empty(t, m.bannerMsg)
@@ -181,7 +181,7 @@ func TestBannerEpoch_OldTimerDoesNotWipeNewBanner(t *testing.T) {
 func TestRaiseError_Convenience(t *testing.T) {
 	m := setupModel()
 	cmd := m.raiseError("fail!")
-	assert.NotNil(t, cmd)
+	assert.Nil(t, cmd, "errors have no dismissal timer")
 	assert.Equal(t, "fail!", m.bannerMsg)
 	assert.True(t, m.bannerErr)
 }
@@ -549,8 +549,25 @@ func TestBannerSequence_NewerRaiseEclipsesOlderTimer(t *testing.T) {
 	assert.Equal(t, "B", m.bannerMsg, "stale timer A must not wipe banner B")
 	assert.True(t, m.bannerErr, "B's error flag must survive A's timer")
 
-	// Finally B's timer fires. Banner clears.
+	// Errors survive timers until explicitly dismissed.
 	m.Update(clearBannerMsg{epoch: m.bannerEpoch})
+	assert.Equal(t, "B", m.bannerMsg)
+	m.dismissBanner()
 	assert.Empty(t, m.bannerMsg)
 	assert.False(t, m.bannerErr)
+}
+
+func TestHandleScaleInputRejectsIntegerOverflow(t *testing.T) {
+	for _, input := range []string{"2147483648", "9223372036854775808"} {
+		t.Run(input, func(t *testing.T) {
+			m := setupModel()
+			m.state = stateScaleInput
+			m.scaleInput.SetValue(input)
+			_, cmd := m.handleScaleInput(tea.KeyPressMsg{Code: tea.KeyEnter})
+			require.Nil(t, cmd)
+			assert.Equal(t, stateScaleInput, m.state)
+			assert.Contains(t, m.scaleError, "whole number")
+			assert.Equal(t, input, m.scaleInput.Value())
+		})
+	}
 }

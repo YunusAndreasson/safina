@@ -53,7 +53,7 @@ func TestAvailableTabs_OrderAndPresence(t *testing.T) {
 // the mouse-click router doesn't route a single column to two tabs.
 func TestWorkspaceTabHitboxes_Disjoint(t *testing.T) {
 	tabs := AvailableTabs(WSTabAvailability{Logs: true, Events: true, Yaml: true, Chat: true})
-	hits := WorkspaceTabHitboxes(tabs, 200)
+	hits := WorkspaceTabHitboxes(tabs, WSTabInspector, 200)
 	require.Len(t, hits, len(tabs))
 	for i := 1; i < len(hits); i++ {
 		assert.GreaterOrEqual(t, hits[i].X0, hits[i-1].X1,
@@ -70,10 +70,10 @@ func TestWorkspaceTabHitboxes_Disjoint(t *testing.T) {
 // stop at the visible region rather than reporting unreachable ranges.
 func TestWorkspaceTabHitboxes_TruncatesPastWidth(t *testing.T) {
 	tabs := AvailableTabs(WSTabAvailability{Logs: true, Events: true, Yaml: true, Chat: true, Hot: true, Forwards: true, Drain: true})
-	full := WorkspaceTabHitboxes(tabs, 200)
+	full := WorkspaceTabHitboxes(tabs, WSTabInspector, 200)
 	require.Len(t, full, len(tabs))
 
-	narrow := WorkspaceTabHitboxes(tabs, 30)
+	narrow := WorkspaceTabHitboxes(tabs, WSTabInspector, 30)
 	assert.Less(t, len(narrow), len(tabs), "narrow strip must drop trailing tabs from hitbox list")
 	for _, h := range narrow {
 		assert.LessOrEqual(t, h.X1, 30, "every visible hitbox must end at or before the cutoff width")
@@ -81,8 +81,8 @@ func TestWorkspaceTabHitboxes_TruncatesPastWidth(t *testing.T) {
 }
 
 func TestWorkspaceTabHitboxes_EmptyInput(t *testing.T) {
-	assert.Nil(t, WorkspaceTabHitboxes(nil, 80))
-	assert.Nil(t, WorkspaceTabHitboxes([]WorkspaceTab{}, 80))
+	assert.Nil(t, WorkspaceTabHitboxes(nil, WSTabInspector, 80))
+	assert.Nil(t, WorkspaceTabHitboxes([]WorkspaceTab{}, WSTabInspector, 80))
 }
 
 // TestRenderWorkspaceTabStrip_DegradesGracefully covers the three width
@@ -128,8 +128,8 @@ func TestWorkspaceTab_LabelsHaveHotkeyHint(t *testing.T) {
 	for _, tab := range []WorkspaceTab{WSTabInspector, WSTabLogs, WSTabEvents, WSTabYaml, WSTabChat, WSTabHot, WSTabForwards, WSTabDrain} {
 		label := tab.Label()
 		assert.NotEmpty(t, label, "tab %d must have a label", tab)
-		assert.True(t, strings.Contains(label, "(") && strings.Contains(label, ")"),
-			"tab %v label %q must embed a hotkey hint in parens", tab, label)
+		assert.GreaterOrEqual(t, len(strings.Fields(label)), 2,
+			"tab %v label %q must separate the hotkey from its name", tab, label)
 	}
 	assert.Empty(t, WorkspaceTab(99).Label(), "unknown tab values must return empty string (explicit signal)")
 }

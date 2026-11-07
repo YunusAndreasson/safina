@@ -122,7 +122,7 @@ func DrainNode(ctx context.Context, cs kubernetes.Interface, nodeName string, op
 			// Best-effort uncordon on cancellation. We deliberately use a
 			// fresh background context with a short timeout — the user's
 			// ctx is already dead so we can't use it.
-			uctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			uctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 			defer cancel()
 			_ = UncordonNode(uctx, cs, nodeName)
 		}

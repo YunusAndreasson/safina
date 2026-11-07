@@ -80,15 +80,7 @@ func BuildEditableYAML(ctx context.Context, cs kubernetes.Interface, kind, names
 		obj.ManagedFields = nil
 		obj.APIVersion = "v1"
 		obj.Kind = "Secret"
-		if len(obj.Data) > 0 {
-			if obj.StringData == nil {
-				obj.StringData = make(map[string]string, len(obj.Data))
-			}
-			for k, v := range obj.Data {
-				obj.StringData[k] = string(v)
-			}
-			obj.Data = nil
-		}
+		decodeSecretText(obj)
 		return marshalYAML(obj)
 
 	case EditKindService:
@@ -135,97 +127,39 @@ func BuildEditableYAML(ctx context.Context, cs kubernetes.Interface, kind, names
 func ApplyEditedYAML(ctx context.Context, cs kubernetes.Interface, kind, namespace, name string, data []byte) error {
 	switch kind {
 	case EditKindDeployment:
-		var obj appsv1.Deployment
-		if err := yaml.Unmarshal(data, &obj); err != nil {
-			return fmt.Errorf("yaml parse: %w", err)
-		}
-		if err := assertSameTarget(obj.Namespace, obj.Name, namespace, name); err != nil {
-			return err
-		}
-		_, err := cs.AppsV1().Deployments(namespace).Update(ctx, &obj, metav1.UpdateOptions{})
-		return err
-
+		return applyEditedObject(ctx, data, &appsv1.Deployment{}, namespace, name, cs.AppsV1().Deployments(namespace).Update)
 	case EditKindStatefulSet:
-		var obj appsv1.StatefulSet
-		if err := yaml.Unmarshal(data, &obj); err != nil {
-			return fmt.Errorf("yaml parse: %w", err)
-		}
-		if err := assertSameTarget(obj.Namespace, obj.Name, namespace, name); err != nil {
-			return err
-		}
-		_, err := cs.AppsV1().StatefulSets(namespace).Update(ctx, &obj, metav1.UpdateOptions{})
-		return err
-
+		return applyEditedObject(ctx, data, &appsv1.StatefulSet{}, namespace, name, cs.AppsV1().StatefulSets(namespace).Update)
 	case EditKindDaemonSet:
-		var obj appsv1.DaemonSet
-		if err := yaml.Unmarshal(data, &obj); err != nil {
-			return fmt.Errorf("yaml parse: %w", err)
-		}
-		if err := assertSameTarget(obj.Namespace, obj.Name, namespace, name); err != nil {
-			return err
-		}
-		_, err := cs.AppsV1().DaemonSets(namespace).Update(ctx, &obj, metav1.UpdateOptions{})
-		return err
-
+		return applyEditedObject(ctx, data, &appsv1.DaemonSet{}, namespace, name, cs.AppsV1().DaemonSets(namespace).Update)
 	case EditKindConfigMap:
-		var obj corev1.ConfigMap
-		if err := yaml.Unmarshal(data, &obj); err != nil {
-			return fmt.Errorf("yaml parse: %w", err)
-		}
-		if err := assertSameTarget(obj.Namespace, obj.Name, namespace, name); err != nil {
-			return err
-		}
-		_, err := cs.CoreV1().ConfigMaps(namespace).Update(ctx, &obj, metav1.UpdateOptions{})
-		return err
-
+		return applyEditedObject(ctx, data, &corev1.ConfigMap{}, namespace, name, cs.CoreV1().ConfigMaps(namespace).Update)
 	case EditKindSecret:
-		var obj corev1.Secret
-		if err := yaml.Unmarshal(data, &obj); err != nil {
-			return fmt.Errorf("yaml parse: %w", err)
-		}
-		if err := assertSameTarget(obj.Namespace, obj.Name, namespace, name); err != nil {
-			return err
-		}
-		// k8s normally merges stringData into data server-side, but if the
-		// user kept *both* fields, stringData wins for any conflicting key —
-		// matching the API's documented precedence.
-		_, err := cs.CoreV1().Secrets(namespace).Update(ctx, &obj, metav1.UpdateOptions{})
-		return err
-
+		return applyEditedObject(ctx, data, &corev1.Secret{}, namespace, name, cs.CoreV1().Secrets(namespace).Update)
 	case EditKindService:
-		var obj corev1.Service
-		if err := yaml.Unmarshal(data, &obj); err != nil {
-			return fmt.Errorf("yaml parse: %w", err)
-		}
-		if err := assertSameTarget(obj.Namespace, obj.Name, namespace, name); err != nil {
-			return err
-		}
-		_, err := cs.CoreV1().Services(namespace).Update(ctx, &obj, metav1.UpdateOptions{})
-		return err
-
+		return applyEditedObject(ctx, data, &corev1.Service{}, namespace, name, cs.CoreV1().Services(namespace).Update)
 	case EditKindIngress:
-		var obj networkingv1.Ingress
-		if err := yaml.Unmarshal(data, &obj); err != nil {
-			return fmt.Errorf("yaml parse: %w", err)
-		}
-		if err := assertSameTarget(obj.Namespace, obj.Name, namespace, name); err != nil {
-			return err
-		}
-		_, err := cs.NetworkingV1().Ingresses(namespace).Update(ctx, &obj, metav1.UpdateOptions{})
-		return err
-
+		return applyEditedObject(ctx, data, &networkingv1.Ingress{}, namespace, name, cs.NetworkingV1().Ingresses(namespace).Update)
 	case EditKindPVC:
-		var obj corev1.PersistentVolumeClaim
-		if err := yaml.Unmarshal(data, &obj); err != nil {
-			return fmt.Errorf("yaml parse: %w", err)
-		}
-		if err := assertSameTarget(obj.Namespace, obj.Name, namespace, name); err != nil {
-			return err
-		}
-		_, err := cs.CoreV1().PersistentVolumeClaims(namespace).Update(ctx, &obj, metav1.UpdateOptions{})
-		return err
+		return applyEditedObject(ctx, data, &corev1.PersistentVolumeClaim{}, namespace, name, cs.CoreV1().PersistentVolumeClaims(namespace).Update)
 	}
 	return fmt.Errorf("edit: unsupported kind %q", kind)
+}
+
+// applyEditedObject keeps validation identical for every supported typed client.
+// Strict decoding rejects typos and duplicate keys instead of silently dropping
+// fields from the full-object Update sent to the API server.
+func applyEditedObject[T metav1.Object](ctx context.Context, data []byte, obj T, namespace, name string,
+	update func(context.Context, T, metav1.UpdateOptions) (T, error),
+) error {
+	if err := yaml.UnmarshalStrict(data, obj); err != nil {
+		return fmt.Errorf("yaml parse: %w", err)
+	}
+	if err := assertSameTarget(obj.GetNamespace(), obj.GetName(), namespace, name); err != nil {
+		return err
+	}
+	_, err := update(ctx, obj, metav1.UpdateOptions{})
+	return err
 }
 
 func assertSameTarget(gotNS, gotName, wantNS, wantName string) error {

@@ -130,14 +130,14 @@ func (b *MetricBuffer) Len() int {
 const brailleBase = rune(0x2800)
 
 var (
-	brailleLeft = [5]int{
+	brailleLeft = [5]rune{
 		0,                         // h=0 : empty
 		0x40,                      // h=1 : dot 7
 		0x40 | 0x04,               // h=2 : 7+3
 		0x40 | 0x04 | 0x02,        // h=3 : 7+3+2
 		0x40 | 0x04 | 0x02 | 0x01, // h=4 : 7+3+2+1
 	}
-	brailleRight = [5]int{
+	brailleRight = [5]rune{
 		0,                         // h=0
 		0x80,                      // h=1 : dot 8
 		0x80 | 0x20,               // h=2 : 8+6
@@ -191,7 +191,7 @@ func Sparkline(t *theme.Theme, buf *MetricBuffer, width int, bg lipgloss.Style) 
 	// flat floor of bottom dots. The previous design painted this case
 	// full-height red because it normalised to local max.
 	if float64(buf.HighWater())/float64(ceiling) < idleCeilingFraction {
-		floor := string(brailleBase + rune(brailleLeft[1]+brailleRight[1]))
+		floor := string(brailleBase + (brailleLeft[1] + brailleRight[1]))
 		return bg.Foreground(t.P.Dim).Render(strings.Repeat(floor, width))
 	}
 
@@ -235,7 +235,7 @@ func Sparkline(t *theme.Theme, buf *MetricBuffer, width int, bg lipgloss.Style) 
 			rLevel = 0
 		}
 
-		ch := brailleBase + rune(brailleLeft[lLevel]+brailleRight[rLevel])
+		ch := brailleBase + (brailleLeft[lLevel] + brailleRight[rLevel])
 
 		// Color by the louder side so the warning palette tracks the
 		// peak — that's where the operator's eye should land.
@@ -266,7 +266,7 @@ func SparklineDim(t *theme.Theme, buf *MetricBuffer, width int, bg lipgloss.Styl
 		ceiling = 1
 	}
 	if float64(buf.HighWater())/float64(ceiling) < idleCeilingFraction {
-		floor := string(brailleBase + rune(brailleLeft[1]+brailleRight[1]))
+		floor := string(brailleBase + (brailleLeft[1] + brailleRight[1]))
 		return bg.Foreground(t.P.Dim).Render(strings.Repeat(floor, width))
 	}
 	const samplesPerCell = 2
@@ -298,7 +298,7 @@ func SparklineDim(t *theme.Theme, buf *MetricBuffer, width int, bg lipgloss.Styl
 		if !rHas {
 			rLevel = 0
 		}
-		ch := brailleBase + rune(brailleLeft[lLevel]+brailleRight[rLevel])
+		ch := brailleBase + (brailleLeft[lLevel] + brailleRight[rLevel])
 		b.WriteString(dim.Render(string(ch)))
 	}
 	return b.String()
@@ -332,7 +332,7 @@ func SparklineFull(t *theme.Theme, buf *MetricBuffer, width int, bg lipgloss.Sty
 		ceiling = 1
 	}
 	if float64(buf.HighWater())/float64(ceiling) < idleCeilingFraction {
-		floor := string(brailleBase + rune(brailleLeft[1]+brailleRight[1]))
+		floor := string(brailleBase + (brailleLeft[1] + brailleRight[1]))
 		return bg.Foreground(t.P.Dim).Render(strings.Repeat(floor, width))
 	}
 
@@ -372,7 +372,7 @@ func SparklineFull(t *theme.Theme, buf *MetricBuffer, width int, bg lipgloss.Sty
 		}
 		lLevel := levelFor(lFrac)
 		rLevel := levelFor(rFrac)
-		ch := brailleBase + rune(brailleLeft[lLevel]+brailleRight[rLevel])
+		ch := brailleBase + (brailleLeft[lLevel] + brailleRight[rLevel])
 		cellFrac := lFrac
 		if rFrac > cellFrac {
 			cellFrac = rFrac

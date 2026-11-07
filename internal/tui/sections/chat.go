@@ -13,6 +13,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yunus/safina/internal/claude"
 	"github.com/yunus/safina/internal/tui/components"
@@ -253,24 +254,22 @@ func (c *Chat) ResetSession() {
 // ── Update / streaming wire ──────────────────────────────────────────
 
 // SubmitMsg is emitted by the chat when the user submits a prompt; the root
-// turns it into a streaming subprocess via NewChatStream.
+// turns it into a streaming subprocess.
 type SubmitMsg struct {
 	Prompt        string
 	ContextBlock  string
 	ContextCrumbs []ContextCrumb
 }
 
-// ChatStreamStartedMsg / ChatTokenMsg / ChatRetryMsg / ChatTurnDoneMsg are
-// the four envelopes the root pumps through update() during a turn.
-type ChatStreamStartedMsg struct {
-	Ch <-chan claude.Event
-}
-
+// Every event carries its source channel so late events from cancelled
+// turns cannot modify a newer conversation.
 type ChatTokenMsg struct {
+	Ch    <-chan claude.Event
 	Delta string
 }
 
 type ChatRetryMsg struct {
+	Ch      <-chan claude.Event
 	Attempt int
 	Of      int
 	DelayMS int
@@ -278,15 +277,8 @@ type ChatRetryMsg struct {
 }
 
 type ChatTurnDoneMsg struct {
+	Ch  <-chan claude.Event
 	Err error
-}
-
-// NewChatStream is the tea.Cmd the root uses to launch a turn. It is here
-// (not on the root) so the wiring stays close to the chat section.
-func NewChatStream(ctx context.Context, svc *claude.Service, prompt string) tea.Cmd {
-	return func() tea.Msg {
-		return ChatStreamStartedMsg{Ch: svc.Send(ctx, prompt)}
-	}
 }
 
 // NextChatEvent reads one event from the stream channel and translates it to
@@ -296,23 +288,25 @@ func NextChatEvent(ch <-chan claude.Event) tea.Cmd {
 	return func() tea.Msg {
 		ev, ok := <-ch
 		if !ok {
-			return ChatTurnDoneMsg{}
+			return ChatTurnDoneMsg{Ch: ch}
 		}
 		switch ev.Kind {
 		case claude.KindToken:
-			return ChatTokenMsg{Delta: ev.Delta}
+			return ChatTokenMsg{Ch: ch, Delta: ev.Delta}
 		case claude.KindRetry:
 			return ChatRetryMsg{
+				Ch:      ch,
 				Attempt: ev.Attempt, Of: ev.MaxRetries,
 				DelayMS: ev.DelayMS, Reason: ev.Reason,
 			}
 		case claude.KindDone:
-			return ChatTurnDoneMsg{Err: ev.Err}
-		default:
+			return ChatTurnDoneMsg{Ch: ch, Err: ev.Err}
+		case claude.KindInit:
 			// Init events carry the session id but the Service tracks that
 			// internally; nothing for the UI to do — recurse and read again.
 			return NextChatEvent(ch)()
 		}
+		return NextChatEvent(ch)()
 	}
 }
 
@@ -412,6 +406,7 @@ func (c *Chat) Update(msg tea.Msg, ctx *tuictx.Ctx) (cmd tea.Cmd, submit *Submit
 	case "ctrl+l":
 		// Clear scrollback but keep the conversation id — sometimes you
 		// want a clean panel without losing context.
+		c.CancelStream()
 		c.turns = nil
 		c.errMsg = ""
 		c.retryHint = ""
@@ -571,7 +566,7 @@ func (c *Chat) renderTurnHeader(turn chatTurn) string {
 		head := lipgloss.NewStyle().Foreground(p.Cyan).Bold(true).Render("▸ you")
 		if len(turn.crumbs) > 0 {
 			strip := renderCrumbStrip(turn.crumbs, p.Dim, p.FGFade, true)
-			return head + "  " + lipgloss.NewStyle().Foreground(p.Dim).Render(strip)
+			return ansi.Truncate(head+"  "+lipgloss.NewStyle().Foreground(p.Dim).Render(strip), c.vp.Width(), "…")
 		}
 		return head
 	case "assistant":
@@ -600,7 +595,11 @@ func (c *Chat) renderTurnBody(turn chatTurn) string {
 		}
 		return body
 	}
-	return indent(turn.text, "  ")
+	return c.plainBody(turn.text)
+}
+
+func (c *Chat) plainBody(s string) string {
+	return indent(ansi.Wrap(s, max(1, c.vp.Width()-2), ""), "  ")
 }
 
 // renderMarkdown turns the assistant's raw markdown into ANSI-styled text
@@ -618,11 +617,11 @@ func (c *Chat) renderMarkdown(s string) string {
 		return ""
 	}
 	if err := c.ensureMD(); err != nil || c.md == nil {
-		return indent(s, "  ")
+		return c.plainBody(s)
 	}
 	out, err := c.md.Render(s)
 	if err != nil {
-		return indent(s, "  ")
+		return c.plainBody(s)
 	}
 	return strings.TrimRight(out, "\n")
 }

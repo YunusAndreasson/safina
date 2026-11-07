@@ -30,15 +30,20 @@ type TreeChildrenLoadedMsg struct {
 // the operator gets visible confirmation of what just happened. Action is
 // the verb (must match the keymap label so the success banner reads in the
 // same vocabulary the user pressed: Jakob's Law).
+type WorkloadTarget struct{ Context, Namespace, Kind, Name string }
+
 type ActionDoneMsg struct {
+	Target  *WorkloadTarget
 	Action  string
 	Subject string
 	Err     error
 }
 
 type LogStreamStartedMsg struct {
-	Pod string
-	Ch  chan k8s.PodLogEvent
+	Err     error
+	Request uint64
+	Pod     string
+	Ch      chan k8s.PodLogEvent
 }
 
 // EventsLoadedMsg is delivered when the events fetch completes for the

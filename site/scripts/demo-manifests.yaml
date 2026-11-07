@@ -1,0 +1,849 @@
+# Demo fixture for the website screenshots. Everything here is fake: busybox
+# images retagged under registry.example.com by demo-cluster.sh,
+# loops that print believable logs, one crash-looping service, one pod that
+# can never schedule, and one CPU-busy worker for the hot-pods view.
+# Applied by demo-cluster.sh into the dedicated `safina-demo` minikube profile.
+---
+apiVersion: v1
+kind: Namespace
+metadata: { name: storefront }
+---
+apiVersion: v1
+kind: Namespace
+metadata: { name: payments }
+---
+apiVersion: v1
+kind: Namespace
+metadata: { name: ledger }
+---
+apiVersion: v1
+kind: Namespace
+metadata: { name: search }
+---
+apiVersion: v1
+kind: Namespace
+metadata: { name: ops }
+# ─── storefront ──────────────────────────────────────────────────────────────
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: storefront
+  labels: { app: web, tier: frontend }
+spec:
+  replicas: 3
+  selector: { matchLabels: { app: web } }
+  template:
+    metadata: { labels: { app: web, tier: frontend } }
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: web
+          image: registry.example.com/shop/storefront-web:3.8.1
+          imagePullPolicy: Never
+          ports: [{ containerPort: 8080, name: http }]
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { cpu: 300m, memory: 32Mi }
+          command: ["sh", "-c"]
+          args:
+            - |
+              # Bursty CPU so the trend lines have a real shape.
+              ( while :; do e=$(( $(date +%s) + RANDOM % 4 + 1 )); while [ $(date +%s) -lt $e ]; do :; done; sleep $(( RANDOM % 5 + 1 )); done ) &
+              paths="/ /cart /checkout /product/4471 /product/1290 /search?q=boots /api/session /healthz"
+              while true; do
+                set -- $paths; n=$(( RANDOM % $# + 1 )); eval p=\${$n}
+                d=$(( RANDOM % 140 + 6 )); r=$(( RANDOM % 100 )); s=200; l=info; m="request served"
+                if [ $r -lt 5 ]; then s=502; l=error; m="upstream cart unavailable"; elif [ $r -lt 12 ]; then s=304; fi
+                printf '{"level":"%s","msg":"%s","method":"GET","path":"%s","status":%d,"dur_ms":%d}\n' \
+                  "$l" "$m" "$p" "$s" "$d"
+                sleep 0.$(( RANDOM % 8 + 2 ))
+              done
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cart
+  namespace: storefront
+  labels: { app: cart, tier: backend }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: cart } }
+  template:
+    metadata: { labels: { app: cart, tier: backend } }
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: cart
+          image: registry.example.com/shop/cart:1.22.0
+          imagePullPolicy: Never
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { cpu: 150m, memory: 32Mi }
+          command: ["sh", "-c"]
+          args:
+            - |
+              # Bursty CPU so the trend lines have a real shape.
+              ( while :; do e=$(( $(date +%s) + RANDOM % 4 + 1 )); while [ $(date +%s) -lt $e ]; do :; done; sleep $(( RANDOM % 5 + 1 )); done ) &
+              while true; do
+                printf 'INFO  cart.session id=%04x items=%d total_cents=%d\n' \
+                  $(( RANDOM )) $(( RANDOM % 6 + 1 )) $(( RANDOM * 3 % 40000 ))
+                sleep 1
+              done
+---
+apiVersion: v1
+kind: Service
+metadata: { name: web, namespace: storefront }
+spec:
+  selector: { app: web }
+  ports: [{ name: http, port: 80, targetPort: 8080 }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: cart, namespace: storefront }
+spec:
+  selector: { app: cart }
+  ports: [{ name: http, port: 80, targetPort: 8080 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata: { name: storefront, namespace: storefront }
+spec:
+  rules:
+    - host: shop.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: web, port: { number: 80 } } }
+          - path: /api/cart
+            pathType: Prefix
+            backend: { service: { name: cart, port: { number: 80 } } }
+# ─── payments ────────────────────────────────────────────────────────────────
+---
+apiVersion: v1
+kind: Secret
+metadata: { name: card-gateway, namespace: payments }
+type: Opaque
+stringData:
+  GATEWAY_URL: https://gateway.example.com/v2
+  GATEWAY_KEY: demo-not-a-real-key-7f3a
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: payments-config, namespace: payments }
+data:
+  RETRY_BUDGET: "3"
+  SETTLEMENT_WINDOW: 15m
+  FEATURE_3DS2: "true"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payments-api
+  namespace: payments
+  labels: { app: payments-api }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: payments-api } }
+  template:
+    metadata: { labels: { app: payments-api } }
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: api
+          image: registry.example.com/shop/payments-api:5.4.2
+          imagePullPolicy: Never
+          envFrom: [{ configMapRef: { name: payments-config } }, { secretRef: { name: card-gateway } }]
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { cpu: 600m, memory: 32Mi }
+          command: ["sh", "-c"]
+          args:
+            - |
+              # Bursty CPU so the trend lines have a real shape.
+              ( while :; do e=$(( $(date +%s) + RANDOM % 4 + 1 )); while [ $(date +%s) -lt $e ]; do :; done; sleep $(( RANDOM % 5 + 1 )); done ) &
+              while true; do
+                r=$(( RANDOM % 100 )); d=$(( RANDOM % 300 + 40 ))
+                if [ $r -lt 8 ]; then
+                  printf '{"level":"warn","msg":"card authorization slow, retrying","attempt":2,"dur_ms":%d}\n' $(( d * 4 ))
+                else
+                  printf '{"level":"info","msg":"payment authorized","amount_cents":%d,"currency":"EUR","dur_ms":%d}\n' $(( RANDOM % 20000 + 199 )) $d
+                fi
+                sleep 0.$(( RANDOM % 7 + 3 ))
+              done
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: settlement-worker
+  namespace: payments
+  labels: { app: settlement-worker }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: settlement-worker } }
+  template:
+    metadata: { labels: { app: settlement-worker } }
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: worker
+          image: registry.example.com/shop/settlement-worker:5.4.2
+          imagePullPolicy: Never
+          resources:
+            requests: { cpu: 100m, memory: 16Mi }
+            limits: { cpu: 900m, memory: 32Mi }
+          command: ["sh", "-c"]
+          # A real CPU burner so the hot-pods view has something to rank.
+          args:
+            - |
+              ( while :; do e=$(( $(date +%s) + RANDOM % 6 + 3 )); while [ $(date +%s) -lt $e ]; do :; done; sleep $(( RANDOM % 4 + 1 )); done ) &
+              while true; do
+                printf '{"level":"info","msg":"settling batch","batch":%d,"txns":%d}\n' $(( RANDOM % 9000 + 1000 )) $(( RANDOM % 900 + 100 ))
+                sleep 2
+              done
+---
+apiVersion: v1
+kind: Service
+metadata: { name: payments-api, namespace: payments }
+spec:
+  selector: { app: payments-api }
+  ports: [{ name: http, port: 80, targetPort: 8080 }]
+# ─── ledger ──────────────────────────────────────────────────────────────────
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ledger-db
+  namespace: ledger
+  labels: { app: ledger-db }
+spec:
+  serviceName: ledger-db
+  replicas: 1
+  selector: { matchLabels: { app: ledger-db } }
+  template:
+    metadata: { labels: { app: ledger-db } }
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: db
+          image: registry.example.com/shop/ledger-db:17.6
+          imagePullPolicy: Never
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { cpu: 50m, memory: 32Mi }
+          volumeMounts: [{ name: data, mountPath: /var/lib/ledger }]
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) LOG:  database system is ready to accept connections"
+              while true; do
+                echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) LOG:  checkpoint complete: wrote $(( RANDOM % 400 + 20 )) buffers"
+                sleep 20
+              done
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources: { requests: { storage: 1Gi } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: ledger-db, namespace: ledger }
+spec:
+  clusterIP: None
+  selector: { app: ledger-db }
+  ports: [{ name: pg, port: 5432 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ledger-api
+  namespace: ledger
+  labels: { app: ledger-api }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: ledger-api } }
+  template:
+    metadata: { labels: { app: ledger-api } }
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: api
+          image: registry.example.com/shop/ledger-api:2.14.0
+          imagePullPolicy: Never
+          env:
+            - { name: DATABASE_URL, value: "postgres://ledger@ledger-db-primary.ledger:5432/ledger" }
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { cpu: 50m, memory: 32Mi }
+          command: ["sh", "-c"]
+          # Points at a service that does not exist, so it crash-loops with a
+          # believable Go panic. The fix shown on the site is a one-line env edit.
+          args:
+            - |
+              echo '{"level":"info","msg":"starting ledger-api","version":"2.14.0","commit":"9f3c2e1"}'
+              sleep 0.3
+              echo '{"level":"info","msg":"config loaded","env":"production","pool_size":20}'
+              sleep 0.4
+              echo '{"level":"info","msg":"applying migrations","pending":0,"total":41}'
+              sleep 0.3
+              for a in 1 2 3; do
+                echo '{"level":"warn","msg":"database not reachable, retrying","attempt":'$a',"backoff_ms":'$(( a * 500 ))'}'
+                sleep 1
+              done
+              echo '{"level":"error","msg":"dial tcp: lookup ledger-db-primary.ledger on 10.96.0.10:53: no such host"}'
+              sleep 0.2
+              echo "panic: ledger: database unreachable after 3 attempts"
+              echo ""
+              echo "goroutine 1 [running]:"
+              printf '\tmain.mustConnect({0xc000012120, 0x2f})\n\t\t/src/cmd/ledger-api/db.go:88 +0x1f4\n'
+              printf '\tmain.run(0xc00007e000)\n\t\t/src/cmd/ledger-api/main.go:63 +0x2b1\n'
+              printf '\tmain.main()\n\t\t/src/cmd/ledger-api/main.go:41 +0x9c\n'
+              exit 2
+---
+apiVersion: v1
+kind: Service
+metadata: { name: ledger-api, namespace: ledger }
+spec:
+  selector: { app: ledger-api }
+  ports: [{ name: http, port: 80, targetPort: 8080 }]
+# ─── search ──────────────────────────────────────────────────────────────────
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: search-api
+  namespace: search
+  labels: { app: search-api }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: search-api } }
+  template:
+    metadata: { labels: { app: search-api } }
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: api
+          image: registry.example.com/shop/search-api:0.9.3
+          imagePullPolicy: Never
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { cpu: 250m, memory: 32Mi }
+          command: ["sh", "-c"]
+          args:
+            - |
+              # Bursty CPU so the trend lines have a real shape.
+              ( while :; do e=$(( $(date +%s) + RANDOM % 4 + 1 )); while [ $(date +%s) -lt $e ]; do :; done; sleep $(( RANDOM % 5 + 1 )); done ) &
+              while true; do
+                printf '{"level":"info","msg":"query","hits":%d,"dur_ms":%d}\n' $(( RANDOM % 500 )) $(( RANDOM % 60 + 3 ))
+                sleep 0.$(( RANDOM % 8 + 2 ))
+              done
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: search-indexer
+  namespace: search
+  labels: { app: search-indexer }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: search-indexer } }
+  template:
+    metadata: { labels: { app: search-indexer } }
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: indexer
+          image: registry.example.com/shop/search-indexer:0.9.3
+          imagePullPolicy: Never
+          # Deliberately unschedulable on a laptop cluster: stays Pending.
+          resources:
+            requests: { cpu: "12", memory: 48Gi }
+          command: ["sh", "-c", "sleep infinity"]
+# ─── ops ─────────────────────────────────────────────────────────────────────
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: ops
+  labels: { app: otel-collector }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: otel-collector } }
+  template:
+    metadata: { labels: { app: otel-collector } }
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: collector
+          image: registry.example.com/shop/otel-collector:0.112.0
+          imagePullPolicy: Never
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { cpu: 50m, memory: 32Mi }
+          command: ["sh", "-c"]
+          args:
+            - |
+              while true; do
+                printf 'info exporter/otlp spans_exported=%d metrics_exported=%d\n' $(( RANDOM % 4000 )) $(( RANDOM % 900 ))
+                sleep 5
+              done
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata: { name: nightly-backup, namespace: ops }
+spec:
+  schedule: "*/10 * * * *"
+  successfulJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: backup
+              image: registry.example.com/shop/backup:1.4.0
+              imagePullPolicy: Never
+              command: ["sh", "-c", "echo snapshot ledger-db: ok; sleep 3"]
+
+# ─── a fuller fleet ───────────────────────────────────────────────────────────
+# More services across more teams, so the workload list fills the way a real
+# shop's would. Same busybox image, realistic names, modest CPU.
+---
+apiVersion: v1
+kind: Namespace
+metadata: { name: identity }
+---
+apiVersion: v1
+kind: Namespace
+metadata: { name: notifications }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: checkout
+  namespace: storefront
+  labels: { app: checkout }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: checkout } }
+  template:
+    metadata: { labels: { app: checkout } }
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: checkout
+          image: registry.example.com/shop/checkout:4.1.0
+          imagePullPolicy: Never
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { cpu: 120m, memory: 32Mi }
+          command: ["sh", "-c"]
+          args:
+            - |
+              ( while :; do e=$(( $(date +%s) + RANDOM % 3 + 1 )); while [ $(date +%s) -lt $e ]; do :; done; sleep $(( RANDOM % 9 + 3 )); done ) &
+              while true; do
+                printf '{"level":"info","msg":"order placed","items":%d,"total_cents":%d}\n' $(( RANDOM % 6 + 1 )) $(( RANDOM % 40000 + 900 ))
+                sleep $(( RANDOM % 4 + 1 ))
+              done
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: recommendations
+  namespace: storefront
+  labels: { app: recommendations }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: recommendations } }
+  template:
+    metadata: { labels: { app: recommendations } }
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: recommendations
+          image: registry.example.com/shop/recommendations:2.3.7
+          imagePullPolicy: Never
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { cpu: 80m, memory: 32Mi }
+          command: ["sh", "-c"]
+          args:
+            - |
+              ( while :; do e=$(( $(date +%s) + RANDOM % 3 + 1 )); while [ $(date +%s) -lt $e ]; do :; done; sleep $(( RANDOM % 9 + 3 )); done ) &
+              while true; do
+                printf '{"level":"info","msg":"ranked","candidates":%d,"dur_ms":%d}\n' $(( RANDOM % 300 + 20 )) $(( RANDOM % 40 + 4 ))
+                sleep $(( RANDOM % 4 + 1 ))
+              done
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: image-resizer
+  namespace: storefront
+  labels: { app: image-resizer }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: image-resizer } }
+  template:
+    metadata: { labels: { app: image-resizer } }
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: resizer
+          image: registry.example.com/shop/image-resizer:1.9.2
+          imagePullPolicy: Never
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { cpu: 60m, memory: 32Mi }
+          command: ["sh", "-c"]
+          args:
+            - |
+              while true; do
+                printf '{"level":"info","msg":"resized","w":%d,"h":%d}\n' $(( RANDOM % 1600 + 200 )) $(( RANDOM % 1200 + 200 ))
+                sleep $(( RANDOM % 4 + 1 ))
+              done
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fraud-scoring
+  namespace: payments
+  labels: { app: fraud-scoring }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: fraud-scoring } }
+  template:
+    metadata: { labels: { app: fraud-scoring } }
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: scoring
+          image: registry.example.com/shop/fraud-scoring:3.0.4
+          imagePullPolicy: Never
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { cpu: 150m, memory: 32Mi }
+          command: ["sh", "-c"]
+          args:
+            - |
+              ( while :; do e=$(( $(date +%s) + RANDOM % 3 + 1 )); while [ $(date +%s) -lt $e ]; do :; done; sleep $(( RANDOM % 9 + 3 )); done ) &
+              while true; do
+                printf '{"level":"info","msg":"scored","risk":0.%02d,"dur_ms":%d}\n' $(( RANDOM % 99 )) $(( RANDOM % 30 + 2 ))
+                sleep $(( RANDOM % 4 + 1 ))
+              done
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: refunds-worker
+  namespace: payments
+  labels: { app: refunds-worker }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: refunds-worker } }
+  template:
+    metadata: { labels: { app: refunds-worker } }
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: worker
+          image: registry.example.com/shop/refunds-worker:5.4.2
+          imagePullPolicy: Never
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { cpu: 40m, memory: 32Mi }
+          command: ["sh", "-c"]
+          args:
+            - |
+              while true; do
+                printf '{"level":"info","msg":"refund settled","amount_cents":%d,"attempt":%d}\n' $(( RANDOM % 20000 + 100 )) $(( RANDOM % 2 + 1 ))
+                sleep $(( RANDOM % 4 + 1 ))
+              done
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payouts-api
+  namespace: payments
+  labels: { app: payouts-api }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: payouts-api } }
+  template:
+    metadata: { labels: { app: payouts-api } }
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: api
+          image: registry.example.com/shop/payouts-api:1.12.0
+          imagePullPolicy: Never
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { cpu: 60m, memory: 32Mi }
+          command: ["sh", "-c"]
+          args:
+            - |
+              while true; do
+                printf '{"level":"info","msg":"payout queued","batch":%d,"count":%d}\n' $(( RANDOM % 9000 + 1000 )) $(( RANDOM % 80 + 1 ))
+                sleep $(( RANDOM % 4 + 1 ))
+              done
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reconciler
+  namespace: ledger
+  labels: { app: reconciler }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: reconciler } }
+  template:
+    metadata: { labels: { app: reconciler } }
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: reconciler
+          image: registry.example.com/shop/reconciler:2.14.0
+          imagePullPolicy: Never
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { cpu: 50m, memory: 32Mi }
+          command: ["sh", "-c"]
+          args:
+            - |
+              ( while :; do e=$(( $(date +%s) + RANDOM % 3 + 1 )); while [ $(date +%s) -lt $e ]; do :; done; sleep $(( RANDOM % 9 + 3 )); done ) &
+              while true; do
+                printf '{"level":"info","msg":"reconciled","accounts":%d,"drift_cents":%d}\n' $(( RANDOM % 4000 )) 0
+                sleep $(( RANDOM % 4 + 1 ))
+              done
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: query-router
+  namespace: search
+  labels: { app: query-router }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: query-router } }
+  template:
+    metadata: { labels: { app: query-router } }
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: router
+          image: registry.example.com/shop/query-router:0.9.3
+          imagePullPolicy: Never
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { cpu: 60m, memory: 32Mi }
+          command: ["sh", "-c"]
+          args:
+            - |
+              while true; do
+                printf '{"level":"info","msg":"routed","shard":%d,"dur_ms":%d}\n' $(( RANDOM % 12 )) $(( RANDOM % 20 + 1 ))
+                sleep $(( RANDOM % 4 + 1 ))
+              done
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-api
+  namespace: identity
+  labels: { app: auth-api }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: auth-api } }
+  template:
+    metadata: { labels: { app: auth-api } }
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: api
+          image: registry.example.com/shop/auth-api:6.2.1
+          imagePullPolicy: Never
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { cpu: 100m, memory: 32Mi }
+          command: ["sh", "-c"]
+          args:
+            - |
+              ( while :; do e=$(( $(date +%s) + RANDOM % 3 + 1 )); while [ $(date +%s) -lt $e ]; do :; done; sleep $(( RANDOM % 9 + 3 )); done ) &
+              while true; do
+                printf '{"level":"info","msg":"token issued","ttl_s":%d,"dur_ms":%d}\n' 900 $(( RANDOM % 25 + 2 ))
+                sleep $(( RANDOM % 4 + 1 ))
+              done
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: token-signer
+  namespace: identity
+  labels: { app: token-signer }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: token-signer } }
+  template:
+    metadata: { labels: { app: token-signer } }
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: signer
+          image: registry.example.com/shop/token-signer:6.2.1
+          imagePullPolicy: Never
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { cpu: 40m, memory: 32Mi }
+          command: ["sh", "-c"]
+          args:
+            - |
+              while true; do
+                printf '{"level":"info","msg":"signed","kid":"k%d","dur_ms":%d}\n' $(( RANDOM % 4 + 1 )) $(( RANDOM % 5 + 1 ))
+                sleep $(( RANDOM % 4 + 1 ))
+              done
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: session-store
+  namespace: identity
+  labels: { app: session-store }
+spec:
+  serviceName: session-store
+  replicas: 1
+  selector: { matchLabels: { app: session-store } }
+  template:
+    metadata: { labels: { app: session-store } }
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: store
+          image: registry.example.com/shop/session-store:7.4.0
+          imagePullPolicy: Never
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { cpu: 40m, memory: 32Mi }
+          command: ["sh", "-c"]
+          args:
+            - |
+              while true; do
+                printf '{"level":"info","msg":"sessions","live":%d,"evicted":%d}\n' $(( RANDOM % 9000 + 500 )) $(( RANDOM % 40 ))
+                sleep $(( RANDOM % 4 + 1 ))
+              done
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: email-sender
+  namespace: notifications
+  labels: { app: email-sender }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: email-sender } }
+  template:
+    metadata: { labels: { app: email-sender } }
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: sender
+          image: registry.example.com/shop/email-sender:3.3.0
+          imagePullPolicy: Never
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { cpu: 60m, memory: 32Mi }
+          command: ["sh", "-c"]
+          args:
+            - |
+              while true; do
+                printf '{"level":"info","msg":"sent","template":"receipt","queue_depth":%d,"dur_ms":%d}\n' $(( RANDOM % 30 )) $(( RANDOM % 200 + 20 ))
+                sleep $(( RANDOM % 4 + 1 ))
+              done
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: push-gateway
+  namespace: notifications
+  labels: { app: push-gateway }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: push-gateway } }
+  template:
+    metadata: { labels: { app: push-gateway } }
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: gateway
+          image: registry.example.com/shop/push-gateway:1.8.5
+          imagePullPolicy: Never
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { cpu: 80m, memory: 32Mi }
+          command: ["sh", "-c"]
+          args:
+            - |
+              ( while :; do e=$(( $(date +%s) + RANDOM % 3 + 1 )); while [ $(date +%s) -lt $e ]; do :; done; sleep $(( RANDOM % 9 + 3 )); done ) &
+              while true; do
+                printf '{"level":"info","msg":"delivered","platform":"apns","batch":%d,"dur_ms":%d}\n' $(( RANDOM % 500 + 1 )) $(( RANDOM % 90 + 10 ))
+                sleep $(( RANDOM % 4 + 1 ))
+              done
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sms-relay
+  namespace: notifications
+  labels: { app: sms-relay }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: sms-relay } }
+  template:
+    metadata: { labels: { app: sms-relay } }
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: relay
+          image: registry.example.com/shop/sms-relay:0.6.1
+          imagePullPolicy: Never
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { cpu: 30m, memory: 32Mi }
+          command: ["sh", "-c"]
+          args:
+            - |
+              while true; do
+                printf '{"level":"info","msg":"queued","country":"SE","parts":%d,"dur_ms":%d}\n' $(( RANDOM % 3 + 1 )) $(( RANDOM % 40 + 5 ))
+                sleep $(( RANDOM % 4 + 1 ))
+              done
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: log-shipper
+  namespace: ops
+  labels: { app: log-shipper }
+spec:
+  selector: { matchLabels: { app: log-shipper } }
+  template:
+    metadata: { labels: { app: log-shipper } }
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: shipper
+          image: registry.example.com/shop/log-shipper:3.1.2
+          imagePullPolicy: Never
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { cpu: 50m, memory: 32Mi }
+          command: ["sh", "-c"]
+          args:
+            - |
+              ( while :; do e=$(( $(date +%s) + RANDOM % 3 + 1 )); while [ $(date +%s) -lt $e ]; do :; done; sleep $(( RANDOM % 9 + 3 )); done ) &
+              while true; do
+                printf 'info shipper lines_sent=%d bytes=%d\n' $(( RANDOM % 9000 )) $(( RANDOM % 900000 ))
+                sleep $(( RANDOM % 4 + 1 ))
+              done

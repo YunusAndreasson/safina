@@ -9,23 +9,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestSaveLoadRoundtrip tests Save + Load with the default config path.
-// It saves a known config, reads it back, and restores the original.
+// TestSaveLoadRoundtrip exercises persistence in an isolated directory.
 func TestSaveLoadRoundtrip(t *testing.T) {
-	cfgPath, err := ConfigPath()
-	if err != nil {
-		t.Skipf("cannot determine config path: %v", err)
-	}
-
-	// Save original config if it exists
-	origData, _ := os.ReadFile(cfgPath)
-	defer func() {
-		if origData != nil {
-			_ = os.WriteFile(cfgPath, origData, 0o644)
-		} else {
-			_ = os.Remove(cfgPath)
-		}
-	}()
+	cfgPath := filepath.Join(t.TempDir(), ".safina", "config.yaml")
 
 	cfg := &AppConfig{
 		LastCluster:      "prod-cluster",
@@ -34,10 +20,10 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 		SystemNamespaces: []string{"kube-system"},
 	}
 
-	err = Save(cfg)
+	err := saveFile(cfg, cfgPath)
 	require.NoError(t, err)
 
-	loaded, err := Load()
+	loaded, err := loadFile(cfgPath)
 	require.NoError(t, err)
 	assert.NotNil(t, loaded)
 	assert.Equal(t, "prod-cluster", loaded.LastCluster)
@@ -48,33 +34,21 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 
 func TestLoad_ReturnsEmptyConfigOnMissing(t *testing.T) {
 	// Load() on missing config returns empty config, no error
-	cfg, err := Load()
+	cfg, err := loadFile(filepath.Join(t.TempDir(), "missing.yaml"))
 	require.NoError(t, err)
 	assert.NotNil(t, cfg)
-	// LastCluster may be empty or have previous value; either is fine as long
-	// as Load() doesn't crash
-	_ = cfg.LastCluster
+	assert.Empty(t, cfg.LastCluster)
+	assert.Empty(t, cfg.LastNamespace)
 }
 
 func TestSave_ZeroValueConfig(t *testing.T) {
-	cfgPath, err := ConfigPath()
-	if err != nil {
-		t.Skipf("cannot determine config path: %v", err)
-	}
-	origData, _ := os.ReadFile(cfgPath)
-	defer func() {
-		if origData != nil {
-			_ = os.WriteFile(cfgPath, origData, 0o644)
-		} else {
-			_ = os.Remove(cfgPath)
-		}
-	}()
+	cfgPath := filepath.Join(t.TempDir(), ".safina", "config.yaml")
 
 	// Save empty/zero config
-	err = Save(&AppConfig{})
+	err := saveFile(&AppConfig{}, cfgPath)
 	require.NoError(t, err)
 
-	loaded, err := Load()
+	loaded, err := loadFile(cfgPath)
 	require.NoError(t, err)
 	assert.NotNil(t, loaded)
 }
@@ -100,27 +74,16 @@ func TestConfigDir_ReturnsDir(t *testing.T) {
 // Quick test to verify the save creates a valid YAML file that doesn't
 // contain Go struct field names (it should use json tags).
 func TestSave_UsesJSONTags(t *testing.T) {
-	cfgPath, err := ConfigPath()
-	if err != nil {
-		t.Skipf("cannot determine config path: %v", err)
-	}
-	origData, _ := os.ReadFile(cfgPath)
-	defer func() {
-		if origData != nil {
-			_ = os.WriteFile(cfgPath, origData, 0o644)
-		} else {
-			_ = os.Remove(cfgPath)
-		}
-	}()
+	cfgPath := filepath.Join(t.TempDir(), ".safina", "config.yaml")
 
 	cfg := &AppConfig{
 		LastCluster:    "staging",
 		UserNamespaces: []string{"app1"},
 	}
-	err = Save(cfg)
+	err := saveFile(cfg, cfgPath)
 	require.NoError(t, err)
 
-	data, err := os.ReadFile(cfgPath)
+	data, err := os.ReadFile(cfgPath) // #nosec G304 -- Reads a fixture created in t.TempDir.
 	require.NoError(t, err)
 	content := string(data)
 	assert.Contains(t, content, "lastCluster", "should use camelCase JSON tag")
@@ -131,24 +94,13 @@ func TestLoad_EmptyUserConfigIsNotSystem(t *testing.T) {
 	// When UserNamespaces is empty, it acts as "no override", not as "all
 	// namespaces are system". This is tested more thoroughly in tree_test.go
 	// via ClassifyNamespaces. Here we just verify the field round-trips.
-	cfgPath, err := ConfigPath()
-	if err != nil {
-		t.Skipf("cannot determine config path: %v", err)
-	}
-	origData, _ := os.ReadFile(cfgPath)
-	defer func() {
-		if origData != nil {
-			_ = os.WriteFile(cfgPath, origData, 0o644)
-		} else {
-			_ = os.Remove(cfgPath)
-		}
-	}()
+	cfgPath := filepath.Join(t.TempDir(), ".safina", "config.yaml")
 
 	cfg := &AppConfig{UserNamespaces: nil, SystemNamespaces: nil}
-	err = Save(cfg)
+	err := saveFile(cfg, cfgPath)
 	require.NoError(t, err)
 
-	data, err := os.ReadFile(cfgPath)
+	data, err := os.ReadFile(cfgPath) // #nosec G304 -- Reads a fixture created in t.TempDir.
 	require.NoError(t, err)
 	// Neither field should appear in output when nil
 	content := string(data)
@@ -161,4 +113,36 @@ func TestConfigDir_SymlinkSafe(t *testing.T) {
 	dir, err := ConfigDir()
 	require.NoError(t, err)
 	assert.True(t, filepath.IsAbs(dir), "config dir should be absolute")
+}
+
+func TestSave_ReplacesSymlinkWithoutOverwritingTarget(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	require.NoError(t, os.WriteFile(target, []byte("preserve"), 0o600))
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.Symlink(target, path))
+	require.NoError(t, saveFile(&AppConfig{LastCluster: "new"}, path))
+	data, err := os.ReadFile(target) // #nosec G304 -- Reads a fixture created in t.TempDir.
+	require.NoError(t, err)
+	assert.Equal(t, "preserve", string(data))
+	cfg, err := loadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "new", cfg.LastCluster)
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	assert.Len(t, entries, 2, "temporary file must be removed")
+}
+
+func TestSave_FailedReplacementCleansTemporaryFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.Mkdir(path, 0o700))
+	require.Error(t, saveFile(&AppConfig{}, path))
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.True(t, entries[0].IsDir())
 }

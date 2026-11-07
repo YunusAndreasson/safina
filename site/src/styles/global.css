@@ -1,0 +1,426 @@
+@layer tokens, reset, base, layout, components, utilities;
+
+/* Typed so the beacon button's gradient can ease between lightnesses. */
+@property --lift {
+  syntax: "<number>";
+  inherits: false;
+  initial-value: 0;
+}
+
+/* ─── tokens ──────────────────────────────────────────────────────────────── */
+@layer tokens {
+  :root {
+    color-scheme: dark;
+
+    /* Dark ocean. The page is the abyss, the storm and every fade dissolve
+       into it, and raised surfaces sit a shelf or two above it. Text is the
+       spray off the water. The one signal is the beacon: the cyan of
+       safina's own title bar (internal/tui/components/topbar.go), kept for
+       what acts or marks where you are. */
+    --abyss: #060d1a;
+    --deep: #0b1729;
+    --shelf: #13243b;
+    --foam: #eaf3fb;
+    --spray: #c3d1df;
+    --fog: #8494a8;
+    --beacon: var(--tn-cyan);
+    --beacon-hi: oklch(from var(--beacon) calc(l + 0.06) calc(c * 0.85) h);
+    --beacon-ink: #04121f;
+    /* Tints are derived from the palette (relative color syntax), never
+       re-typed as raw channels. */
+    --hairline: rgb(from var(--spray) r g b / 13%);
+    --hairline-strong: rgb(from var(--spray) r g b / 24%);
+    /* Light from above, as through water: the top edge of a raised surface. */
+    --surface-edge: rgb(from var(--beacon) r g b / 16%);
+
+    /* Tokyo Night, the app's own palette (internal/tui/theme/palette.go) */
+    --tn-bg: #1a1b26;
+    --tn-bg2: #24283b;
+    --tn-fg: #c0caf5;
+    --tn-dim: #565f89;
+    --tn-blue: #7aa2f7;
+    --tn-cyan: #7dcfff;
+    --tn-green: #9ece6a;
+    --tn-edge: rgb(from var(--tn-fg) r g b / 16%);
+    --tn-glow: rgb(from var(--tn-blue) r g b / 32%);
+
+    /* Type: Mona Sans for everything that is read, JetBrains Mono (the face
+       the screenshots are rendered in) for everything that is typed: keys,
+       commands, code. Width does the expressive work. Scale follows the
+       classic 14 / 16·18 / 21 / 24 / 36·48 / 72… progression, made fluid.
+
+       Three voices, no more:
+       - Titles (h1–h3): expanded and light, in foam. Weight rises as size
+         falls (260 at the hero's 68px, 370 at a section's 48px), so the
+         strokes read equally heavy from the top of the page down.
+       - Reading: body, ledes and captions at normal width, weight 400.
+       - Acting and labelling: buttons, keys, labels, run-in heads, all at
+         one UI weight. */
+    --sans: var(--font-sans), system-ui, sans-serif;
+    --mono: var(--font-mono), ui-monospace, monospace;
+    --kufi: var(--font-kufi), serif;
+
+    --title-stretch: 115%;
+    --w-ui: 560;
+
+    --t-micro: 0.8125rem;
+    --t-small: 0.875rem;
+    --t-ui: 0.9375rem;
+    --t-body: clamp(1rem, 0.94rem + 0.28vw, 1.125rem);
+    --t-lead: clamp(1.125rem, 1rem + 0.55vw, 1.375rem);
+    --t-h3: clamp(1.3125rem, 1.15rem + 0.7vw, 1.625rem);
+    --t-h2: clamp(1.875rem, 1.3rem + 2.4vw, 3rem);
+    /* The hero headline: two lines from tablet width up, three on phones.
+       It also answers to height, so it never meets the nav on a short
+       window. */
+    --t-mark: clamp(2.25rem, min(0.5rem + 3.5vw, 7.6svh), 4.25rem);
+    --head-lines: 2;
+    --t-pitch: clamp(1.125rem, 0.98rem + 0.62vw, 1.5rem);
+
+    --gutter: clamp(16px, 4.2vw, 64px);
+    --wrap: 1240px;
+
+    /* The page grid. Every section hangs off the same two verticals: the
+       title line (the column's left edge) and the text line, where a 5:6
+       split puts body text at about 56 characters a line. Only photographs
+       and the tour window bleed past the column. */
+    --split: minmax(0, 5fr) minmax(0, 6fr);
+    --col-gap: clamp(40px, 6vw, 96px);
+    /* One measure for running text: the text column's width at full size,
+       about 56 characters of body text. Stacked, every block of running
+       text is held to it, so they all end on one right edge and read at
+       the same length as side by side. */
+    --measure: 39rem;
+
+    /* Space steps by the golden ratio (24 · φⁿ), so each step reads as one
+       clear notch: tight inside a group, wide between groups. Proximity
+       alone tells you what belongs together.
+       s2 inside a group · s3 head to figure · s4 figure to its follow-on
+       · s5 section to section. */
+    --s1: 15px;
+    --s2: 24px;
+    --s3: clamp(28px, 4.4svh, 39px);
+    --s4: clamp(44px, 7svh, 63px);
+    --s5: clamp(72px, 11.3svh, 102px);
+    /* How much of the product window shows on the first screen: whatever
+       height the nav and the hero copy leave over. The copy is the headline
+       (1.02 of --t-mark a line) plus about 170px of pitch and buttons,
+       sitting clamp(24px, 6svh, 72px) above the window; 116px covers the nav
+       and the space under it. */
+    --peek: clamp(
+      88px,
+      100svh - 285px - var(--head-lines) * 1.02 * var(--t-mark) - clamp(24px, 6svh, 72px),
+      46svh
+    );
+    /* Corners: windows (frames and the command block) share one radius,
+       controls another. A tray holding controls takes the control radius
+       plus its padding, so nested corners stay concentric. */
+    --radius-frame: 12px;
+    --radius-control: 10px;
+
+    --ease-out: cubic-bezier(0.16, 0.84, 0.24, 1);
+  }
+  @media (width <= 640px) {
+    :root {
+      --t-mark: 2.375rem;
+      --head-lines: 3;
+      --radius-frame: 10px;
+    }
+  }
+  /* Short phones: the pitch wraps to five lines, so the window peeks less. */
+  @media (height <= 700px) and (width <= 640px) {
+    :root {
+      --peek: clamp(64px, 100svh - 340px - var(--head-lines) * 1.02 * var(--t-mark) - clamp(24px, 6svh, 72px), 360px);
+    }
+  }
+  @media (height <= 520px) {
+    :root {
+      --peek: 56px;
+    }
+  }
+}
+
+/* ─── reset ───────────────────────────────────────────────────────────────── */
+@layer reset {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+  * {
+    margin: 0;
+  }
+  html {
+    -webkit-text-size-adjust: none;
+    text-size-adjust: none;
+    scroll-padding-top: 88px;
+    scrollbar-color: var(--shelf) var(--abyss);
+
+    @media (prefers-reduced-motion: no-preference) {
+      scroll-behavior: smooth;
+    }
+  }
+  img,
+  picture,
+  svg {
+    display: block;
+    max-width: 100%;
+  }
+  button {
+    font: inherit;
+    color: inherit;
+  }
+}
+
+/* ─── base ────────────────────────────────────────────────────────────────── */
+@layer base {
+  body {
+    background: var(--abyss);
+    color: var(--spray);
+    font-family: var(--sans);
+    font-size: var(--t-body);
+    line-height: 1.55;
+    font-kerning: normal;
+    font-optical-sizing: auto;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: clip;
+  }
+
+  /* The title voice (see the type tokens). Titles hang 0.05em into the
+     margin, so a straight stem (L) lands on the body text's stems below,
+     while rounds and diagonals (G, A, T) overshoot a hair, as the eye
+     expects of an aligned edge. */
+  h1,
+  h2,
+  h3 {
+    margin-inline-start: -0.05em;
+    color: var(--foam);
+    font-stretch: var(--title-stretch);
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+  }
+  h1 {
+    font-size: var(--t-mark);
+    font-weight: 260;
+    line-height: 1.02;
+  }
+  h2 {
+    font-size: var(--t-h2);
+    font-weight: 370;
+    line-height: 1.06;
+  }
+  h3 {
+    font-size: var(--t-h3);
+    font-weight: 460;
+    line-height: 1.2;
+  }
+  p {
+    text-wrap: pretty;
+  }
+
+  a {
+    color: inherit;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 0.22em;
+    text-decoration-color: color-mix(in oklab, currentColor 45%, transparent);
+    transition: text-decoration-color 160ms;
+  }
+  a:hover {
+    text-decoration-color: currentColor;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--beacon);
+    outline-offset: 3px;
+    border-radius: 4px;
+  }
+
+  kbd,
+  code {
+    font-family: var(--mono);
+    font-size: 0.92em;
+    font-variant-ligatures: none;
+  }
+
+  ::selection {
+    background: rgb(from var(--beacon) r g b / 75%);
+    color: var(--beacon-ink);
+  }
+}
+
+/* ─── layout ──────────────────────────────────────────────────────────────── */
+@layer layout {
+  .wrap {
+    width: min(100% - 2 * var(--gutter), var(--wrap));
+    margin-inline: auto;
+  }
+  /* Title line and text line (see --split). One column below 1100px.
+     Side by side, a title and its text start level: the tops of their
+     capitals share one line, whatever their sizes. text-box trims each
+     column's first line to its cap height; where that isn't supported,
+     first baselines line up instead. */
+  .split {
+    display: grid;
+    grid-template-columns: var(--split);
+    column-gap: var(--col-gap);
+    align-items: first baseline;
+
+    @supports (text-box: trim-start cap alphabetic) {
+      align-items: start;
+
+      & > * {
+        text-box: trim-start cap alphabetic;
+      }
+    }
+
+    @media (width <= 1100px) {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+}
+
+/* ─── shared components ───────────────────────────────────────────────────── */
+@layer components {
+  /* The name, set like the name on a hull: widest, light, tracked open, in
+     the cyan of the app's own title bar. Nav and footer differ only in size. */
+  .wordmark {
+    font-size: var(--wordmark-size, 1.125rem);
+    font-weight: 300;
+    font-stretch: 125%;
+    letter-spacing: 0.08em;
+    line-height: 1;
+    color: var(--beacon);
+    text-decoration: none;
+  }
+
+  /* A small heading over a group: UI weight, quiet colour. */
+  .label {
+    margin-inline-start: 0;
+    font-size: var(--t-small);
+    font-weight: var(--w-ui);
+    font-stretch: 100%;
+    letter-spacing: 0.01em;
+    line-height: 1.4;
+    color: var(--fog);
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.6em;
+    min-height: 48px;
+    padding: 0 1.4em;
+    border-radius: var(--radius-control);
+    border: 1px solid transparent;
+    font-size: 1rem;
+    font-weight: var(--w-ui);
+    font-stretch: 108%;
+    letter-spacing: 0.005em;
+    text-decoration: none;
+    cursor: pointer;
+    transition:
+      background-color 160ms,
+      border-color 160ms,
+      box-shadow 220ms var(--ease-out),
+      color 160ms,
+      translate 160ms var(--ease-out);
+
+    &:active {
+      translate: 0 1px;
+    }
+  }
+  /* The beacon: the one filled button, lit from above like sea glass. On
+     hover the whole gradient lifts (a typed --lift, so it eases rather than
+     snaps) and throws a little light onto the water below. */
+  .btn--beacon {
+    --lift: 0;
+    background: linear-gradient(
+      oklch(from var(--beacon-hi) calc(l + var(--lift)) c h),
+      oklch(from var(--beacon) calc(l + var(--lift)) c h)
+    );
+    color: var(--beacon-ink);
+    box-shadow:
+      0 1px 0 0 rgb(from var(--foam) r g b / 60%) inset,
+      0 -1px 0 0 rgb(from var(--beacon-ink) r g b / 18%) inset,
+      0 10px 28px -14px rgb(from var(--beacon) r g b / 0%);
+    transition:
+      --lift 220ms var(--ease-out),
+      box-shadow 220ms var(--ease-out),
+      translate 160ms var(--ease-out);
+
+    &:hover {
+      --lift: 0.035;
+      box-shadow:
+        0 1px 0 0 rgb(from var(--foam) r g b / 70%) inset,
+        0 -1px 0 0 rgb(from var(--beacon-ink) r g b / 18%) inset,
+        0 10px 28px -14px rgb(from var(--beacon) r g b / 70%);
+    }
+  }
+  .btn--quiet {
+    border-color: var(--hairline-strong);
+    background: rgb(from var(--abyss) r g b / 35%);
+    color: var(--spray);
+    backdrop-filter: blur(10px) saturate(1.3);
+
+    &:hover {
+      border-color: rgb(from var(--spray) r g b / 48%);
+      background: rgb(from var(--deep) r g b / 60%);
+    }
+  }
+
+  /* A physical key. Used by the tour, the key lists and the shortcuts sheet. */
+  .cap {
+    display: inline-grid;
+    place-items: center;
+    min-width: 2.1em;
+    height: 2.1em;
+    padding: 0 0.5em;
+    border-radius: 7px;
+    border: 1px solid var(--hairline-strong);
+    border-bottom-width: 3px;
+    background: linear-gradient(var(--shelf), var(--deep));
+    box-shadow: 0 1px 0 0 var(--surface-edge) inset;
+    color: var(--spray);
+    font-family: var(--mono);
+    font-weight: 600;
+    line-height: 1;
+  }
+}
+
+@layer utilities {
+  .visually-hidden {
+    position: absolute !important;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .skip-link {
+    position: fixed;
+    top: 12px;
+    left: 12px;
+    z-index: 100;
+    padding: 0.7em 1em;
+    border-radius: var(--radius-control);
+    background: var(--beacon);
+    color: var(--beacon-ink);
+    font-weight: var(--w-ui);
+    text-decoration: none;
+    translate: 0 -160%;
+    transition: translate 160ms var(--ease-out);
+  }
+  .skip-link:focus-visible {
+    translate: 0 0;
+  }
+  /* An Arabic word inside English text: the Kufi the name is drawn in, a
+     step up so its short letters hold their own beside the Latin, without
+     opening its line: the Kufi's tall metrics add no leading. The font
+     carries only the letters of سفينة (see README to add more). */
+  .ar {
+    font-family: var(--kufi);
+    font-size: 1.15em;
+    line-height: 0;
+  }
+}

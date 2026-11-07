@@ -1,9 +1,14 @@
 package sections
 
 import (
+	"fmt"
 	"image/color"
 	"strings"
+	"unicode/utf8"
 
+	"github.com/charmbracelet/x/ansi"
+
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/sahilm/fuzzy"
 
@@ -27,12 +32,14 @@ import (
 // navigate to the area they care about first; the palette becomes
 // progressively smarter as that happens.
 type Palette struct {
-	query   string
+	input   components.SearchInput
 	entries []PaletteEntry // full corpus, captured at Open()
-	matches []PaletteEntry // ranked matches (or recents when query empty)
+	matches []PaletteEntry // ranked matches (or alphabetical when query empty)
 	indices [][]int        // matched character offsets per match — for highlight
 	cursor  int            // index into matches
 	verbHit string         // last-pressed verb letter (consumed by caller)
+	scope   string
+	actions bool // Tab explicitly enables action shortcuts
 }
 
 // PaletteVerb is one action chip below the preview pane. Letter is the
@@ -54,22 +61,38 @@ func NewPalette() Palette {
 // Called whenever the user presses `:` so the corpus is always fresh
 // against the latest cache.
 func (p *Palette) Open(entries []PaletteEntry) {
+	p.scope = "Loaded resources"
 	p.entries = entries
-	p.query = ""
+	p.input.SetValue("")
 	p.cursor = 0
 	p.verbHit = ""
+	p.actions = false
 	p.recomputeMatches()
 }
 
 // SetQuery replaces the query and reranks matches.
 func (p *Palette) SetQuery(q string) {
-	p.query = q
+	p.input.SetValue(q)
 	p.cursor = 0
 	p.recomputeMatches()
 }
 
+// UpdateQuery delegates editing to the shared Bubbles input and reranks only
+// when its value changes; cursor movement does not reset result selection.
+func (p *Palette) UpdateQuery(msg tea.Msg) tea.Cmd {
+	cmd, changed := p.input.Update(msg)
+	if changed {
+		p.cursor = 0
+		p.recomputeMatches()
+	}
+	return cmd
+}
+
 // Query returns the current query string (for the input-line render).
-func (p *Palette) Query() string { return p.query }
+func (p *Palette) Query() string { return p.input.Value() }
+
+func (p *Palette) ActionsActive() bool { return p.actions }
+func (p *Palette) ToggleActions()      { p.actions = !p.actions }
 
 // CursorUp / CursorDown move within the result list.
 func (p *Palette) CursorUp() {
@@ -112,23 +135,15 @@ func (p *Palette) VerbHit() string {
 func (p *Palette) SetVerbHit(letter string) { p.verbHit = letter }
 
 // recomputeMatches reranks the entries against the current query. With
-// an empty query we show the entries as-is (most recently indexed first
-// — BuildPaletteIndex preserves cache iteration order which is roughly
-// chronological).
+// an empty query we show the stable alphabetical index.
 func (p *Palette) recomputeMatches() {
-	if p.query == "" {
-		// Cap to a sane number; the user can still type to surface more.
-		const head = 50
-		if len(p.entries) > head {
-			p.matches = p.entries[:head]
-		} else {
-			p.matches = p.entries
-		}
+	if p.input.Value() == "" {
+		p.matches = p.entries
 		p.indices = make([][]int, len(p.matches))
 		return
 	}
 	corpus := paletteCorpus{entries: p.entries}
-	res := fuzzy.FindFrom(p.query, corpus)
+	res := fuzzy.FindFrom(p.input.Value(), corpus)
 	p.matches = make([]PaletteEntry, 0, len(res))
 	p.indices = make([][]int, 0, len(res))
 	for _, r := range res {
@@ -147,66 +162,63 @@ func (c paletteCorpus) Len() int            { return len(c.entries) }
 // from the host model and are clamped so the modal stays bounded on
 // huge terminals.
 func (p *Palette) View(c *tuictx.Ctx, termW, termH int) string {
+	return lipgloss.Place(termW, termH, lipgloss.Center, lipgloss.Center, p.Card(c, termW, termH), components.ModalBackdrop(c.Theme)...)
+}
+
+// Card renders only the dialog; the application owns its layered backdrop.
+func (p *Palette) Card(c *tuictx.Ctx, termW, termH int) string {
 	t := c.Theme
 
-	// Modal sized to roughly 80% of terminal width, capped so very wide
-	// terminals don't make the lines unreadable.
-	w := termW * 80 / 100
-	if w > 96 {
-		w = 96
+	innerW := max(1, min(76, termW-8))
+	input := p.input.View(t, innerW)
+	if p.actions {
+		input = t.BlueBold.Render("Actions · press a letter · Tab to search")
 	}
-	if w < 60 {
-		w = 60
+	input = ansi.Truncate(input, innerW, "…")
+	preview, verbs := "", ""
+	if sel, ok := p.Selected(); ok && p.actions {
+		if termH >= 18 {
+			preview = ansi.Truncate(renderPalettePreview(c, sel), innerW, "…")
+		}
+		verbs = ansi.Wrap(renderPaletteVerbs(c, sel), innerW, "")
 	}
-	innerW := w - 4 // border + padding
-
-	// Vertical budget: input row + match list (variable) + preview block
-	// + verb chips + footer + 1 spacer per gap. Cap matches displayed.
-	maxRows := termH * 70 / 100
-	if maxRows > 24 {
-		maxRows = 24
+	footer := components.RenderBoundedHints(t, []components.KeyDesc{{Key: "↵", Desc: "open"}, {Key: "tab", Desc: "actions"}, {Key: "ctrl+s", Desc: "search namespace"}, {Key: "esc", Desc: "close"}}, innerW, components.KeyDesc{Key: "esc", Desc: "close"})
+	// Keep the namespace expansion discoverable at narrow widths too.
+	searchHint := ""
+	if innerW < 65 && !p.actions {
+		searchHint = t.Hint.Render("ctrl+s search namespace")
 	}
-	listRows := maxRows - 8 // leaves room for input + preview + verbs + footer
-	if listRows < 4 {
-		listRows = 4
+	extra := 0
+	if p.actions {
+		extra = lipgloss.Height(verbs)
+		if preview != "" {
+			extra += lipgloss.Height(preview)
+		}
 	}
-
-	// Input row.
-	input := components.SearchPromptRow(t, p.query)
-
-	// Result list.
-	list := p.renderList(c, innerW, listRows)
-
-	// Preview + verbs.
-	var preview, verbs string
-	if sel, ok := p.Selected(); ok {
-		preview = renderPalettePreview(c, sel)
-		verbs = renderPaletteVerbs(c, sel)
-	} else {
-		preview = t.Hint.Render("type to search · drill what you've already loaded")
-		verbs = ""
+	if searchHint != "" {
+		extra++
 	}
-
-	footer := components.RenderHintRow(t, []components.KeyDesc{
-		{Key: "↵", Desc: "open"},
-		{Key: "letter", Desc: "verb"},
-		{Key: "esc", Desc: "close"},
-	})
-
-	body := lipgloss.JoinVertical(lipgloss.Left,
-		input,
-		"",
-		list,
-		"",
-		preview,
-		verbs,
-		"",
-		footer,
-	)
-
-	panel := t.Modal.Padding(1, 2).Width(w).Render(body)
-	return lipgloss.Place(termW, termH, lipgloss.Center, lipgloss.Center, panel,
-		components.ModalBackdrop(t)...)
+	fixed := 9 + extra
+	rows := max(1, min(8, termH-fixed))
+	scope := p.scope
+	if scope == "" {
+		scope = "Loaded resources"
+	}
+	title := fmt.Sprintf("%s · %d matches", scope, len(p.matches))
+	parts := []string{t.CyanBold.Render(ansi.Truncate(title, innerW, "…")), input, "", p.renderList(c, innerW, rows), ""}
+	if p.actions {
+		if preview != "" {
+			parts = append(parts, preview)
+		}
+		parts = append(parts, verbs)
+	}
+	if searchHint != "" {
+		parts = append(parts, searchHint)
+	}
+	parts = append(parts, footer)
+	body := lipgloss.JoinVertical(lipgloss.Left, parts...)
+	panel := t.Modal.Padding(1, 2).Width(innerW + 6).Render(body)
+	return panel
 }
 
 // renderList renders the matches as a compact list with kind-glyph,
@@ -214,7 +226,10 @@ func (p *Palette) View(c *tuictx.Ctx, termW, termH int) string {
 func (p *Palette) renderList(c *tuictx.Ctx, w, rows int) string {
 	t := c.Theme
 	if len(p.matches) == 0 {
-		return t.Hint.Render("  no matches — drill into a cluster to populate the index")
+		if len(p.entries) == 0 {
+			return t.Hint.Render(ansi.Truncate("No resources loaded. Esc, then open a cluster.", w, "…"))
+		}
+		return t.Hint.Render(ansi.Truncate("No matches. Try a shorter query or browse more resources.", w, "…"))
 	}
 	start := 0
 	end := len(p.matches)
@@ -277,15 +292,12 @@ func renderPaletteRow(c *tuictx.Ctx, e PaletteEntry, hits []int, w int, selected
 	// Suffix: namespace + sub-kind.
 	suffix := ""
 	if e.Namespace != "" {
-		suffix += "  " + bg.Foreground(t.P.Dim).Render("ns:"+e.Namespace)
+		suffix += bg.Render("  ") + bg.Foreground(t.P.Dim).Render("ns:"+e.Namespace)
 	}
-	kindLabel := e.SubKind
-	if kindLabel == "" {
-		kindLabel = e.Kind
-	}
-	suffix += "  " + bg.Foreground(t.P.FGFade).Render(kindLabel)
+	kindLabel := e.kindLabel()
+	suffix += bg.Render("  ") + bg.Foreground(t.P.FGFade).Render(kindLabel)
 	if e.Hint != "" {
-		suffix += "  " + bg.Foreground(t.P.Dim).Render(e.Hint)
+		suffix += bg.Render("  ") + bg.Foreground(t.P.Dim).Render(e.Hint)
 	}
 
 	line := cursor + glyphCell + highlighted + suffix
@@ -294,36 +306,19 @@ func renderPaletteRow(c *tuictx.Ctx, e PaletteEntry, hits []int, w int, selected
 	if pad > 0 {
 		line += bg.Width(pad).Render("")
 	}
-	return line
+	return ansi.Truncate(line, w, "…")
 }
 
-// highlightMatches renders s with characters at hit positions in the
-// match style and others in base. Hits beyond len(s) are ignored — they
-// belong to the suffix tokens of the search string and aren't part of
-// the visible name.
+// highlightMatches adapts fuzzy's UTF-8 byte offsets to Lip Gloss rune
+// indices. The library owns grouping and styling; suffix hits are ignored.
 func highlightMatches(s string, hits []int, base, match lipgloss.Style) string {
-	if len(hits) == 0 {
-		return base.Render(s)
-	}
-	hitset := make(map[int]struct{}, len(hits))
-	for _, h := range hits {
-		if h >= 0 && h < len(s) {
-			hitset[h] = struct{}{}
+	indices := make([]int, 0, len(hits))
+	for _, hit := range hits {
+		if hit >= 0 && hit < len(s) {
+			indices = append(indices, utf8.RuneCountInString(s[:hit]))
 		}
 	}
-	if len(hitset) == 0 {
-		return base.Render(s)
-	}
-	var b strings.Builder
-	for i := range len(s) {
-		ch := string(s[i])
-		if _, ok := hitset[i]; ok {
-			b.WriteString(match.Render(ch))
-		} else {
-			b.WriteString(base.Render(ch))
-		}
-	}
-	return b.String()
+	return lipgloss.StyleRunes(s, indices, match, base)
 }
 
 // renderPalettePreview renders the highlighted match's quick-info row.
@@ -337,10 +332,7 @@ func renderPalettePreview(c *tuictx.Ctx, e PaletteEntry) string {
 	if e.Namespace != "" {
 		parts = append(parts, lipgloss.NewStyle().Foreground(t.P.Dim).Render("ns: "+e.Namespace))
 	}
-	kind := e.SubKind
-	if kind == "" {
-		kind = e.Kind
-	}
+	kind := e.kindLabel()
 	parts = append(parts, lipgloss.NewStyle().Foreground(t.P.FGFade).Render(kind))
 	if e.Hint != "" {
 		parts = append(parts, lipgloss.NewStyle().Foreground(t.P.Dim).Render(e.Hint))
@@ -374,7 +366,7 @@ func renderPaletteVerbs(c *tuictx.Ctx, e PaletteEntry) string {
 // PaletteVerbsFor: lowercase letters = read verbs (left), uppercase
 // letters = mutators (right). Matches the keymap convention.
 func PaletteVerbsFor(e PaletteEntry) []PaletteVerb {
-	del := PaletteVerb{Letter: "K", Label: "kill"}
+	del := PaletteVerb{Letter: "K", Label: "delete"}
 	switch e.Kind {
 	case k8s.KindApp:
 		// Reads (lowercase, left) first.
@@ -388,7 +380,7 @@ func PaletteVerbsFor(e PaletteEntry) []PaletteVerb {
 		case k8s.AppKindDeployment:
 			return append(base,
 				PaletteVerb{Letter: "S", Label: "scale"},
-				PaletteVerb{Letter: "U", Label: "undo"},
+				PaletteVerb{Letter: "U", Label: "rollback"},
 				PaletteVerb{Letter: "R", Label: "restart"},
 				PaletteVerb{Letter: "E", Label: "edit"},
 				del,

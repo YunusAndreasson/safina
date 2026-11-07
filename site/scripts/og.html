@@ -1,0 +1,78 @@
+<!doctype html>
+<!-- Source for public/og.jpg (1200x630). Render: node scripts/og.mjs -->
+<meta charset="utf-8" />
+<style>
+  @font-face {
+    font-family: "Mona Sans";
+    src: url("../src/assets/fonts/mona-sans-var.woff2") format("woff2");
+    font-weight: 200 900;
+    font-stretch: 75% 125%;
+  }
+  @font-face {
+    font-family: Kufi;
+    src: url("../src/assets/fonts/reem-kufi-safina.woff2") format("woff2");
+  }
+  html,
+  body {
+    margin: 0;
+    width: 1200px;
+    height: 630px;
+    background: #060d1a;
+    overflow: hidden;
+  }
+  .card {
+    position: relative;
+    width: 1200px;
+    height: 630px;
+    background: url("../src/assets/img/storm-landscape.jpg") 70% 40% / cover;
+    font-family: "Mona Sans", sans-serif;
+  }
+  .card::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background:
+      linear-gradient(90deg, rgb(6 13 26 / 0.86) 0%, rgb(6 13 26 / 0.5) 42%, rgb(6 13 26 / 0) 70%),
+      linear-gradient(0deg, rgb(6 13 26 / 0.72) 0%, rgb(6 13 26 / 0) 40%);
+  }
+  .copy {
+    position: absolute;
+    left: 72px;
+    bottom: 76px;
+    color: #eaf3fb;
+  }
+  .mark {
+    font-size: 132px;
+    font-weight: 240;
+    color: #7dcfff;
+    font-stretch: 125%;
+    letter-spacing: 0.04em;
+    line-height: 0.9;
+    margin-left: -6px;
+  }
+  .ar {
+    font-family: Kufi;
+    font-size: 40px;
+    color: #8494a8;
+    margin-left: 28px;
+    vertical-align: 0.6em;
+  }
+  .tag {
+    margin-top: 22px;
+    font-size: 44px;
+    font-weight: 380;
+    font-stretch: 112%;
+  }
+  .sub {
+    margin-top: 14px;
+    font-size: 24px;
+    color: #c3d1df;
+  }
+</style>
+<div class="card">
+  <div class="copy">
+    <div class="mark">Safina<span class="ar" lang="ar" dir="rtl">سفينة</span></div>
+    <div class="tag">For teams that ship.</div>
+    <div class="sub">A keyboard-first Kubernetes terminal for the people on call.</div>
+  </div>
+</div>

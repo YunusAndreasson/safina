@@ -1,0 +1,71 @@
+---
+// One feature: a plain heading and a short paragraph side by side, then the
+// real screen at the full width of the page, at the tour's text scale.
+interface Props {
+  id: string;
+  heading: string;
+}
+
+const { id, heading } = Astro.props;
+---
+
+<section class="feature" id={id} aria-labelledby={`${id}-title`}>
+  <div class="wrap">
+    <div class="feature__head split">
+      <h2 id={`${id}-title`}>{heading}</h2>
+      <div class="feature__text">
+        <slot />
+      </div>
+    </div>
+    <div class="feature__figure">
+      <slot name="figure" />
+    </div>
+    <slot name="after" />
+  </div>
+</section>
+
+<style>
+  .feature {
+    padding-top: var(--s5);
+    /* On phones the tour is shorter than the opening's hold, so the first
+       feature scrolls in over the still-pinned storm. A floor of its own
+       keeps the photo from glimmering through the gap. */
+    background: var(--abyss);
+    content-visibility: auto;
+    contain-intrinsic-size: auto 900px;
+  }
+  .feature__head {
+    row-gap: var(--s2);
+  }
+  .feature__head h2 {
+    max-width: 17ch;
+  }
+  /* Side by side, the text column itself is the measure, so the text runs
+     to the same right edge as the figure below. Stacked, the column is the
+     full width, so the text takes the shared --measure. */
+  .feature__text {
+    color: var(--spray);
+
+    @media (width <= 1100px) {
+      max-width: var(--measure);
+    }
+  }
+  .feature__text :global(p + p) {
+    margin-top: 0.8em;
+  }
+  .feature__text :global(p.quiet) {
+    color: var(--fog);
+    font-size: var(--t-small);
+    /* A note runs a line or two: balanced, so it never ends on a stub. */
+    text-wrap: balance;
+  }
+  .feature__text :global(.cap) {
+    font-size: var(--t-micro);
+    height: 1.9em;
+    vertical-align: 0.1em;
+  }
+  .feature__figure {
+    margin-top: var(--s3);
+  }
+
+</style>

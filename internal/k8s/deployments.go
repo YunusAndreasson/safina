@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
+	"strconv"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -27,6 +27,27 @@ func ScaleDeployment(ctx context.Context, cs kubernetes.Interface, namespace, na
 	scale.Spec.Replicas = replicas
 	_, err = cs.AppsV1().Deployments(namespace).UpdateScale(ctx, name, scale, metav1.UpdateOptions{})
 	return err
+}
+
+// ScaleWorkload uses the scale subresource belonging to the selected kind.
+func ScaleWorkload(ctx context.Context, cs kubernetes.Interface, namespace, kind, name string, replicas int32) error {
+	if replicas < 0 {
+		return errors.New("replica count must not be negative")
+	}
+	switch kind {
+	case AppKindDeployment:
+		return ScaleDeployment(ctx, cs, namespace, name, replicas)
+	case AppKindStatefulSet:
+		scale, err := cs.AppsV1().StatefulSets(namespace).GetScale(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return fmt.Errorf("failed to get scale: %w", err)
+		}
+		scale.Spec.Replicas = replicas
+		_, err = cs.AppsV1().StatefulSets(namespace).UpdateScale(ctx, name, scale, metav1.UpdateOptions{})
+		return err
+	default:
+		return fmt.Errorf("scaling %s is not supported", kind)
+	}
 }
 
 // RestartWorkload triggers a rolling restart by stamping a fresh
@@ -65,27 +86,20 @@ func RollbackDeployment(ctx context.Context, cs kubernetes.Interface, namespace,
 		return fmt.Errorf("failed to list replicasets: %w", err)
 	}
 
-	type rsRevision struct {
-		rs       string
-		revision string
+	currentRev, err := strconv.ParseInt(deployment.Annotations["deployment.kubernetes.io/revision"], 10, 64)
+	if err != nil || currentRev < 1 {
+		return errors.New("deployment has no valid current revision")
 	}
-	var revisions []rsRevision
-	for _, rs := range rsList.Items {
-		if anno := rs.Annotations["deployment.kubernetes.io/revision"]; anno != "" {
-			revisions = append(revisions, rsRevision{rs: rs.Name, revision: anno})
-		}
-	}
-
-	sort.Slice(revisions, func(i, j int) bool {
-		return revisions[i].revision < revisions[j].revision
-	})
-
-	currentRev := deployment.Annotations["deployment.kubernetes.io/revision"]
 	var targetRSName string
-	for i := len(revisions) - 1; i >= 0; i-- {
-		if revisions[i].revision < currentRev && revisions[i].revision != "" {
-			targetRSName = revisions[i].rs
-			break
+	var targetRevision int64
+	for _, rs := range rsList.Items {
+		if !metav1.IsControlledBy(&rs, deployment) {
+			continue
+		}
+		revision, parseErr := strconv.ParseInt(rs.Annotations["deployment.kubernetes.io/revision"], 10, 64)
+		if parseErr == nil && revision > targetRevision && revision < currentRev {
+			targetRSName = rs.Name
+			targetRevision = revision
 		}
 	}
 
@@ -99,7 +113,8 @@ func RollbackDeployment(ctx context.Context, cs kubernetes.Interface, namespace,
 	}
 
 	latest := deployment.DeepCopy()
-	latest.Spec.Template = targetRS.Spec.Template
+	latest.Spec.Template = *targetRS.Spec.Template.DeepCopy()
+	delete(latest.Spec.Template.Labels, "pod-template-hash")
 	_, err = cs.AppsV1().Deployments(namespace).Update(ctx, latest, metav1.UpdateOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to update deployment for rollback: %w", err)

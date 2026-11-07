@@ -80,6 +80,7 @@ type Service struct {
 	mu        sync.Mutex
 	cancel    context.CancelFunc // cancels the in-flight turn, if any
 	sessionID string             // set after the first successful turn
+	turnID    uint64             // rejects session updates from superseded turns
 }
 
 // NewService probes for the `claude` binary. When absent, the returned
@@ -109,11 +110,16 @@ func (s *Service) ResetSession() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sessionID = ""
+	s.turnID++
+	if s.cancel != nil {
+		s.cancel()
+		s.cancel = nil
+	}
 }
 
 // Send launches a new turn. It returns a receive-only channel that emits one
-// or more Events, ending in exactly one KindDone (with Err set on failure).
-// The channel is closed after Done.
+// or more Events, ending in exactly one KindDone (with Err set on failure)
+// unless cancelled. The channel is always closed after the child is reaped.
 //
 // Cancellation: if a previous Send is still running, it is cancelled before
 // the new one starts. The parent ctx is also honored — when ctx is done, the
@@ -137,17 +143,22 @@ func (s *Service) Send(ctx context.Context, prompt string) <-chan Event {
 	}
 	turnCtx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
+	s.turnID++
+	turnID := s.turnID
 	resume := s.sessionID
 	s.mu.Unlock()
 
-	go s.run(turnCtx, prompt, resume, out)
+	go func() {
+		defer cancel()
+		s.run(turnCtx, prompt, resume, out, turnID)
+	}()
 	return out
 }
 
 // run is the goroutine body of one turn. It owns the subprocess lifecycle —
 // stdout decoding, stderr capture for error reporting, and the final Done
-// event regardless of outcome.
-func (s *Service) run(ctx context.Context, prompt, resume string, out chan<- Event) {
+// event unless cancelled.
+func (s *Service) run(ctx context.Context, prompt, resume string, out chan<- Event, turnID uint64) {
 	defer close(out)
 
 	args := []string{
@@ -161,15 +172,15 @@ func (s *Service) run(ctx context.Context, prompt, resume string, out chan<- Eve
 		args = append(args, "--resume", resume)
 	}
 
-	cmd := exec.CommandContext(ctx, s.bin, args...)
+	cmd := exec.CommandContext(ctx, s.bin, args...) // #nosec G204 -- The executable is resolved with LookPath; prompts are separate arguments, never shell source.
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		out <- Event{Kind: KindDone, Err: fmt.Errorf("claude stdout: %w", err)}
 		return
 	}
-	// Capture stderr in memory so we can surface it on a non-zero exit.
+	// Keep a bounded stderr tail so noisy subprocesses cannot exhaust memory.
 	// `claude -p` prints auth errors and similar there.
-	var stderrBuf strings.Builder
+	var stderrBuf stderrTail
 	cmd.Stderr = &stderrBuf
 
 	if err := cmd.Start(); err != nil {
@@ -178,11 +189,17 @@ func (s *Service) run(ctx context.Context, prompt, resume string, out chan<- Eve
 	}
 
 	sessionID, scanErr, ok := decodeStream(ctx, stdout, out, resume)
+	if !ok || scanErr != nil {
+		// Stop a producer whose output we can no longer consume, then reap
+		// it before returning. Every successful Start needs exactly one Wait.
+		_ = cmd.Process.Kill()
+	}
+	waitErr := cmd.Wait()
 	if !ok {
 		return // consumer dropped; nothing more to send
 	}
 	if scanErr != nil && !errors.Is(scanErr, io.EOF) {
-		// Best-effort: surface the read error before we also try cmd.Wait().
+		// Best-effort: surface the stream error after cleaning up the child.
 		select {
 		case out <- Event{Kind: KindDone, Err: fmt.Errorf("claude read: %w", scanErr)}:
 		case <-ctx.Done():
@@ -190,11 +207,12 @@ func (s *Service) run(ctx context.Context, prompt, resume string, out chan<- Eve
 		return
 	}
 
-	waitErr := cmd.Wait()
 	// Persist the session id even on error — the next turn can still resume.
 	if sessionID != "" {
 		s.mu.Lock()
-		s.sessionID = sessionID
+		if s.turnID == turnID && ctx.Err() == nil {
+			s.sessionID = sessionID
+		}
 		s.mu.Unlock()
 	}
 
@@ -225,6 +243,7 @@ func (s *Service) run(ctx context.Context, prompt, resume string, out chan<- Eve
 // produced.
 func decodeStream(ctx context.Context, r io.Reader, out chan<- Event, resume string) (sessionID string, scanErr error, ok bool) {
 	sessionID = resume
+	streamed := false
 	scanner := bufio.NewScanner(r)
 	// stream-json lines can carry a full assistant message — bump the line cap
 	// well past bufio's 64KB default so we don't truncate long replies.
@@ -272,6 +291,7 @@ func decodeStream(ctx context.Context, r io.Reader, out chan<- Event, resume str
 		case "stream_event":
 			if raw.Event != nil && raw.Event.Delta != nil &&
 				raw.Event.Delta.Type == "text_delta" && raw.Event.Delta.Text != "" {
+				streamed = true
 				if !emit(Event{Kind: KindToken, Delta: raw.Event.Delta.Text}) {
 					return sessionID, scanner.Err(), false
 				}
@@ -280,9 +300,19 @@ func decodeStream(ctx context.Context, r io.Reader, out chan<- Event, resume str
 			if raw.SessionID != "" {
 				sessionID = raw.SessionID
 			}
+			if raw.IsError || strings.HasPrefix(raw.Subtype, "error") {
+				message := raw.Result
+				if message == "" {
+					message = raw.Subtype
+				}
+				if message == "" {
+					message = "Claude returned an error"
+				}
+				return sessionID, errors.New(message), true
+			}
 			// Some turns produce no stream_event deltas (cached/short replies):
 			// fall back to the result.result string so the user still sees text.
-			if raw.Result != "" {
+			if raw.Result != "" && !streamed {
 				if !emit(Event{Kind: KindToken, Delta: raw.Result}) {
 					return sessionID, scanner.Err(), false
 				}
@@ -296,8 +326,31 @@ func decodeStream(ctx context.Context, r io.Reader, out chan<- Event, resume str
 func (s *Service) Cancel() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.turnID++
 	if s.cancel != nil {
 		s.cancel()
 		s.cancel = nil
 	}
 }
+
+// stderrTail retains the last 64 KiB, where CLI failures normally explain the
+// cause. os/exec writes from one goroutine; read only after cmd.Wait returns.
+type stderrTail struct{ data []byte }
+
+const maxStderrBytes = 64 * 1024
+
+func (b *stderrTail) Write(p []byte) (int, error) {
+	n := len(p)
+	if n >= maxStderrBytes {
+		b.data = append(b.data[:0], p[n-maxStderrBytes:]...)
+	} else {
+		if excess := len(b.data) + n - maxStderrBytes; excess > 0 {
+			copy(b.data, b.data[excess:])
+			b.data = b.data[:len(b.data)-excess]
+		}
+		b.data = append(b.data, p...)
+	}
+	return n, nil
+}
+
+func (b *stderrTail) String() string { return string(b.data) }

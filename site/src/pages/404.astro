@@ -1,0 +1,42 @@
+---
+import Base from "../layouts/Base.astro";
+---
+
+<Base title="Page not found | Safina" description="There is no page at this address.">
+  <div class="lost wrap">
+    <a class="wordmark" href="/" aria-label="Safina, home">safina</a>
+    <main id="main" class="lost__body">
+      <h1>Overboard.</h1>
+      <p>Nothing lives at this address. Others have come back from the belly of a whale, and your way back is shorter.</p>
+      <a class="btn btn--beacon" href="/">Back aboard</a>
+    </main>
+  </div>
+</Base>
+
+<style>
+  /* The nav's band on top, then the message on the title line, with the
+     space left over split 1 : φ above and below it, so it rests just over
+     the middle, where the eye expects the centre. */
+  .lost {
+    display: grid;
+    grid-template-rows: 68px 1fr auto 1.618fr;
+    min-height: 100svh;
+  }
+  .lost > .wordmark {
+    align-self: center;
+    justify-self: start;
+  }
+  .lost__body {
+    grid-row: 3;
+    max-width: var(--measure);
+  }
+  p {
+    margin-top: var(--s2);
+    font-size: var(--t-lead);
+    line-height: 1.45;
+    color: var(--spray);
+  }
+  .btn {
+    margin-top: var(--s3);
+  }
+</style>

@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yunus/safina/internal/tui/theme"
 )
@@ -142,4 +143,15 @@ func sumWidths(w []int) int {
 		s += x
 	}
 	return s
+}
+
+// TruncMiddlePad keeps a pod's distinguishing suffix visible when its full
+// generated name does not fit. Both halves still refer to the original name.
+func TruncMiddlePad(s string, w int) string {
+	if lipgloss.Width(s) <= w || w < 7 {
+		return TruncPad(s, w)
+	}
+	tail := min(5, (w-1)/2)
+	head := w - tail - 1
+	return ansi.Cut(s, 0, head) + "…" + ansi.Cut(s, lipgloss.Width(s)-tail, lipgloss.Width(s))
 }

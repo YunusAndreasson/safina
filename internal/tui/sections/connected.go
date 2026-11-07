@@ -69,9 +69,13 @@ func (c *Connected) SetSelection(ctx context.Context, mgr *k8s.Manager, contextN
 	c.ref = ref
 
 	if !connectedSupportsKind(ref) {
+		hint := "no connections to show"
+		if isResourceGroup(ref.Kind) {
+			hint = "select a resource to see its connections"
+		}
 		c.snap = &connectedSnapshot{
 			title:         connectedTitle(ref),
-			subtitle:      "no connections to show",
+			subtitle:      hint,
 			notApplicable: true,
 		}
 		return nil
@@ -207,13 +211,7 @@ func connectedSupportsKind(ref NodeRef) bool {
 // connectedTitle is the panel headline for kinds without a fetched payload —
 // the same "Kind · Name" pattern the inspector uses.
 func connectedTitle(ref NodeRef) string {
-	if ref.Display != "" {
-		return stringsTitle(ref.Kind) + " · " + ref.Display
-	}
-	if ref.Name != "" {
-		return stringsTitle(ref.Kind) + " · " + ref.Name
-	}
-	return stringsTitle(ref.Kind)
+	return selectionTitle(ref)
 }
 
 func (c *Connected) buildSnapshot(ref NodeRef, conns *k8s.Connections) *connectedSnapshot {

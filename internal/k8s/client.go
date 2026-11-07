@@ -24,8 +24,10 @@ import (
 )
 
 type Client struct {
-	Clientset  kubernetes.Interface
-	RESTConfig *rest.Config
+	Clientset kubernetes.Interface
+	// StreamClientset has no whole-request timeout; its caller owns cancellation.
+	StreamClientset kubernetes.Interface
+	RESTConfig      *rest.Config
 	// Discovery enumerates the GVRs the API server exposes — used by the
 	// Resource Browser to populate "every kind in this cluster, including
 	// CRDs". Reads through the same wrapped transport so debug auditing
@@ -160,6 +162,11 @@ func NewClient(rawCfg *clientcmdapi.Config, ctxName string) (*Client, error) {
 		return nil, fmt.Errorf("failed to create clientset for %q: %w", ctxName, err)
 	}
 
+	streamCS, err := newStreamingClient(restCfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create streaming client: %w", err)
+	}
+
 	disco, err := discovery.NewDiscoveryClientForConfig(restCfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create discovery client for %q: %w", ctxName, err)
@@ -199,11 +206,12 @@ func NewClient(rawCfg *clientcmdapi.Config, ctxName string) (*Client, error) {
 	// pure apiserver load. Manager.ActivateContext starts them when the
 	// user actually drills into this context.
 	return &Client{
-		Clientset:  cs,
-		RESTConfig: restCfg,
-		Discovery:  disco,
-		Dynamic:    dyn,
-		informerCS: protoCS,
+		Clientset:       cs,
+		StreamClientset: streamCS,
+		RESTConfig:      restCfg,
+		Discovery:       disco,
+		Dynamic:         dyn,
+		informerCS:      protoCS,
 	}, nil
 }
 
@@ -310,4 +318,10 @@ func (m *Manager) DeactivateAll() {
 func (m *Manager) GetClient(contextName string) (*Client, bool) {
 	c, ok := m.Clients[contextName]
 	return c, ok
+}
+
+func newStreamingClient(cfg *rest.Config) (kubernetes.Interface, error) {
+	streamCfg := rest.CopyConfig(cfg)
+	streamCfg.Timeout = 0
+	return kubernetes.NewForConfig(streamCfg)
 }

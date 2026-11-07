@@ -13,6 +13,9 @@ import (
 func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m,
 		goleak.IgnoreCurrent(),
+		// Chroma uses regexp2's shared timeout clock; it is a library service,
+		// not a section-owned goroutine. Keep all other leak checks active.
+		goleak.IgnoreAnyFunction("github.com/dlclark/regexp2/v2.runClock"),
 		goleak.IgnoreTopFunction("k8s.io/klog/v2.(*flushDaemon).run"),
 	)
 }

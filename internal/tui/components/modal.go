@@ -5,6 +5,7 @@ import (
 
 	"charm.land/bubbles/v2/viewport"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yunus/safina/internal/tui/theme"
 )
@@ -127,6 +128,30 @@ func RenderModalKeysRow(t *theme.Theme, pairs []KeyDesc) string {
 	return strings.Join(pieces, t.HelpDesc.Render(" · "))
 }
 
+// RenderBoundedHints keeps whole shortcuts in priority order. When supplied,
+// overflow is retained as the escape hatch to the complete help screen.
+func RenderBoundedHints(t *theme.Theme, pairs []KeyDesc, width int, overflow KeyDesc) string {
+	if width <= 0 {
+		return ""
+	}
+	full := RenderModalKeysRow(t, pairs)
+	if lipgloss.Width(full) <= width {
+		return full
+	}
+	tail := []KeyDesc{}
+	if overflow.Key != "" {
+		tail = append(tail, overflow)
+	}
+	for keep := len(pairs) - 1; keep >= 0; keep-- {
+		visible := append(append([]KeyDesc{}, pairs[:keep]...), tail...)
+		row := RenderModalKeysRow(t, visible)
+		if lipgloss.Width(row) <= width {
+			return row
+		}
+	}
+	return ""
+}
+
 // RenderHintRow renders an overlay's footer hint row — the same key/desc
 // pattern as RenderModalKeysRow, but with a roomier interpunct separator
 // (` · ` flanked by extra padding) suited to centred-overlay footers
@@ -142,17 +167,6 @@ func RenderHintRow(t *theme.Theme, pairs []KeyDesc) string {
 		pieces[i] = t.HelpKey.Render(p.Key) + t.HelpDesc.Render(" "+p.Desc)
 	}
 	return strings.Join(pieces, t.HelpDesc.Render("  ·  "))
-}
-
-// SearchPromptRow renders the centred-modal search input — a bold cyan `›`
-// prompt, the live query, and a single-cell reverse-video cursor. Shared by
-// the command palette and the resource browser so both modal-search overlays
-// type, paint, and align identically.
-func SearchPromptRow(t *theme.Theme, query string) string {
-	prompt := lipgloss.NewStyle().Foreground(t.P.Cyan).Bold(true).Render("›")
-	queryStyle := lipgloss.NewStyle().Foreground(t.P.FG)
-	cursor := lipgloss.NewStyle().Foreground(t.P.FG).Reverse(true).Render(" ")
-	return prompt + " " + queryStyle.Render(query) + cursor
 }
 
 // RenderConfirmHint renders the y/n confirm row used by every destructive
@@ -179,7 +193,7 @@ type Indicator struct {
 }
 
 // RenderModalStatusBar renders the modal's top status row: the filter widget
-// (or a "press / to filter" hint) on the left, indicators joined by 2-space
+// (or a "/ filter" hint) on the left, indicators joined by 2-space
 // gaps on the right, justified to the modal's inner width. Sections used to
 // hand-roll this with subtly different padding logic — the unified version
 // guarantees consistent alignment.
@@ -193,7 +207,7 @@ func RenderModalStatusBar(t *theme.Theme, modalW int, filter Filter, indicators 
 	case filter.Value() != "":
 		left = t.FilterPrompt.Render("/") + t.FilterText.Render(filter.Value())
 	default:
-		left = t.Hint.Render("press / to filter")
+		left = t.Hint.Render("/ filter")
 	}
 
 	parts := make([]string, 0, len(indicators))
@@ -205,6 +219,8 @@ func RenderModalStatusBar(t *theme.Theme, modalW int, filter Filter, indicators 
 		parts = append(parts, st.Render(ind.Text))
 	}
 	right := strings.Join(parts, "  ")
+	right = ansi.Truncate(right, max(0, inner-10), "…")
+	left = ansi.Truncate(left, max(1, inner-lipgloss.Width(right)-1), "…")
 
 	pad := inner - lipgloss.Width(left) - lipgloss.Width(right)
 	if pad < 1 {

@@ -22,9 +22,10 @@ type Describe struct {
 	name      string
 	namespace string
 
-	yaml     string
-	lines    []string
-	filtered []int
+	yaml        string
+	lines       []string
+	highlighted []string
+	filtered    []int
 
 	vp     viewport.Model
 	filter components.Filter
@@ -62,6 +63,7 @@ func (s *Describe) Reset(kind, name, namespace string) {
 	s.namespace = namespace
 	s.yaml = ""
 	s.lines = nil
+	s.highlighted = nil
 	s.filtered = s.filtered[:0]
 	s.filter.Clear()
 	s.filter.Close()
@@ -105,6 +107,7 @@ func (s *Describe) YankPayload() string {
 func (s *Describe) SetYAML(yaml string, err error) {
 	s.yaml = yaml
 	s.lines = strings.Split(strings.TrimRight(yaml, "\n"), "\n")
+	s.highlighted = strings.Split(components.HighlightYAML(strings.Join(s.lines, "\n"), s.theme), "\n")
 	s.loading = false
 	s.err = err
 	s.recomputeFilter()
@@ -212,202 +215,18 @@ func (s *Describe) refreshContent() {
 		if n > 0 {
 			b.WriteByte('\n')
 		}
-		b.WriteString(colorizeYAMLLine(s.lines[idx], s.theme))
+		b.WriteString(s.highlighted[idx])
 	}
 	s.vp.SetContent(b.String())
 }
 
-// colorizeYAMLLine paints a single YAML line with light syntax highlighting
-// — keys cyan-bold, structural punctuation dim, comments dim italic, scalars
-// styled by inferred type (strings green, numbers pink, bool/null yellow).
-// Quick visual structure for an SRE scanning a 300-line manifest.
-func colorizeYAMLLine(line string, t *theme.Theme) string {
-	if strings.TrimSpace(line) == "" {
-		return line
-	}
-
-	// Preserve leading indentation literally.
-	i := 0
-	for i < len(line) && (line[i] == ' ' || line[i] == '\t') {
-		i++
-	}
-	indent := line[:i]
-	rest := line[i:]
-
-	dim := lipgloss.NewStyle().Foreground(t.P.Dim)
-	dimItalic := t.Hint
-	keyStyle := lipgloss.NewStyle().Foreground(t.P.Cyan).Bold(true)
-
-	// Whole-line comment.
-	if strings.HasPrefix(rest, "#") {
-		return indent + dimItalic.Render(rest)
-	}
-
-	// Document separator / end markers ---/...
-	if rest == "---" || rest == "..." {
-		return indent + dim.Render(rest)
-	}
-
-	// List marker `- ` (or bare `-`).
-	listMarker := ""
-	switch {
-	case strings.HasPrefix(rest, "- "):
-		listMarker = dim.Render("-") + " "
-		rest = rest[2:]
-	case rest == "-":
-		return indent + dim.Render("-")
-	}
-
-	// Strip trailing comment for separate styling.
-	rest, comment := splitTrailingYAMLComment(rest)
-	commentRendered := ""
-	if comment != "" {
-		commentRendered = " " + dimItalic.Render(strings.TrimLeft(comment, " "))
-	}
-
-	// Look for a key:value separator. The colon must be followed by space,
-	// tab, or end-of-line — that disambiguates "url: http://..." (colon after
-	// "url") from "image: registry:5000/..." (the inner colon is part of the
-	// scalar, not a separator).
-	colon := findKeyColon(rest)
-	if colon < 0 {
-		// No key — pure scalar (continuation line, list value, multiline body).
-		return indent + listMarker + colorizeYAMLValue(rest, t) + commentRendered
-	}
-
-	key := rest[:colon]
-	after := rest[colon+1:]
-	keyRendered := keyStyle.Render(key) + dim.Render(":")
-
-	if after == "" {
-		return indent + listMarker + keyRendered + commentRendered
-	}
-	// Preserve inter-segment whitespace exactly, then style the value.
-	leadWS := after[:len(after)-len(strings.TrimLeft(after, " \t"))]
-	val := after[len(leadWS):]
-	if val == "" {
-		return indent + listMarker + keyRendered + leadWS + commentRendered
-	}
-	return indent + listMarker + keyRendered + leadWS + colorizeYAMLValue(val, t) + commentRendered
-}
-
-// colorizeYAMLValue picks a colour by inferred scalar type. Quoted strings →
-// green, numbers → pink, bool/null → yellow bold, block-scalar markers (|, >)
-// dim, plain strings stay default.
-func colorizeYAMLValue(v string, t *theme.Theme) string {
-	if v == "" {
-		return v
-	}
-	first := v[0]
-	if first == '"' || first == '\'' {
-		return lipgloss.NewStyle().Foreground(t.P.Green).Render(v)
-	}
-	switch v {
-	case "true", "false", "null", "~":
-		return lipgloss.NewStyle().Foreground(t.P.Yellow).Bold(true).Render(v)
-	}
-	if v == "|" || v == ">" || v == "|-" || v == ">-" || v == "|+" || v == ">+" {
-		return lipgloss.NewStyle().Foreground(t.P.Dim).Render(v)
-	}
-	if isYAMLNumber(v) {
-		return lipgloss.NewStyle().Foreground(t.P.Pink).Render(v)
-	}
-	// Plain scalar — left in default foreground for readability against the
-	// coloured keys.
-	return v
-}
-
-func isYAMLNumber(s string) bool {
-	if s == "" {
-		return false
-	}
-	i := 0
-	if s[0] == '-' || s[0] == '+' {
-		i++
-	}
-	if i == len(s) {
-		return false
-	}
-	dots := 0
-	digits := 0
-	for ; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case c >= '0' && c <= '9':
-			digits++
-		case c == '.':
-			dots++
-			if dots > 1 {
-				return false
-			}
-		default:
-			return false
-		}
-	}
-	return digits > 0
-}
-
-// findKeyColon returns the index of the first ':' that acts as a YAML mapping
-// separator (followed by space/tab/EOL), respecting single/double quotes. -1
-// when the line carries no key.
-//
-// Quoting nuance: inside double quotes a backslash escapes the next byte, so
-// `"a\":b": value` is one quoted key terminated at index 6, not at index 2.
-// Single-quoted YAML strings don't use backslash escapes (they use doubled
-// `”` to embed a quote, which our toggle naturally handles by flipping off
-// then back on).
-func findKeyColon(s string) int {
-	dq := false
-	sq := false
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if dq && c == '\\' && i+1 < len(s) {
-			i++
-			continue
-		}
-		switch {
-		case c == '"' && !sq:
-			dq = !dq
-		case c == '\'' && !dq:
-			sq = !sq
-		case c == ':' && !dq && !sq:
-			if i+1 == len(s) || s[i+1] == ' ' || s[i+1] == '\t' {
-				return i
-			}
-		}
-	}
-	return -1
-}
-
-// splitTrailingYAMLComment finds an unquoted '#' preceded by whitespace and
-// returns (before, comment-including-hash). Returns (s, "") if no comment.
-// Mirrors findKeyColon's quote handling, including the `\"` escape inside
-// double quotes.
-func splitTrailingYAMLComment(s string) (string, string) {
-	dq := false
-	sq := false
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if dq && c == '\\' && i+1 < len(s) {
-			i++
-			continue
-		}
-		switch {
-		case c == '"' && !sq:
-			dq = !dq
-		case c == '\'' && !dq:
-			sq = !sq
-		case c == '#' && !dq && !sq:
-			if i == 0 || s[i-1] == ' ' || s[i-1] == '\t' {
-				return strings.TrimRight(s[:i], " \t"), s[i:]
-			}
-		}
-	}
-	return s, ""
-}
-
-// Update returns (cmd, leave). leave=true closes the modal.
 func (s *Describe) Update(msg tea.Msg, c *tuictx.Ctx) (tea.Cmd, bool) {
+	if paste, ok := msg.(tea.PasteMsg); ok && s.filter.Active() {
+		cmd := s.filter.Update(paste)
+		s.recomputeFilter()
+		s.refreshContent()
+		return cmd, false
+	}
 	km, ok := msg.(tea.KeyPressMsg)
 	if !ok {
 		var cmd tea.Cmd
@@ -430,6 +249,9 @@ func (s *Describe) Update(msg tea.Msg, c *tuictx.Ctx) (tea.Cmd, bool) {
 
 	case key.Matches(km, c.Keys.Refresh):
 		s.loading = true
+		if s.revealed {
+			return LoadSecretReveal(c.Background, c.Manager, c.ActiveContext, s.namespace, s.name), false
+		}
 		return LoadDescribe(c.Background, c.Manager, c.ActiveContext, s.namespace, s.kind, s.name), false
 
 	case km.String() == "ctrl+l":

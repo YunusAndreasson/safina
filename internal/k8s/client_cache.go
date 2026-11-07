@@ -1,9 +1,10 @@
 package k8s
 
 import (
+	"cmp"
 	"context"
 	"fmt"
-	"sort"
+	"slices"
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -66,7 +67,7 @@ func (c *Client) ListAppsInNamespaces(ctx context.Context, namespaces []string) 
 	}
 
 	// Metrics aren't watchable — direct call, same as the direct path.
-	metrics, _ := ListPodMetrics(ctx, c.Clientset, "")
+	metrics, _ := ListPodMetrics(ctx, c.Clientset, namespaceScope(namespaces))
 
 	// One cluster-wide pod snapshot for per-app aggregation, dereferenced
 	// once and shared across all namespaces (converters take values).
@@ -382,12 +383,12 @@ func cachedRows[T any, R any](namespaces []string, listNS func(string) ([]*T, er
 // sortByNSName sorts rows by (namespace, name) — the stable order every
 // across-namespaces view renders in.
 func sortByNSName[R any](rows []R, key func(R) (string, string)) {
-	sort.Slice(rows, func(i, j int) bool {
-		nsI, nameI := key(rows[i])
-		nsJ, nameJ := key(rows[j])
+	slices.SortFunc(rows, func(a, b R) int {
+		nsI, nameI := key(a)
+		nsJ, nameJ := key(b)
 		if nsI != nsJ {
-			return nsI < nsJ
+			return cmp.Compare(nsI, nsJ)
 		}
-		return nameI < nameJ
+		return cmp.Compare(nameI, nameJ)
 	})
 }

@@ -835,7 +835,7 @@ func (t *Tree) InvalidateFocus() {
 		return
 	}
 	delete(t.cache, t.pathKey())
-	if len(t.path) >= 2 {
+	if len(t.path) > 2 {
 		parent := pathKeyFor(t.path[:len(t.path)-1])
 		delete(t.cache, parent)
 	}
@@ -861,6 +861,10 @@ func (t *Tree) ResetForContextSwitch() {
 func (t *Tree) Update(msg tea.Msg, c *tuictx.Ctx) tea.Cmd {
 	if !t.Focused {
 		return nil
+	}
+	if paste, ok := msg.(tea.PasteMsg); ok && t.filter.Active() {
+		t.cursor = 0
+		return t.filter.Update(paste)
 	}
 	km, ok := msg.(tea.KeyPressMsg)
 	if !ok {
@@ -998,7 +1002,7 @@ func (t *Tree) View(c *tuictx.Ctx, w, h int) string {
 func (t *Tree) BreadcrumbCrumbs() []components.Crumb {
 	out := make([]components.Crumb, len(t.path))
 	for i, r := range t.path {
-		out[i] = components.Crumb{Label: r.Display}
+		out[i] = components.Crumb{Label: r.Display, Pinned: r.Kind == k8s.KindContext}
 	}
 	return out
 }
@@ -1150,7 +1154,7 @@ func (t *Tree) renderBody(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	// this branch, an unreachable cluster falls through to a silent ellipsis
 	// while the operator wonders whether the tree is just slow or broken.
 	if t.children == nil && t.LoadErr != nil {
-		hint := th.Hint.Render("press R to retry")
+		hint := th.Hint.Render("press r to retry")
 		return lipgloss.JoinVertical(lipgloss.Left,
 			lipgloss.NewStyle().Foreground(th.P.Red).Render("✗ "+t.LoadErr.Error()),
 			"",
@@ -1159,6 +1163,12 @@ func (t *Tree) renderBody(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	}
 	if t.children == nil {
 		return th.Idle.Render("…")
+	}
+
+	if t.filter.Value() != "" && t.visibleCount() == 0 {
+		return lipgloss.JoinVertical(lipgloss.Left,
+			th.Idle.Render("No matching resources"),
+			th.Hint.Render("Change or clear the filter."))
 	}
 
 	switch t.children.Kind {
@@ -1453,12 +1463,12 @@ func (t *Tree) renderAppRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	// Reclaimed cells flow into NAME so long deployment names stop truncating.
 	showNS := distinctAppNamespaces(apps) > 1
 	showHPA := anyAppHPA(apps)
-	showMetrics := anyAppMetrics(apps)
+	showMetrics := innerW >= 50 && anyAppMetrics(apps)
 
 	tableW := innerW - components.EdgeTotal()
 	const (
 		kW = 1
-		hW = 1
+		hW = 5
 		// cpuW / memW hold only the sparkline now — the numeric tail moved
 		// to the Inspector tile, where the right pane has room for the
 		// precise current value plus configured requests/limits. The
@@ -1534,7 +1544,7 @@ func (t *Tree) renderAppRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	}
 	cols = append(cols, hW)
 	aligns = append(aligns, components.AlignLeft)
-	headerLabels = append(headerLabels, "")
+	headerLabels = append(headerLabels, "READY")
 	if showMetrics {
 		cols = append(cols, usedCpuW, usedMemW)
 		aligns = append(aligns, components.AlignRight, components.AlignRight)
@@ -1583,7 +1593,19 @@ func (t *Tree) renderAppRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 		if ai >= 0 && ai < len(apps) {
 			a = apps[ai]
 		}
-		health := healthGlyphStyled(th, a.Health, bg, t.isPulsing(k8s.KindApp, a.Namespace, a.Name))
+		health := th.MetaOn(components.TruncPad(a.Ready, hW), bg)
+		if a.Health == k8s.HealthFailing {
+			health = bg.Foreground(th.P.Red).Bold(true).Render(components.TruncPad(a.Ready, hW))
+		}
+		if a.Health == k8s.HealthDegraded {
+			health = bg.Foreground(th.P.Yellow).Render(components.TruncPad(a.Ready, hW))
+		}
+		if t.isPulsing(k8s.KindApp, a.Namespace, a.Name) {
+			health = bg.Foreground(th.P.FG).Reverse(true).Render(components.TruncPad(a.Ready, hW))
+		}
+		if a.Ready == "" {
+			health = healthGlyphStyled(th, a.Health, bg, t.isPulsing(k8s.KindApp, a.Namespace, a.Name))
+		}
 		var hpaCell string
 		if a.HPA != nil {
 			hpaText := components.TruncPad(fmt.Sprintf("↕%d", a.HPA.Current), hpaW)
@@ -1758,7 +1780,7 @@ func (t *Tree) renderPodRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 		return t.treeEmpty(c, "pods")
 	}
 	showNS := distinctPodNamespaces(pods) > 1
-	showMetrics := anyPodMetrics(pods)
+	showMetrics := innerW >= 50 && anyPodMetrics(pods)
 	showRST := anyPodRestarts(pods)
 
 	tableW := innerW - components.EdgeTotal()
@@ -1847,7 +1869,7 @@ func (t *Tree) renderPodRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 		p := pods[i]
 		selected := i == t.cursor && t.Focused
 		bg := th.RowBgFor(i, selected)
-		nameCell := th.NameStrongOn(components.TruncPad(p.Name, nW), bg)
+		nameCell := th.NameStrongOn(components.TruncMiddlePad(p.Name, nW), bg)
 		// StatusGlyph at maxW=1 collapses to just the colored dot (the
 		// abnormal-state word is dropped). Same shape Apps use for H.
 		statusCell := th.StatusGlyph(p.Status, 1, bg)
@@ -2817,7 +2839,7 @@ func nsHealthCells(th *theme.Theme, summary nsHealthSummary, bg lipgloss.Style) 
 		col = th.P.Yellow
 	case k8s.HealthUnknown:
 		col = th.P.Dim
-	default:
+	case k8s.HealthHealthy:
 		// HealthHealthy keeps the green default.
 	}
 	pip = bg.Foreground(col).Bold(true).Render("●")
@@ -3459,7 +3481,7 @@ func healthGlyphStyled(t *theme.Theme, h k8s.Health, bg lipgloss.Style, pulsing 
 		return bg.Render(" ")
 	}
 	g := h.Glyph()
-	var style lipgloss.Style
+	style := bg.Foreground(t.P.Dim)
 	switch h {
 	case k8s.HealthHealthy:
 		style = bg.Foreground(t.P.Green).Bold(true)
@@ -3469,8 +3491,7 @@ func healthGlyphStyled(t *theme.Theme, h k8s.Health, bg lipgloss.Style, pulsing 
 		style = bg.Foreground(t.P.Red).Bold(true)
 	case k8s.HealthInProgress:
 		style = bg.Foreground(t.P.Blue).Bold(true)
-	default:
-		style = bg.Foreground(t.P.Dim)
+	case k8s.HealthUnknown:
 	}
 	if pulsing {
 		// Reverse-video keeps the same hue family but inverts fg/bg so

@@ -33,7 +33,7 @@ type Ctx struct {
 
 	// Background carries cancellation for in-flight k8s requests. It is reset
 	// when the user leaves a long-running view (e.g. log streaming).
-	Background context.Context
+	Background context.Context //nolint:containedctx // Bubble Tea callbacks have no context argument; this owns the view lifetime.
 	Cancel     context.CancelFunc
 
 	// Spinner is the shared loading indicator. Sections render Spinner.View()

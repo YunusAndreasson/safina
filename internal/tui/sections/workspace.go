@@ -29,28 +29,25 @@ const (
 	WSTabDrain
 )
 
-// Label returns the tab's visible name. Tabs that have a hotkey embed the
-// letter in parentheses (vim-discoverable, also matches GNU readline
-// labelling) — operators can scan the strip and see exactly which key
-// activates each tab without consulting `?`.
+// Label uses a separate key and sentence-case name for every tab.
 func (t WorkspaceTab) Label() string {
 	switch t {
 	case WSTabInspector:
-		return "(1) Inspector"
+		return "1 Inspector"
 	case WSTabLogs:
-		return "(l)ogs"
+		return "l Logs"
 	case WSTabEvents:
-		return "(e)vents"
+		return "e Events"
 	case WSTabYaml:
-		return "(d)escribe"
+		return "d Describe"
 	case WSTabChat:
-		return "(i) Chat"
+		return "i Chat"
 	case WSTabHot:
-		return "(h)ot"
+		return "h Hot pods"
 	case WSTabForwards:
-		return "(⌃f) Forwards"
+		return "⌃f Forwards"
 	case WSTabDrain:
-		return "(D)rain"
+		return "D Drain"
 	}
 	return ""
 }
@@ -115,94 +112,86 @@ type TabHitbox struct {
 	X1  int
 }
 
-// WorkspaceTabHitboxes recomputes the strip layout (same math as
-// RenderWorkspaceTabStrip) and returns the per-tab column ranges within the
-// strip's coordinate space (origin = strip's first cell). Caller adds the
-// strip's screen-origin x to translate back to terminal coordinates.
-//
-// Returns nil when the strip falls back to its truncated single-tab form —
-// the click target there would be the active tab only and there's no useful
-// switching to do, so we don't generate a hitbox.
-func WorkspaceTabHitboxes(tabs []WorkspaceTab, w int) []TabHitbox {
-	if len(tabs) == 0 {
-		return nil
+// workspaceTabLayout is shared by rendering and hit testing. When space is
+// limited, keep a contiguous window containing the active tab visible.
+func workspaceTabLayout(tabs []WorkspaceTab, active WorkspaceTab, w int) (hits []TabHitbox, left, right bool) {
+	if len(tabs) == 0 || w <= 0 {
+		return nil, false, false
 	}
-	// Mirror RenderWorkspaceTabStrip's layout: every tab renders as plain
-	// "Label" joined by a 3-cell separator. Active vs idle is signaled by
-	// color/weight only — no cursor glyph — so segment widths are the same
-	// for both states and we don't need the `active` argument here.
-	const sepW = 3
-	hits := make([]TabHitbox, 0, len(tabs))
-	pos := 0
+	selected := 0
 	for i, tab := range tabs {
-		segW := lipgloss.Width(tab.Label())
-		hits = append(hits, TabHitbox{Tab: tab, X0: pos, X1: pos + segW})
-		pos += segW
-		if i < len(tabs)-1 {
-			pos += sepW
+		if tab == active {
+			selected = i
+			break
 		}
 	}
-	// If the strip would have truncated, the hitboxes past the visible region
-	// are meaningless — the caller renders "…" instead of trailing labels.
-	// Return only the prefix that fits.
-	if pos <= w {
-		return hits
+	start, end := 0, len(tabs)
+	width := func() int {
+		n := 0
+		if start > 0 {
+			n += 2
+		}
+		if end < len(tabs) {
+			n += 2
+		}
+		for i := start; i < end; i++ {
+			n += lipgloss.Width(tabs[i].Label())
+			if i > start {
+				n += 3
+			}
+		}
+		return n
 	}
-	cut := hits[:0]
-	for _, h := range hits {
-		if h.X1 <= w {
-			cut = append(cut, h)
+	for width() > w && end-start > 1 {
+		if end-1 > selected {
+			end--
+		} else {
+			start++
 		}
 	}
-	return cut
+	if width() > w {
+		return []TabHitbox{{Tab: tabs[selected], X0: 0, X1: w}}, false, false
+	}
+	pos := 0
+	if start > 0 {
+		pos = 2
+	}
+	for _, tab := range tabs[start:end] {
+		next := pos + lipgloss.Width(tab.Label())
+		hits = append(hits, TabHitbox{Tab: tab, X0: pos, X1: next})
+		pos = next + 3
+	}
+	return hits, start > 0, end < len(tabs)
 }
 
-// RenderWorkspaceTabStrip renders the tab strip — a one-row band where
-// the active tab is bright cyan-bold and inactive tabs are dim. The line
-// as a whole serves as the panel's first content row. Width-aware: if
-// tabs would overflow, drops trailing tabs and appends "…".
-//
-// No cursor glyph on the active tab: a pink "❯" prefix used to mark the
-// active tab, but it read as a row-selection cursor (the convention this
-// app uses in lists like portforwards) and confused users about which
-// affordance the chevron meant. Color + weight do the job on their own.
+// WorkspaceTabHitboxes returns precisely the labels visible in the strip.
+func WorkspaceTabHitboxes(tabs []WorkspaceTab, active WorkspaceTab, w int) []TabHitbox {
+	hits, _, _ := workspaceTabLayout(tabs, active, w)
+	return hits
+}
+
+// RenderWorkspaceTabStrip keeps the active view visible even in narrow panes.
 func RenderWorkspaceTabStrip(t *theme.Theme, tabs []WorkspaceTab, active WorkspaceTab, w int) string {
-	if len(tabs) == 0 {
-		return ""
-	}
+	hits, left, right := workspaceTabLayout(tabs, active, w)
 	activeStyle := lipgloss.NewStyle().Foreground(t.P.Cyan).Bold(true)
 	idleStyle := lipgloss.NewStyle().Foreground(t.P.FGFade)
 	sepStyle := lipgloss.NewStyle().Foreground(t.P.Dim)
-
-	parts := make([]string, 0, len(tabs))
-	for _, tab := range tabs {
-		label := tab.Label()
-		if tab == active {
-			parts = append(parts, activeStyle.Render(label))
-		} else {
-			parts = append(parts, idleStyle.Render(label))
+	parts := make([]string, 0, len(hits))
+	for _, hit := range hits {
+		style := idleStyle
+		if hit.Tab == active {
+			style = activeStyle
 		}
+		parts = append(parts, style.Render(components.TruncPad(hit.Tab.Label(), hit.X1-hit.X0)))
 	}
-	sep := sepStyle.Render("   ")
-	strip := strings.Join(parts, sep)
-
-	if lipgloss.Width(strip) <= w {
-		return strip
+	strip := strings.Join(parts, sepStyle.Render("   "))
+	if left {
+		strip = sepStyle.Render("… ") + strip
 	}
-	// Try dropping trailing tabs one at a time until it fits, appending "…".
-	for keep := len(parts) - 1; keep >= 1; keep-- {
-		candidate := strings.Join(parts[:keep], sep) + sepStyle.Render(" …")
-		if lipgloss.Width(candidate) <= w {
-			return candidate
-		}
+	if right {
+		strip += sepStyle.Render(" …")
 	}
-	// Last resort: even one tab won't fit — render the active label clipped.
-	for i, tab := range tabs {
-		if tab == active {
-			return lipgloss.NewStyle().MaxWidth(w).Render(parts[i])
-		}
-	}
-	return lipgloss.NewStyle().MaxWidth(w).Render(parts[0])
+	return strip
 }
 
 // RenderWorkspaceBodyHeader returns a thin underline row separating the

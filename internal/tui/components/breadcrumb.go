@@ -12,6 +12,7 @@ type Crumb struct {
 	KindGlyph   string // single-rune kind indicator, e.g. "◇" "◆" "▦"
 	HealthGlyph string // ✓ ⚠ ✗ ⏵ … — empty to omit
 	Label       string
+	Pinned      bool // retain the active cluster when the topbar is narrow
 }
 
 func composeCrumb(c Crumb) string {

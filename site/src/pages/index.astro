@@ -1,0 +1,80 @@
+---
+import type { ImageMetadata } from "astro";
+import Base from "../layouts/Base.astro";
+import Nav from "../components/Nav.astro";
+import Opening from "../components/Opening.astro";
+import Tour from "../components/Tour.astro";
+import Feature from "../components/Feature.astro";
+import Frame from "../components/Frame.astro";
+import KeyList from "../components/KeyList.astro";
+import Install from "../components/Install.astro";
+import Footer from "../components/Footer.astro";
+
+const files = import.meta.glob<{ default: ImageMetadata }>("../assets/shots/*.png", { eager: true });
+const shot = (name: string) => {
+  const img = files[`../assets/shots/${name}.png`]?.default;
+  if (!img) throw new Error(`missing screenshot: ${name}.png`);
+  return img;
+};
+---
+
+<Base
+  title="Safina: the Kubernetes terminal UI for teams that ship"
+  description="The Kubernetes terminal UI for teams that ship, built for the people on call. Find what is broken, see why, and fix it without leaving the keyboard."
+>
+  <Nav />
+  <main id="main">
+    <Opening />
+    <Tour />
+
+    <Feature id="claude" heading="Ask Claude what’s wrong">
+      <p>
+        Press <kbd class="cap">i</kbd> and ask a question. Safina gives Claude the cluster, namespace and resource you
+        have selected, so there is nothing&nbsp;to&nbsp;paste.
+      </p>
+      <p>
+        Claude gives shura, counsel: it tells you which safina keys to press next but can’t press them, and anything
+        that writes still asks you first. The amanah, the trust of the cluster, stays&nbsp;with&nbsp;you.
+      </p>
+      <p class="quiet">Uses the <code>claude</code> CLI you are signed in to. No API&nbsp;key&nbsp;needed.</p>
+      <Frame
+        slot="figure"
+        src={shot("chat")}
+        crop={shot("chat-m")}
+        panCols={86}
+        alt="The chat tab beside the workloads list, with the failing ledger-api selected. Asked why it keeps restarting, Claude says the selection does not show a reason yet, lists the safina keys that will (Enter for its pods, e for events, d for the exit code, l for logs), and explains what each common reason means."
+      />
+    </Feature>
+
+    <Feature id="safety" heading="Lowercase reads. Uppercase writes.">
+      <p>
+        Every key that changes the cluster is a capital letter, so a typo can only read. To write, Shift into
+        Barbarossa mode, after the Ottoman admiral. Writes confirm first: scaling asks for a count, restarts and
+        rollbacks ask for a yes, and edits show the diff before anything&nbsp;is&nbsp;applied.
+      </p>
+      <p class="quiet">
+        Safina never sets a course for you, either: every session starts on the clusters in your kubeconfig, and you
+        pick one.
+      </p>
+      <Frame
+        slot="figure"
+        src={shot("diff-f")}
+        crop={shot("diff-m")}
+        panCols={78}
+        alt="An edit to the ledger-api Deployment waiting for confirmation: a one-line diff changes DATABASE_URL from ledger-db-primary to ledger-db, with y to apply and n to cancel."
+      />
+      <div slot="after" class="keys">
+        <KeyList />
+      </div>
+    </Feature>
+
+    <Install />
+  </main>
+  <Footer />
+</Base>
+
+<style>
+  .keys {
+    margin-top: var(--s4);
+  }
+</style>

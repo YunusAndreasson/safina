@@ -1,9 +1,13 @@
 package sections
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
+	"github.com/charmbracelet/x/ansi"
+
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/sahilm/fuzzy"
 
@@ -22,7 +26,7 @@ import (
 // new []config.ResourceRef instead of a navigation Path.
 type Browser struct {
 	open    bool
-	query   string
+	input   components.SearchInput
 	entries []browserEntry // full corpus, captured at Open()
 	matches []int          // indexes into entries, ranked
 	indices [][]int        // matched-char offsets per match — highlight
@@ -49,7 +53,7 @@ func (b *Browser) IsOpen() bool { return b.open }
 // "already on" rows show as [x] from the start.
 func (b *Browser) Open(kinds []k8s.ResourceKind, enabled []config.ResourceRef) {
 	b.entries = buildBrowserEntries(kinds, enabled)
-	b.query = ""
+	b.input.SetValue("")
 	b.cursor = 0
 	b.open = true
 	b.recomputeMatches()
@@ -61,13 +65,24 @@ func (b *Browser) Close() { b.open = false }
 
 // SetQuery replaces the query and reranks matches.
 func (b *Browser) SetQuery(q string) {
-	b.query = q
+	b.input.SetValue(q)
 	b.cursor = 0
 	b.recomputeMatches()
 }
 
+// UpdateQuery delegates editing to the shared Bubbles input and reranks only
+// when its value changes; cursor movement does not reset result selection.
+func (b *Browser) UpdateQuery(msg tea.Msg) tea.Cmd {
+	cmd, changed := b.input.Update(msg)
+	if changed {
+		b.cursor = 0
+		b.recomputeMatches()
+	}
+	return cmd
+}
+
 // Query returns the current query string for the input-line render.
-func (b *Browser) Query() string { return b.query }
+func (b *Browser) Query() string { return b.input.Value() }
 
 // CursorUp / CursorDown move within the result list.
 func (b *Browser) CursorUp() {
@@ -207,7 +222,7 @@ func refKey(r config.ResourceRef) string {
 // recomputeMatches reranks entries against the current query. Empty
 // query → entries in their natural order (defaults first).
 func (b *Browser) recomputeMatches() {
-	if b.query == "" {
+	if b.input.Value() == "" {
 		b.matches = make([]int, len(b.entries))
 		for i := range b.entries {
 			b.matches[i] = i
@@ -216,7 +231,7 @@ func (b *Browser) recomputeMatches() {
 		return
 	}
 	corpus := browserCorpus{entries: b.entries}
-	res := fuzzy.FindFrom(b.query, corpus)
+	res := fuzzy.FindFrom(b.input.Value(), corpus)
 	b.matches = make([]int, 0, len(res))
 	b.indices = make([][]int, 0, len(res))
 	for _, r := range res {
@@ -235,52 +250,30 @@ func (c browserCorpus) Len() int { return len(c.entries) }
 // View renders the browser as a centered modal. Same envelope as the
 // palette so the two modals feel like one family.
 func (b *Browser) View(c *tuictx.Ctx, termW, termH int) string {
+	return lipgloss.Place(termW, termH, lipgloss.Center, lipgloss.Center, b.Card(c, termW, termH), components.ModalBackdrop(c.Theme)...)
+}
+
+// Card renders only the dialog; the application owns its layered backdrop.
+func (b *Browser) Card(c *tuictx.Ctx, termW, termH int) string {
 	t := c.Theme
 
-	w := termW * 80 / 100
-	if w > 96 {
-		w = 96
+	innerW := max(1, min(90, termW-8))
+	listRows := max(1, min(22, termH-11))
+	enabled := 0
+	for _, entry := range b.entries {
+		if entry.Enabled {
+			enabled++
+		}
 	}
-	if w < 60 {
-		w = 60
-	}
-	innerW := w - 4
-
-	maxRows := termH * 75 / 100
-	if maxRows > 28 {
-		maxRows = 28
-	}
-	listRows := maxRows - 6
-	if listRows < 6 {
-		listRows = 6
-	}
-
-	input := components.SearchPromptRow(t, b.query)
-
-	header := t.Hint.Render(
-		"every resource the cluster exposes — toggle which appear as folds in your tree",
-	)
-
-	list := b.renderList(c, innerW, listRows)
-
-	footer := components.RenderHintRow(t, []components.KeyDesc{
-		{Key: "space", Desc: "toggle"},
-		{Key: "↵", Desc: "save"},
-		{Key: "esc", Desc: "cancel"},
-	})
-
+	header := fmt.Sprintf("Resource kinds · %d enabled", enabled)
 	body := lipgloss.JoinVertical(lipgloss.Left,
-		input,
-		header,
-		"",
-		list,
-		"",
-		footer,
-	)
-
-	panel := t.Modal.Padding(1, 2).Width(w).Render(body)
-	return lipgloss.Place(termW, termH, lipgloss.Center, lipgloss.Center, panel,
-		components.ModalBackdrop(t)...)
+		t.CyanBold.Render(ansi.Truncate(header, innerW, "…")),
+		ansi.Truncate(b.input.View(t, innerW), innerW, "…"),
+		t.Hint.Render("Choose which kinds appear in the tree."), "",
+		b.renderList(c, innerW, listRows), "",
+		t.Hint.Render("space toggle · ↵ save · esc cancel"))
+	panel := t.Modal.Padding(1, 2).Width(innerW + 6).Render(body)
+	return panel
 }
 
 // renderList renders the matches as a window into the corpus, centred
@@ -335,11 +328,11 @@ func renderBrowserRow(c *tuictx.Ctx, e browserEntry, hits []int, w int, selected
 		check = bg.Foreground(t.P.Dim).Render("[ ] ")
 	}
 	highlighted := highlightMatches(e.Display, hits, bg, lipgloss.NewStyle().Inherit(bg).Foreground(t.P.Yellow).Bold(true))
-	suffix := "  " + bg.Foreground(t.P.Dim).Render(e.Group)
+	suffix := bg.Render("  ") + bg.Foreground(t.P.Dim).Render(e.Group)
 	line := cursor + check + highlighted + suffix
 	pad := w - lipgloss.Width(line)
 	if pad > 0 {
 		line += bg.Width(pad).Render("")
 	}
-	return line
+	return ansi.Truncate(line, w, "…")
 }

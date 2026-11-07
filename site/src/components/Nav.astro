@@ -1,0 +1,99 @@
+---
+const links = [
+  { href: "#tour", label: "Tour" },
+  { href: "#claude", label: "Ask Claude" },
+  { href: "#safety", label: "Safe writes" },
+];
+---
+
+<header class="nav">
+  <nav class="nav__inner wrap" aria-label="Primary">
+    <a class="wordmark" href="#top" aria-label="Safina, back to top">safina</a>
+    <ul class="nav__links" role="list">
+      {links.map((l) => <li><a href={l.href}>{l.label}</a></li>)}
+    </ul>
+    <a class="btn btn--beacon nav__cta" href="#install">Get safina</a>
+  </nav>
+</header>
+
+<style>
+  .nav {
+    position: fixed;
+    inset: 0 0 auto;
+    z-index: 50;
+    border-bottom: 1px solid transparent;
+  }
+  .nav__inner {
+    display: flex;
+    align-items: center;
+    gap: clamp(16px, 3vw, 40px);
+    height: 68px;
+  }
+  .nav__links {
+    display: flex;
+    gap: clamp(14px, 2.4vw, 32px);
+    padding: 0;
+    list-style: none;
+    font-size: var(--t-ui);
+  }
+  .nav__links a {
+    color: var(--spray);
+    text-decoration: none;
+    padding-block: 12px;
+  }
+  .nav__links a:hover {
+    color: #fff;
+  }
+  .nav__cta {
+    min-height: 40px;
+    margin-left: auto;
+    padding-inline: 1.1em;
+    font-size: var(--t-ui);
+  }
+
+  /* On the page grid: the name on the title line, the links on the text
+     line, the button on the column's end. The nav is the first place the
+     eye meets the verticals every section below hangs from. */
+  @media (width > 1100px) {
+    .nav__inner {
+      display: grid;
+      grid-template-columns: var(--split);
+      column-gap: var(--col-gap);
+    }
+    .nav__inner > .wordmark {
+      grid-area: 1 / 1;
+      justify-self: start;
+    }
+    .nav__links {
+      grid-area: 1 / 2;
+      justify-self: start;
+    }
+    .nav__cta {
+      grid-area: 1 / 2;
+      justify-self: end;
+      margin-left: 0;
+    }
+  }
+
+  @media (width <= 720px) {
+    .nav__links {
+      display: none;
+    }
+  }
+
+  /* Transparent over the photo, solid once the page moves on. */
+  @supports (animation-timeline: scroll()) {
+    .nav {
+      animation: nav-solid linear both;
+      animation-timeline: scroll(root);
+      animation-range: 50svh 90svh;
+    }
+  }
+  @keyframes nav-solid {
+    to {
+      background: rgb(from var(--abyss) r g b / 72%);
+      border-bottom-color: var(--hairline);
+      backdrop-filter: blur(14px) saturate(1.2);
+    }
+  }
+</style>

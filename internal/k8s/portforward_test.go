@@ -42,7 +42,7 @@ func TestParsePortPair(t *testing.T) {
 }
 
 func TestPickFreeLocalPort(t *testing.T) {
-	p, err := PickFreeLocalPort()
+	p, err := PickFreeLocalPort(t.Context())
 	require.NoError(t, err)
 	assert.Positive(t, p)
 	assert.LessOrEqual(t, p, 65535)

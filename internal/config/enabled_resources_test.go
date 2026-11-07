@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -43,21 +44,9 @@ func TestResourceRef_Equal(t *testing.T) {
 // no config file exists, Load() returns the default fold set so the
 // first launch renders the same six folds the user is used to.
 func TestLoad_SeedsDefaultsWhenEnabledResourcesAbsent(t *testing.T) {
-	cfgPath, err := ConfigPath()
-	if err != nil {
-		t.Skipf("cannot determine config path: %v", err)
-	}
-	origData, _ := os.ReadFile(cfgPath)
-	defer func() {
-		if origData != nil {
-			_ = os.WriteFile(cfgPath, origData, 0o644)
-		} else {
-			_ = os.Remove(cfgPath)
-		}
-	}()
+	cfgPath := filepath.Join(t.TempDir(), ".safina", "config.yaml")
 
-	_ = os.Remove(cfgPath)
-	loaded, err := Load()
+	loaded, err := loadFile(cfgPath)
 	require.NoError(t, err)
 	require.NotNil(t, loaded)
 	assert.Equal(t, DefaultEnabledResources(), loaded.EnabledResources,
@@ -68,24 +57,13 @@ func TestLoad_SeedsDefaultsWhenEnabledResourcesAbsent(t *testing.T) {
 // via the Resource Browser. Load must not re-seed defaults; that would
 // silently undo their choice on every restart.
 func TestLoad_RespectsExplicitEmptyList(t *testing.T) {
-	cfgPath, err := ConfigPath()
-	if err != nil {
-		t.Skipf("cannot determine config path: %v", err)
-	}
-	origData, _ := os.ReadFile(cfgPath)
-	defer func() {
-		if origData != nil {
-			_ = os.WriteFile(cfgPath, origData, 0o644)
-		} else {
-			_ = os.Remove(cfgPath)
-		}
-	}()
+	cfgPath := filepath.Join(t.TempDir(), ".safina", "config.yaml")
 
 	cfg := &AppConfig{EnabledResources: []ResourceRef{}}
-	err = Save(cfg)
+	err := saveFile(cfg, cfgPath)
 	require.NoError(t, err)
 
-	loaded, err := Load()
+	loaded, err := loadFile(cfgPath)
 	require.NoError(t, err)
 	assert.NotNil(t, loaded.EnabledResources, "empty list must round-trip as non-nil")
 	assert.Empty(t, loaded.EnabledResources, "explicit empty must survive Load")
@@ -94,18 +72,7 @@ func TestLoad_RespectsExplicitEmptyList(t *testing.T) {
 // TestSaveLoadRoundtrip_EnabledResources — a non-trivial selection
 // (Workloads + a CRD) round-trips byte-for-byte through YAML.
 func TestSaveLoadRoundtrip_EnabledResources(t *testing.T) {
-	cfgPath, err := ConfigPath()
-	if err != nil {
-		t.Skipf("cannot determine config path: %v", err)
-	}
-	origData, _ := os.ReadFile(cfgPath)
-	defer func() {
-		if origData != nil {
-			_ = os.WriteFile(cfgPath, origData, 0o644)
-		} else {
-			_ = os.Remove(cfgPath)
-		}
-	}()
+	cfgPath := filepath.Join(t.TempDir(), ".safina", "config.yaml")
 
 	cfg := &AppConfig{
 		EnabledResources: []ResourceRef{
@@ -114,16 +81,16 @@ func TestSaveLoadRoundtrip_EnabledResources(t *testing.T) {
 			{Group: "cert-manager.io", Version: "v1", Resource: "certificates"},
 		},
 	}
-	err = Save(cfg)
+	err := saveFile(cfg, cfgPath)
 	require.NoError(t, err)
 
-	data, err := os.ReadFile(cfgPath)
+	data, err := os.ReadFile(cfgPath) // #nosec G304 -- Reads a fixture created in t.TempDir.
 	require.NoError(t, err)
 	content := string(data)
 	assert.Contains(t, content, "enabledResources", "key must be present in YAML")
 	assert.Contains(t, content, "prometheusrules", "resource name must round-trip")
 
-	loaded, err := Load()
+	loaded, err := loadFile(cfgPath)
 	require.NoError(t, err)
 	assert.Equal(t, cfg.EnabledResources, loaded.EnabledResources)
 }

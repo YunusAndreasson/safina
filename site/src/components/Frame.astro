@@ -1,0 +1,115 @@
+---
+import type { ImageMetadata } from "astro";
+import { getImage } from "astro:assets";
+
+// A real safina window. Full screenshot on wider screens; on phones an
+// art-directed crop of the region that matters, so text stays readable
+// instead of shrinking a 140-column terminal to 360px.
+interface Props {
+  src: ImageMetadata;
+  crop?: ImageMetadata;
+  alt: string;
+  eager?: boolean;
+  sizes?: string;
+  /** On phones, keep this many terminal columns readable by letting the
+   *  figure scroll sideways instead of shrinking it. */
+  panCols?: number;
+}
+
+const {
+  src,
+  crop,
+  alt,
+  eager = false,
+  panCols,
+  sizes = "(width >= 1368px) 1240px, calc(100vw - 2 * clamp(16px, 4.2vw, 64px))",
+} = Astro.props;
+
+// Displayed at most 1400 CSS px wide (the tour), so the full 2888 source
+// covers 2x screens; narrower figures stop at their own width.
+const cap = (ws: number[], max: number) => [...new Set(ws.map((w) => Math.min(w, max)))];
+const widths = cap([1240, 1860, 2480, 2888], src.width);
+const cropWidths = crop ? cap([640, 760, crop.width], crop.width) : [];
+
+// AVIF for every current browser; one WebP for the bare <img> fallback.
+const [avif, fallback, cropAvif] = await Promise.all([
+  getImage({ src, format: "avif", widths, quality: 70 }),
+  getImage({ src, format: "webp", width: Math.min(1440, src.width), quality: 82 }),
+  crop ? getImage({ src: crop, format: "avif", widths: cropWidths, quality: 64 }) : null,
+]);
+const phone = "(width <= 640px)";
+---
+
+<div class:list={["frame", panCols && "frame--pan"]} style={panCols ? `--pan-cols: ${String(panCols)}` : undefined}>
+  <div class="frame__scroller" tabindex={panCols ? 0 : undefined} role={panCols ? "region" : undefined} aria-label={panCols ? "Screenshot, scrolls sideways" : undefined}>
+  <picture>
+    {cropAvif && crop && <source media={phone} type="image/avif" srcset={cropAvif.srcSet.attribute} sizes="100vw" width={crop.width} height={crop.height} />}
+    <source type="image/avif" srcset={avif.srcSet.attribute} sizes={sizes} />
+    <img
+      src={fallback.src}
+      width={src.width}
+      height={src.height}
+      alt={alt}
+      loading={eager ? "eager" : "lazy"}
+      decoding="async"
+    />
+  </picture>
+  </div>
+</div>
+{panCols && <p class="pan-hint" aria-hidden="true">Scroll sideways to read the whole screen.</p>}
+
+<style>
+  .frame {
+    position: relative;
+    border-radius: var(--radius-frame);
+    background: var(--tn-bg);
+    overflow: hidden;
+    box-shadow:
+      0 60px 120px -50px rgb(0 0 0 / 95%),
+      0 30px 160px -70px var(--tn-glow);
+  }
+  /* A hairline edge that catches light from above, like glass. */
+  .frame::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    padding: 1px;
+    border-radius: inherit;
+    background: linear-gradient(
+      180deg,
+      rgb(from var(--tn-fg) r g b / 34%),
+      rgb(from var(--tn-fg) r g b / 10%) 18%,
+      rgb(from var(--tn-fg) r g b / 7%)
+    );
+    mask:
+      linear-gradient(#000 0 0) content-box exclude,
+      linear-gradient(#000 0 0);
+    pointer-events: none;
+  }
+  .frame img {
+    width: 100%;
+    height: auto;
+  }
+  .pan-hint {
+    display: none;
+    margin-top: 10px;
+    font-size: var(--t-small);
+    color: var(--fog);
+  }
+  @media (width <= 640px) {
+    /* ~8.5px per terminal column keeps the text around 14px. */
+    .frame--pan .frame__scroller {
+      overflow-x: auto;
+      overscroll-behavior-x: contain;
+      scrollbar-color: rgb(from var(--tn-fg) r g b / 35%) transparent;
+    }
+    .frame--pan img {
+      width: calc(var(--pan-cols) * 8.5px + 16px);
+      max-width: none;
+    }
+    .frame--pan + .pan-hint {
+      display: block;
+    }
+  }
+</style>

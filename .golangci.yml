@@ -1,10 +1,20 @@
 version: "2"
 
+run:
+  timeout: 5m
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
 linters:
   default: standard
   enable:
     - asasalint
+    - bidichk
     - bodyclose
+    - containedctx
+    - contextcheck
     - copyloopvar
     - durationcheck
     - errname
@@ -15,6 +25,8 @@ linters:
     - gosec
     - intrange
     - makezero
+    - musttag
+    - nosprintfhostport
     - nilerr
     - nilnesserr
     - noctx
@@ -23,6 +35,8 @@ linters:
     - prealloc
     - predeclared
     - reassign
+    - rowserrcheck
+    - sqlclosecheck
     - sloglint
     - testifylint
     - thelper
@@ -31,24 +45,25 @@ linters:
     - usetesting
     - wastedassign
 
+  exclusions:
+    warn-unused: true
+
   settings:
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment # Struct padding is measured through benchmarks, not a correctness gate.
+    errcheck:
+      check-type-assertions: true
     exhaustive:
-      default-signifies-exhaustive: true
+      default-signifies-exhaustive: false
     nolintlint:
+      allow-unused: false
       require-explanation: true
       require-specific: true
     gosec:
       excludes:
         - G104   # errcheck already covers unchecked errors
-        - G109   # strconv.Atoi to int32 — guarded by input validation
-        - G115   # integer overflow conversions — practically safe ranges
-        - G204   # subprocess — expected for Claude CLI invocation
-        - G301   # os.MkdirAll 0755 is standard
-        - G302   # os.OpenFile 0644 for debug log is standard
-        - G304   # file inclusion — expected for config file reading
-        - G306   # os.WriteFile 0644 is standard for config files
-        - G307   # defer Close — handled by errcheck
-        - G703   # path traversal — expected for config/test files
 
 formatters:
   enable:

@@ -91,7 +91,7 @@ func Default() Map {
 		// chord collides with EOF muscle memory in every shell/REPL, and a
 		// shifted single letter is faster from the home row anyway. K
 		// shares its "loud verb" feel with the rest of the mutator block.
-		Delete:   key.NewBinding(key.WithKeys("K"), key.WithHelp("K", "kill")),
+		Delete:   key.NewBinding(key.WithKeys("K"), key.WithHelp("K", "delete")),
 		Describe: key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "describe")),
 		// Convention: lowercase = read-only; uppercase = mutates cluster
 		// state. Reading is safe to fat-finger; mutating requires the shift
@@ -113,7 +113,7 @@ func Default() Map {
 		// Read-only navigation jump → lowercase.
 		FirstFail: key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "next fail")),
 		Wrap:      key.NewBinding(key.WithKeys("w"), key.WithHelp("w", "wrap")),
-		Ask:       key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "ask (tab also)")),
+		Ask:       key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "chat")),
 		Yank:      key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "copy")),
 		Reveal:    key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "reveal secret")),
 		Edit:      key.NewBinding(key.WithKeys("E"), key.WithHelp("E", "edit yaml")),
@@ -193,6 +193,14 @@ func (k Map) Groups() []Group {
 			Title: "meta",
 			Pairs: []KeyPair{
 				{Key: "↑↓", Desc: "navigate"},
+				{Key: "tab", Desc: "switch pane"},
+				{Key: "z", Desc: "expand reading pane"},
+				{Key: "←→", Desc: "workspace tabs"},
+				{Key: ":", Desc: "search loaded resources"},
+				{Key: "ctrl+s", Desc: "expand palette to namespace"},
+				{Key: "ctrl+n", Desc: "notification history"},
+				{Key: "ctrl+d", Desc: "dismiss notification"},
+				{Key: "c / p", Desc: "log targets / previous logs"},
 				{Key: "↵", Desc: "drill / confirm"},
 			},
 			// k.Back pulls its own "esc → back" label from the binding now,

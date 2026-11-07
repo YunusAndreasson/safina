@@ -30,13 +30,10 @@ func Pod(name string, opts ...PodOpt) *corev1.Pod {
 	return p
 }
 
-func WithNamespace(ns string) PodOpt { return func(p *corev1.Pod) { p.Namespace = ns } }
-func WithNode(node string) PodOpt    { return func(p *corev1.Pod) { p.Spec.NodeName = node } }
-func WithOrphan() PodOpt             { return func(p *corev1.Pod) { p.OwnerReferences = nil } }
+func WithOrphan() PodOpt { return func(p *corev1.Pod) { p.OwnerReferences = nil } }
 func WithOwnedByDaemonSet() PodOpt {
 	return func(p *corev1.Pod) { p.OwnerReferences = OwnedByDaemonSet() }
 }
-func WithPhase(ph corev1.PodPhase) PodOpt { return func(p *corev1.Pod) { p.Status.Phase = ph } }
 
 func WithTerminating() PodOpt {
 	return func(p *corev1.Pod) {

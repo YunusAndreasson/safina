@@ -1,12 +1,14 @@
 package k8s
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -38,19 +40,17 @@ const (
 // re-resolution would surprise the operator the first time they noticed
 // a different pod handling their curl.
 type PortForward struct {
-	ID            string
-	ContextName   string
-	Namespace     string
-	TargetKind    string // PortForwardTargetPod / PortForwardTargetService
-	TargetName    string // the Pod or Service name the user picked
-	ResolvedPod   string // the pod the forwarder is actually bound to
-	LocalPort     int
-	RemotePort    int
-	StartedAt     time.Time
-	requestedPort int // what the user typed; LocalPort may differ if we picked a free one
-	stop          chan struct{}
-	ready         chan struct{}
-	errCh         chan error
+	ID          string
+	ContextName string
+	Namespace   string
+	TargetKind  string // PortForwardTargetPod / PortForwardTargetService
+	TargetName  string // the Pod or Service name the user picked
+	ResolvedPod string // the pod the forwarder is actually bound to
+	LocalPort   int
+	RemotePort  int
+	StartedAt   time.Time
+	stop        chan struct{}
+	errCh       chan error
 }
 
 // PortForwardSnapshot is the value-typed view returned by ListPortForwards.
@@ -90,14 +90,18 @@ func NewForwardManager() *ForwardManager {
 // PickFreeLocalPort asks the kernel for an ephemeral port we can bind. Used
 // when the user-requested port is already in use: rather than make them
 // retry, we transparently grab a free one and banner the substitution.
-func PickFreeLocalPort() (int, error) {
+func PickFreeLocalPort(ctx context.Context) (int, error) {
 	var lc net.ListenConfig
-	l, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	l, err := lc.Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
 		return 0, err
 	}
 	defer func() { _ = l.Close() }()
-	return l.Addr().(*net.TCPAddr).Port, nil
+	addr, ok := l.Addr().(*net.TCPAddr)
+	if !ok {
+		return 0, fmt.Errorf("unexpected listener address type %T", l.Addr())
+	}
+	return addr.Port, nil
 }
 
 // localPortInUse is a non-binding probe: try to listen, close immediately if
@@ -105,10 +109,10 @@ func PickFreeLocalPort() (int, error) {
 // the portforward goroutine that runs right after will get the same port
 // back from the kernel because we only released it. Tiny race window, but
 // the alternative is parsing /proc/net/tcp which is wildly OS-specific.
-func localPortInUse(port int) bool {
+func localPortInUse(ctx context.Context, port int) bool {
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	var lc net.ListenConfig
-	l, err := lc.Listen(context.Background(), "tcp", addr)
+	l, err := lc.Listen(ctx, "tcp", addr)
 	if err != nil {
 		return true
 	}
@@ -184,13 +188,13 @@ func (fm *ForwardManager) StartPortForward(
 	}
 
 	if localPort <= 0 || localPort > 65535 {
-		p, err := PickFreeLocalPort()
+		p, err := PickFreeLocalPort(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("pick local port: %w", err)
 		}
 		localPort = p
-	} else if localPortInUse(localPort) {
-		p, err := PickFreeLocalPort()
+	} else if localPortInUse(ctx, localPort) {
+		p, err := PickFreeLocalPort(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("pick local port: %w", err)
 		}
@@ -219,10 +223,10 @@ func (fm *ForwardManager) StartPortForward(
 	// legacy SPDY dialer when the websocket upgrade is what failed. If the
 	// tunnel dialer itself can't be built, SPDY alone matches old behavior.
 	dialer := spdyDialer
-	if tunnel, err := portforward.NewSPDYOverWebsocketDialer(pfURL, restCfg); err == nil {
+	if tunnel, tunnelErr := portforward.NewSPDYOverWebsocketDialer(pfURL, restCfg); tunnelErr == nil {
 		dialer = portforward.NewFallbackDialer(tunnel, spdyDialer, streamFallback)
 	} else {
-		debug.Errf("portforward.tunnel_dialer_failed", "err", err.Error())
+		debug.Errf("portforward.tunnel_dialer_failed", "err", tunnelErr.Error())
 	}
 
 	stop := make(chan struct{})
@@ -262,19 +266,17 @@ func (fm *ForwardManager) StartPortForward(
 	fm.seq++
 	id := fmt.Sprintf("pf-%d", fm.seq)
 	pf := &PortForward{
-		ID:            id,
-		ContextName:   contextName,
-		Namespace:     namespace,
-		TargetKind:    targetKind,
-		TargetName:    targetName,
-		ResolvedPod:   podName,
-		LocalPort:     localPort,
-		RemotePort:    remotePort,
-		StartedAt:     time.Now(),
-		requestedPort: localPort,
-		stop:          stop,
-		ready:         ready,
-		errCh:         errCh,
+		ID:          id,
+		ContextName: contextName,
+		Namespace:   namespace,
+		TargetKind:  targetKind,
+		TargetName:  targetName,
+		ResolvedPod: podName,
+		LocalPort:   localPort,
+		RemotePort:  remotePort,
+		StartedAt:   time.Now(),
+		stop:        stop,
+		errCh:       errCh,
 	}
 	fm.active[id] = pf
 	fm.mu.Unlock()
@@ -320,10 +322,10 @@ func (fm *ForwardManager) List() []PortForwardSnapshot {
 		stale := false
 		select {
 		case err := <-pf.errCh:
-			// Drain — record the error as staleness but keep the entry in
+			// Any completed forward is stale, even after a clean exit. Keep it in
 			// the list so the user can see the row + stop it. Re-buffer the
 			// signal so a follow-up List call still sees it.
-			stale = err != nil
+			stale = true
 			pf.errCh <- err
 		default:
 		}
@@ -340,14 +342,13 @@ func (fm *ForwardManager) List() []PortForwardSnapshot {
 			Stale:       stale,
 		})
 	}
-	// Stable order: oldest first.
-	for i := range out {
-		for j := i + 1; j < len(out); j++ {
-			if out[j].StartedAt.Before(out[i].StartedAt) {
-				out[i], out[j] = out[j], out[i]
-			}
+	// Break timestamp ties by ID so map iteration cannot reorder rows.
+	slices.SortFunc(out, func(a, b PortForwardSnapshot) int {
+		if order := a.StartedAt.Compare(b.StartedAt); order != 0 {
+			return order
 		}
-	}
+		return cmp.Compare(a.ID, b.ID)
+	})
 	return out
 }
 
@@ -360,7 +361,7 @@ func (fm *ForwardManager) Count() int {
 
 // ParsePortPair parses "L:R" or "R" (where L defaults to R). Returns an
 // error on anything outside the [1,65535] range or with non-digit chunks.
-func ParsePortPair(s string) (local, remote int, err error) {
+func ParsePortPair(s string) (int, int, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return 0, 0, errors.New("empty port pair")

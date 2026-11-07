@@ -166,7 +166,7 @@ func TestListContexts_EmptyConfig(t *testing.T) {
 func writeTempKubeconfig(t *testing.T, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "kubeconfig")
-	err := os.WriteFile(path, []byte(content), 0o644)
+	err := os.WriteFile(path, []byte(content), 0o600)
 	require.NoError(t, err)
 	return path
 }

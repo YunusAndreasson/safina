@@ -128,11 +128,12 @@ func TestBuildPaletteIndex_AssemblesEntries(t *testing.T) {
 	}
 
 	require.Contains(t, byID, k8s.KindContext+"//prod-eu-1")
-	require.Contains(t, byID, k8s.KindNamespaceFolder+"//shop")
+	require.Contains(t, byID, k8s.KindNamespaceFolder+"/shop/shop")
 	app := byID[k8s.KindApp+"/shop/checkout"]
 	require.Equal(t, k8s.AppKindDeployment, app.SubKind)
 	require.Equal(t, "3/3", app.Hint)
 	require.Equal(t, "shop", app.Namespace)
+	require.Equal(t, k8s.KindWorkloadsFold, app.Path[len(app.Path)-2].Kind)
 
 	require.Contains(t, byID, k8s.KindPod+"/shop/checkout-0")
 	require.Equal(t, "Running", byID[k8s.KindPod+"/shop/checkout-0"].Hint)
@@ -328,17 +329,15 @@ func TestPalette_OpenResetsState(t *testing.T) {
 	assert.Empty(t, p.VerbHit())
 }
 
-func TestPalette_HeadCapEmptyQuery(t *testing.T) {
-	// Empty query mode shows at most 50 entries (per the head constant) so
-	// the modal doesn't try to render thousands of rows pre-filter.
+func TestPalette_EmptyQueryKeepsAllLoadedResources(t *testing.T) {
+	// Rendering is windowed; scrolling must still reach every loaded entry.
 	many := make([]PaletteEntry, 0, 120)
 	for range 120 {
 		many = append(many, PaletteEntry{Kind: k8s.KindPod, Name: "p"})
 	}
 	p := NewPalette()
 	p.Open(many)
-	assert.LessOrEqual(t, len(p.matches), 50,
-		"empty-query matches must be capped to the head constant")
+	assert.Len(t, p.matches, 120)
 }
 
 // ── PaletteVerbsFor ───────────────────────────────────────────────────

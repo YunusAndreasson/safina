@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yunus/safina/internal/tui/theme"
 )
@@ -105,22 +106,29 @@ func Topbar(t *theme.Theme, w int, crumbs []Crumb, refreshAge, clock string, for
 	if innerW < 1 {
 		innerW = 1
 	}
-	const minGap = 4
-	rightW := lipgloss.Width(clockCell)
-	if refreshCell != "" {
-		rightW += lipgloss.Width(refreshCell) + 3 // 3-cell gap between pill and clock
+	const minGap = 2
+	spacer := lipgloss.NewStyle().Background(t.P.BG2).Render("   ")
+	renderRight := func() string {
+		cells := []string{}
+		for _, cell := range []string{healthCell, forwardCell, refreshCell, clockCell} {
+			if cell != "" {
+				cells = append(cells, cell)
+			}
+		}
+		return strings.Join(cells, spacer)
 	}
-	if forwardCell != "" {
-		rightW += lipgloss.Width(forwardCell) + 3 // 3-cell gap between forward pill and the rest
+	right := renderRight()
+	locationMin := min(32, innerW-lipgloss.Width(logo+logoSep)-minGap)
+	budget := func() int { return innerW - lipgloss.Width(logo+logoSep+right) - minGap }
+	if budget() < locationMin {
+		healthCell = ""
+		right = renderRight()
 	}
-	if healthCell != "" {
-		rightW += lipgloss.Width(healthCell) + 3 // 3-cell gap before the health pill
+	if budget() < locationMin {
+		clockCell = ""
+		right = renderRight()
 	}
-	usedW := lipgloss.Width(logo) + lipgloss.Width(logoSep) + rightW + minGap
-	crumbBudget := innerW - usedW
-	if crumbBudget < 4 {
-		crumbBudget = 4
-	}
+	crumbBudget := max(1, budget())
 
 	// Breadcrumb runs a four-tier brightness ramp from oldest crumb to leaf
 	// (Dim → FGFade → FG → Bold). The eye is led along the gradient to the
@@ -136,18 +144,18 @@ func Topbar(t *theme.Theme, w int, crumbs []Crumb, refreshAge, clock string, for
 		}
 		sepStyle := lipgloss.NewStyle().Foreground(t.P.Dim).Background(t.P.BG2)
 		crumbCell = BreadcrumbRamped(crumbs, crumbBudget, ramp, sepStyle)
-	}
-
-	spacer := lipgloss.NewStyle().Background(t.P.BG2).Render("   ")
-	right := clockCell
-	if refreshCell != "" {
-		right = refreshCell + spacer + clockCell
-	}
-	if forwardCell != "" {
-		right = forwardCell + spacer + right
-	}
-	if healthCell != "" {
-		right = healthCell + spacer + right
+		for i, crumb := range crumbs {
+			if !crumb.Pinned {
+				continue
+			}
+			cluster := ansi.Truncate(crumb.Label, crumbBudget, "…")
+			crumbCell = ramp[len(ramp)-1].Render(cluster)
+			remaining := crumbBudget - lipgloss.Width(cluster) - 3
+			if i+1 < len(crumbs) && remaining > 3 {
+				crumbCell += sepStyle.Render(" ▸ ") + BreadcrumbRamped(crumbs[i+1:], remaining, ramp, sepStyle)
+			}
+			break
+		}
 	}
 
 	consumed := lipgloss.Width(logo) + lipgloss.Width(logoSep) +

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yunus/safina/internal/k8s"
 	"github.com/yunus/safina/internal/tui/components"
@@ -13,10 +14,10 @@ import (
 )
 
 // Hot is the noisy-neighbours modal: the top-N pods cluster-wide sorted
-// by current CPU usage. The on-caller hits H from anywhere in the tree
+// by current CPU usage. The on-caller hits h from anywhere in the tree
 // and gets the same answer they'd otherwise piece together by drilling
 // per-namespace and scanning sparklines: "what's actually burning right
-// now?". Refresh on R; Esc closes.
+// now?". Refresh on r; Esc closes.
 //
 // Deliberately *not* a permanent tree pseudo-section — the user opens it
 // to ask a question, sees the answer, and dismisses. Living it as a modal
@@ -99,7 +100,9 @@ func (s *Hot) Selected() (k8s.PodInfo, bool) {
 // The workspace pane already owns the surrounding border + title.
 func (s *Hot) Body(c *tuictx.Ctx, w, h int) string {
 	th := c.Theme
-	hint := th.HelpDesc.Render("R refresh · esc close")
+	hint := components.RenderHintRow(th, []components.KeyDesc{
+		{Key: c.Keys.Refresh.Help().Key, Desc: "refresh"}, {Key: "esc", Desc: "close"},
+	})
 	hintRow := lipgloss.NewStyle().Width(w).Align(lipgloss.Right).Render(hint)
 	if s.gate.Visible() {
 		return lipgloss.JoinVertical(lipgloss.Left,
@@ -139,8 +142,9 @@ func (s *Hot) renderTable(th *theme.Theme, w, rowsAvail int) string {
 	)
 	gaps := components.GapTotal(8)
 	nameW := tableW - kW - rkW - nsW - stW - cpuW - memW - rsW - gaps
-	if nameW < 12 {
-		nameW = 12
+	compact := nameW < 12
+	if compact {
+		nameW = max(1, tableW-cpuW-memW-components.GapTotal(3))
 	}
 
 	cols := []int{kW, rkW, nameW, nsW, stW, cpuW, memW, rsW}
@@ -149,9 +153,13 @@ func (s *Hot) renderTable(th *theme.Theme, w, rowsAvail int) string {
 		components.AlignLeft, components.AlignLeft,
 		components.AlignRight, components.AlignRight, components.AlignRight,
 	}
-	header := components.Header(th,
-		[]string{"", "#", "name", "namespace", "status", "cpu", "mem", "restarts"},
-		cols, aligns)
+	labels := []string{"", "#", "name", "namespace", "status", "cpu", "mem", "restarts"}
+	if compact {
+		cols = []int{nameW, cpuW, memW}
+		aligns = []components.Align{components.AlignLeft, components.AlignRight, components.AlignRight}
+		labels = []string{"pod", "cpu", "mem"}
+	}
+	header := components.Header(th, labels, cols, aligns)
 
 	start, end := components.VisibleRange(s.cursor, len(s.items), rowsAvail-1)
 	out := []string{header}
@@ -176,7 +184,7 @@ func (s *Hot) renderTable(th *theme.Theme, w, rowsAvail int) string {
 		bg := th.RowBgFor(i, selected)
 
 		rank := bg.Foreground(th.P.Dim).Render(fmt.Sprintf("%2d.", i+1))
-		nameCell := th.NameStrongOn(components.TruncPad(p.Name, nameW), bg)
+		nameCell := th.NameStrongOn(components.TruncMiddlePad(p.Name, nameW), bg)
 		nsCell := th.MetaOn(components.TruncPad(p.Namespace, nsW), bg)
 		statusCell := th.StatusGlyph(p.Status, stW, bg)
 		rstCell := th.RestartCount(int(p.Restarts), bg)
@@ -184,13 +192,15 @@ func (s *Hot) renderTable(th *theme.Theme, w, rowsAvail int) string {
 		cpuFrac := float64(p.CPU) / float64(maxCPU)
 		memFrac := float64(p.Memory) / float64(maxMem)
 		cpuCell := bg.Foreground(th.UtilColor(cpuFrac)).Bold(true).
-			Render(components.TruncPad(k8s.FormatCPU(p.CPU), cpuW))
+			Render(ansi.Truncate(k8s.FormatCPU(p.CPU), cpuW, "…"))
 		memCell := bg.Foreground(th.UtilColor(memFrac)).Bold(true).
-			Render(components.TruncPad(k8s.FormatMem(p.Memory), memW))
+			Render(ansi.Truncate(k8s.FormatMem(p.Memory), memW, "…"))
 
-		out = append(out, components.Row(th,
-			[]string{kindGlyph(k8s.KindPod, ""), rank, nameCell, nsCell, statusCell, cpuCell, memCell, rstCell},
-			cols, aligns, selected, i))
+		cells := []string{kindGlyph(k8s.KindPod, ""), rank, nameCell, nsCell, statusCell, cpuCell, memCell, rstCell}
+		if compact {
+			cells = []string{nameCell, cpuCell, memCell}
+		}
+		out = append(out, components.Row(th, cells, cols, aligns, selected, i))
 	}
 	return strings.Join(out, "\n")
 }

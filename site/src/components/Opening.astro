@@ -1,0 +1,286 @@
+---
+import { getImage } from "astro:assets";
+import storm from "../assets/img/storm-landscape.jpg";
+import stormPortrait from "../assets/img/storm-portrait.jpg";
+
+// Art direction: a recomposed portrait frame for phones, the wide IMAX frame
+// everywhere else. AVIF for every current browser, WebP for the bare <img>.
+const wide = [960, 1280, 1672];
+const tall = [480, 640, 760, 941];
+const [landAvif, portAvif, fallback] = await Promise.all([
+  getImage({ src: storm, format: "avif", widths: wide, quality: 54 }),
+  getImage({ src: stormPortrait, format: "avif", widths: tall, quality: 50 }),
+  getImage({ src: storm, format: "webp", width: 1672, quality: 76 }),
+]);
+const portraitMedia = "(aspect-ratio <= 4/5)";
+---
+
+<section class="opening" aria-labelledby="title">
+  <div class="stage">
+    <picture class="stage__photo">
+      <source media={portraitMedia} type="image/avif" srcset={portAvif.srcSet.attribute} sizes="100vw" />
+      <source type="image/avif" srcset={landAvif.srcSet.attribute} sizes="100vw" />
+      <img
+        src={fallback.src}
+        width={storm.width}
+        height={storm.height}
+        alt="A container ship at night, bow lifting through a breaking wave in a violent storm, one amber lamp lit on its mast."
+        fetchpriority="high"
+        loading="eager"
+        decoding="async"
+      />
+    </picture>
+    <div class="stage__shade" aria-hidden="true"></div>
+    <div class="stage__dim" aria-hidden="true"></div>
+    <div class="stage__bar stage__bar--top" aria-hidden="true"></div>
+    <div class="stage__bar stage__bar--bottom" aria-hidden="true"></div>
+
+    <div class="stage__copy wrap">
+      <h1 id="title" class="headline">
+        <span class="visually-hidden">Safina: </span>The Kubernetes terminal UI<br class="headline__break" /> for teams that ship.
+      </h1>
+      <p class="lede">
+        Safina is built for the people on call. Find what is broken, see why, and fix it without leaving&nbsp;the&nbsp;keyboard.
+      </p>
+      <div class="actions">
+        <a class="btn btn--beacon" href="#install">Get safina</a>
+        <a class="btn btn--quiet" href="#tour">Take the tour</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  /* The opening holds the frame still (sticky) for 75svh of scrolling. Over
+     that distance the black bars close the IMAX-tall frame down to 2.39:1
+     while the product window rises over it. Native scroll speed throughout. */
+  .opening {
+    position: relative;
+    height: 175svh;
+  }
+
+  .stage {
+    position: sticky;
+    top: 0;
+    height: 100svh;
+    overflow: hidden;
+    background: var(--abyss);
+    isolation: isolate;
+  }
+
+  .stage__photo,
+  .stage__photo img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+  }
+  /* A backdrop, not the subject: muted so the product is the brightest thing
+     on the first screen. */
+  .stage__photo img {
+    object-fit: cover;
+    object-position: 64% 42%;
+    transform-origin: 64% 42%;
+    filter: brightness(0.62) saturate(0.75);
+  }
+
+  /* Contrast for the copy, and a black floor under the product window: the
+     photo dissolves before the window starts, so the product never sits on
+     the storm. */
+  .stage__shade {
+    position: absolute;
+    inset: 0;
+    background:
+      linear-gradient(90deg, rgb(from var(--abyss) r g b / 82%) 0%, rgb(from var(--abyss) r g b / 55%) 34%, rgb(from var(--abyss) r g b / 0%) 62%),
+      linear-gradient(0deg, var(--abyss) 0, var(--abyss) calc(var(--peek) - 8px), rgb(from var(--abyss) r g b / 0%) calc(var(--peek) + 26svh)),
+      linear-gradient(180deg, rgb(from var(--abyss) r g b / 55%) 0%, rgb(from var(--abyss) r g b / 0%) 18%);
+  }
+  /* The storm recedes as the window takes the frame. */
+  .stage__dim {
+    position: absolute;
+    inset: 0;
+    background: var(--abyss);
+    opacity: 0;
+  }
+  /* Film grain, static: a texture, not an effect. */
+  .stage::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: url("/grain.webp") repeat;
+    background-size: 160px;
+    mix-blend-mode: overlay;
+    opacity: 0.22;
+    pointer-events: none;
+  }
+
+  .stage__bar {
+    --bar: max(0px, (100svh - 100vw / 2.39) / 2);
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: var(--bar);
+    background: var(--abyss);
+    scale: 1 0;
+    z-index: 2;
+  }
+  .stage__bar--top {
+    top: 0;
+    transform-origin: top;
+  }
+  .stage__bar--bottom {
+    bottom: 0;
+    transform-origin: bottom;
+  }
+
+  .stage__copy {
+    position: absolute;
+    inset-inline: 0;
+    bottom: calc(var(--peek) + clamp(24px, 6svh, 72px));
+    z-index: 1;
+  }
+
+  /* What it is, ending on the tagline. Wide and light, like a title card. */
+  /* The hero's first stroke is the T's bar, and right below it is the
+     button's hard edge. Against a filled edge a hung bar reads as an
+     overshoot, so here the ink sits flush: 0.021em is the T's own side
+     bearing. (Other titles hang 0.05em; see global.css.) */
+  .headline {
+    margin-inline-start: -0.021em;
+  }
+  .lede {
+    margin-top: clamp(14px, 2.2svh, 24px);
+    max-width: 46ch;
+    font-size: var(--t-pitch);
+
+    @media (width <= 1100px) {
+      max-width: var(--measure);
+    }
+    line-height: 1.45;
+    color: var(--spray);
+  }
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: clamp(20px, 3.4svh, 36px);
+  }
+
+  /* Portrait tablets fit the portrait frame by width, with sky to spare above
+     the copy: anchor it low so the mast and its lamp rise into that sky, just
+     over the headline, and push in on the lamp. (Matches the <source> media.) */
+  @media (aspect-ratio <= 4/5) and (width > 640px) {
+    .stage__photo img {
+      object-position: 50% 100%;
+      transform-origin: 30% 22%;
+    }
+  }
+  @media (width <= 640px) {
+    .stage__photo img {
+      object-position: 50% 50%;
+    }
+    .stage__shade {
+      background:
+        linear-gradient(
+          0deg,
+          var(--abyss) 0,
+          var(--abyss) calc(var(--peek) - 8px),
+          rgb(from var(--abyss) r g b / 72%) calc(var(--peek) + 18svh),
+          rgb(from var(--abyss) r g b / 0%) calc(var(--peek) + 42svh)
+        ),
+        linear-gradient(180deg, rgb(from var(--abyss) r g b / 50%) 0%, rgb(from var(--abyss) r g b / 0%) 20%);
+    }
+    /* A matched pair: equal widths, whatever their labels. */
+    .actions .btn {
+      flex: 1 1 0;
+    }
+    .headline__break {
+      display: none;
+    }
+    /* A touch sturdier at phone size, where 260 nears a hairline on 1x screens. */
+    .headline {
+      font-weight: 300;
+    }
+  }
+
+  /* Landscape phones and very short windows: keep the name, the line, the
+     actions and a glimpse of the product; the sentence waits for the tour. */
+  @media (height <= 700px) and (width > 640px) {
+    .lede {
+      max-width: var(--measure);
+      font-size: var(--t-body);
+    }
+  }
+  @media (height <= 520px) {
+    .stage__copy {
+      bottom: calc(var(--peek) + 12px);
+    }
+    .headline {
+      font-size: clamp(2.25rem, 14svh, 3.75rem);
+    }
+    .lede {
+      display: none;
+    }
+    .actions {
+      margin-top: 14px;
+    }
+    .actions .btn {
+      min-height: 44px;
+    }
+  }
+
+  /* The one orchestrated moment. Off for reduced motion and for engines
+     without scroll-driven animations: both get the still frame. */
+  @supports (animation-timeline: view()) {
+    @media (prefers-reduced-motion: no-preference) {
+      /* The opening is the top of the document, so root scroll offsets map
+         straight onto its 75svh hold. (A view timeline would be shifted by
+         scroll-padding-top and start part-way closed.) */
+      .stage__bar {
+        animation: bar-close linear both;
+        animation-timeline: scroll(root);
+        animation-range: 0svh 46svh;
+      }
+      .stage__photo img {
+        animation: push-in linear both;
+        animation-timeline: scroll(root);
+        animation-range: 0svh 75svh;
+      }
+      .stage__dim {
+        animation: dim linear both;
+        animation-timeline: scroll(root);
+        animation-range: 25svh 75svh;
+      }
+      .stage__copy {
+        animation: copy-out linear both;
+        animation-timeline: scroll(root);
+        animation-range: 2svh 22svh;
+      }
+    }
+  }
+
+  @keyframes bar-close {
+    to {
+      scale: 1;
+    }
+  }
+  @keyframes push-in {
+    from {
+      scale: 1.06;
+    }
+    to {
+      scale: 1;
+    }
+  }
+  @keyframes dim {
+    to {
+      opacity: 0.55;
+    }
+  }
+  @keyframes copy-out {
+    to {
+      opacity: 0;
+      translate: 0 -6svh;
+    }
+  }
+</style>

@@ -102,7 +102,7 @@ func run() int {
 
 	// Sanity check: confirm the cluster is reachable BEFORE wasting compute on
 	// the variant loop. The first BaseConfigFactory call is sufficient.
-	if _, err := factory(); err != nil {
+	if _, err = factory(); err != nil {
 		fail("cannot build rest config: %v", err)
 	}
 
@@ -125,7 +125,7 @@ func run() int {
 	}
 	fmt.Fprintf(os.Stderr, "done in %s\n", time.Since(t0).Round(time.Millisecond))
 
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
+	if err := os.MkdirAll(outDir, 0o700); err != nil {
 		fail("mkdir %s: %v", outDir, err)
 	}
 	ts := res.StartedAt.Format("20060102-150405")
@@ -154,7 +154,7 @@ func run() int {
 }
 
 func quickGate(res *bench.Result, baselinePath string, tolerancePct float64) int {
-	f, err := os.Open(baselinePath)
+	f, err := os.Open(baselinePath) // #nosec G304 -- The baseline is an explicit operator-supplied CLI file path.
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "no baseline at %s — record one with --record-baseline\n", baselinePath)
 		return 0
@@ -265,7 +265,7 @@ func resolveScenarios(s string) ([]bench.ScenarioID, error) {
 }
 
 func writeFile(path string, fn func(f *os.File) error) error {
-	f, err := os.Create(path)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) // #nosec G304 -- The report destination is an explicit operator-supplied CLI path.
 	if err != nil {
 		return err
 	}

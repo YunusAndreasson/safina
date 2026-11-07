@@ -23,8 +23,12 @@ import (
 // uppercase → case-sensitive, ripgrep convention). Substring match. Matched
 // substrings are highlighted in yellow inline.
 type Logs struct {
-	pod       string
-	namespace string
+	pod         string
+	container   string
+	previous    bool
+	streamEnded bool
+	streamErr   error
+	namespace   string
 
 	lines    []string // raw lines, unfiltered
 	filtered []int    // indices into lines that match current filter
@@ -37,7 +41,9 @@ type Logs struct {
 	// lines truncate at the panel's right edge, matching every log
 	// viewer the on-caller has seen); `w` toggles it for the times a
 	// wide panic / large JSON record needs to read in one glance.
-	wrap bool
+	wrap             bool
+	fullTimestamps   bool
+	compactTimeShown bool
 
 	theme *theme.Theme
 
@@ -51,6 +57,7 @@ type Logs struct {
 func NewLogs(c *tuictx.Ctx) Logs {
 	vp := viewport.New()
 	vp.MouseWheelEnabled = true
+	vp.SoftWrap = false
 	return Logs{
 		vp:     vp,
 		follow: true,
@@ -63,6 +70,10 @@ func NewLogs(c *tuictx.Ctx) Logs {
 // Called every time the user presses Enter on a pod.
 func (l *Logs) Reset(pod, namespace string) {
 	l.pod = pod
+	l.container = ""
+	l.previous = false
+	l.streamEnded = false
+	l.streamErr = nil
 	l.namespace = namespace
 	l.lines = l.lines[:0]
 	l.filtered = l.filtered[:0]
@@ -73,6 +84,9 @@ func (l *Logs) Reset(pod, namespace string) {
 	l.vp.SetContent("")
 	l.vp.GotoTop()
 }
+
+// EndStream leaves the output readable while reporting that no more is arriving.
+func (l *Logs) EndStream(err error) { l.streamEnded = true; l.streamErr = err }
 
 func (l *Logs) Pod() string     { return l.pod }
 func (l *Logs) Lines() []string { return l.lines }
@@ -136,9 +150,14 @@ func (l *Logs) Body(c *tuictx.Ctx) string {
 }
 
 // PaneTitle returns the workspace tab title for this section.
+func (l *Logs) SetTarget(container string, previous bool) {
+	l.container = container
+	l.previous = previous
+}
+
 func (l *Logs) PaneTitle() string {
 	if l.namespace != "" {
-		return fmt.Sprintf("logs · %s · %s", l.pod, l.namespace)
+		return fmt.Sprintf("logs · %s/%s · %s%s", l.pod, l.container, l.namespace, map[bool]string{true: " · previous"}[l.previous])
 	}
 	return "logs · " + l.pod
 }
@@ -158,8 +177,19 @@ func (l *Logs) recomputeViewportSize() {
 // filter so new lines appear (or don't) in the viewport without breaking
 // follow.
 func (l *Logs) Append(s string) {
+	if s == "" {
+		return
+	}
 	wasAtBottom := l.vp.AtBottom()
-	l.lines = append(l.lines, strings.Split(s, "\n")...)
+	// HTTP reads are arbitrary chunks, not records. Continue the final
+	// fragment so split reads neither break lines nor insert blank rows.
+	parts := strings.Split(s, "\n")
+	if len(l.lines) == 0 {
+		l.lines = parts
+	} else {
+		l.lines[len(l.lines)-1] += parts[0]
+		l.lines = append(l.lines, parts[1:]...)
+	}
 	l.recomputeFilter()
 	l.refreshContent()
 	if l.follow && wasAtBottom {
@@ -195,45 +225,43 @@ func (l *Logs) recomputeFilter() {
 	}
 }
 
-// refreshContent re-renders the viewport's content string. Two paths,
-// chosen by whether a filter query is active:
-//
-//   - empty query: colorize each line with the log syntax highlighter
-//     (timestamps dim, level tokens semantic, JSON structure dim, stack
-//     frames dim). Reading-mode — the eye gets a visual map of where
-//     levels and structure sit, no search emphasis competing for color.
-//   - non-empty query: skip colorize, wrap matches in a yellow-on-bg
-//     highlight. Searching-mode — clean unstyled text under the match
-//     emphasis, no double-decoration over ANSI codes (which would
-//     require position math through escape sequences for marginal gain).
-//
-// Switching paths on query presence keeps each mode crisp; mixing
-// them would make match highlighting unreliable inside already-styled
-// segments without significantly more rendering machinery.
+// refreshContent formats the display separately from raw storage. Compact
+// UTC times and date boundaries leave room for the message. Searches that
+// match omitted timestamp precision show the original line so the match is
+// visible. Copy always uses raw lines.
 func (l *Logs) refreshContent() {
 	if l.theme == nil {
 		return
 	}
 	q := l.filter.Value()
 	var b strings.Builder
-	if q == "" {
-		for n, idx := range l.filtered {
-			if n > 0 {
-				b.WriteByte('\n')
-			}
-			b.WriteString(colorizeLogLine(l.lines[idx], l.theme))
+	hl := lipgloss.NewStyle().Background(l.theme.P.Yellow).Foreground(l.theme.P.BG).Bold(true)
+	lastDay := ""
+	l.compactTimeShown = false
+	for n, idx := range l.filtered {
+		if n > 0 {
+			b.WriteByte('\n')
 		}
-	} else {
-		hl := lipgloss.NewStyle().
-			Background(l.theme.P.Yellow).
-			Foreground(l.theme.P.BG).
-			Bold(true)
-		cs := hasUpper(q)
-		for n, idx := range l.filtered {
-			if n > 0 {
-				b.WriteByte('\n')
+		line := l.lines[idx]
+		if !l.fullTimestamps {
+			compact, day := compactLogTimestamp(line)
+			// A search for timestamp precision must still show its match.
+			if q == "" || strings.Contains(strings.ToLower(compact), strings.ToLower(q)) {
+				line = compact
+				if day != "" {
+					l.compactTimeShown = true
+				}
+				if day != "" && day != lastDay {
+					b.WriteString(l.theme.Hint.Render("── " + day + " · UTC ──"))
+					b.WriteByte('\n')
+					lastDay = day
+				}
 			}
-			b.WriteString(highlight(l.lines[idx], q, cs, hl))
+		}
+		if q == "" {
+			b.WriteString(colorizeLogLine(line, l.theme))
+		} else {
+			b.WriteString(highlight(line, q, hasUpper(q), hl))
 		}
 	}
 	l.rendered = b.String()
@@ -281,10 +309,22 @@ func hasUpper(s string) bool {
 // Update returns (cmd, leave). When leave is true the root closes the modal
 // and returns to the main view.
 func (l *Logs) Update(msg tea.Msg, c *tuictx.Ctx) (tea.Cmd, bool) {
+	if paste, ok := msg.(tea.PasteMsg); ok && l.filter.Active() {
+		cmd := l.filter.Update(paste)
+		l.recomputeFilter()
+		l.refreshContent()
+		if l.follow {
+			l.vp.GotoBottom()
+		}
+		return cmd, false
+	}
 	km, ok := msg.(tea.KeyPressMsg)
 	if !ok {
 		var cmd tea.Cmd
 		l.vp, cmd = l.vp.Update(msg)
+		if _, wheel := msg.(tea.MouseWheelMsg); wheel && !l.vp.AtBottom() {
+			l.follow = false
+		}
 		return cmd, false
 	}
 
@@ -299,12 +339,20 @@ func (l *Logs) Update(msg tea.Msg, c *tuictx.Ctx) (tea.Cmd, bool) {
 		// so we don't need to clear it here.
 		return nil, true
 
+	case km.String() == "t":
+		l.fullTimestamps = !l.fullTimestamps
+		l.refreshContent()
+		if l.follow {
+			l.vp.GotoBottom()
+		}
+		return nil, false
+
 	case km.String() == "/":
 		l.filter.Open()
 		l.recomputeViewportSize()
 		return nil, false
 
-	case km.String() == " " || km.String() == "f":
+	case km.String() == " " || km.String() == "space" || km.String() == "f":
 		l.follow = !l.follow
 		if l.follow {
 			l.vp.GotoBottom()
@@ -384,6 +432,9 @@ func (l *Logs) handleFilterKey(km tea.KeyPressMsg) (tea.Cmd, bool) {
 func (l *Logs) viewportBlock(c *tuictx.Ctx) string {
 	st := components.BlockState{}
 	switch {
+	case len(l.lines) == 0 && l.streamEnded:
+		st.Empty = true
+		st.Empty_ = "No log output. Press l to reopen logs."
 	case len(l.lines) == 0:
 		st.Loading = true
 		st.Loading_ = "establishing stream"
@@ -400,21 +451,29 @@ func (l *Logs) viewportBlock(c *tuictx.Ctx) string {
 // chunk justify to the panel inner width.
 func (l *Logs) renderStatusRow(c *tuictx.Ctx) string {
 	t := c.Theme
-	indicators := make([]components.Indicator, 0, 3)
+	indicators := make([]components.Indicator, 0, 4)
+	indicators = append(indicators, components.Indicator{Text: "c targets · p previous"})
 	if l.filter.Value() != "" {
 		indicators = append(indicators, components.Indicator{
 			Text: fmt.Sprintf("%d/%d matches", len(l.filtered), len(l.lines)),
 		})
 	}
-	if l.follow {
+	switch {
+	case l.streamEnded:
+		label := "stream ended · l reopen"
+		if l.streamErr != nil {
+			label = "disconnected · l retry"
+		}
+		indicators = append(indicators, components.Indicator{Text: label})
+	case l.follow:
 		followStyle := lipgloss.NewStyle().Foreground(t.P.Green).Bold(true)
 		indicators = append(indicators, components.Indicator{Text: "● follow", Style: &followStyle})
-	} else {
-		indicators = append(indicators, components.Indicator{Text: "○ paused"})
+	default:
+		indicators = append(indicators, components.Indicator{Text: "○ scroll paused"})
 	}
-	indicators = append(indicators, components.Indicator{
-		Text: fmt.Sprintf("%3.f%%", l.vp.ScrollPercent()*100),
-	})
+	if l.compactTimeShown {
+		indicators = append(indicators, components.Indicator{Text: "UTC"})
+	}
 	return components.RenderModalStatusBar(t, l.modalW, l.filter, indicators)
 }
 
@@ -428,9 +487,18 @@ func (l *Logs) renderKeysRow() string {
 	if l.wrap {
 		wrapDesc = "wrap on"
 	}
+	followDesc := "pause"
+	if !l.follow {
+		followDesc = "resume"
+	}
+	timeDesc := "full time"
+	if l.fullTimestamps {
+		timeDesc = "short time"
+	}
 	return components.RenderModalKeysRow(l.theme, []components.KeyDesc{
 		{Key: "/", Desc: "filter"},
-		{Key: "space", Desc: "follow"},
+		{Key: "space", Desc: followDesc},
+		{Key: "t", Desc: timeDesc},
 		{Key: "w", Desc: wrapDesc},
 		{Key: "j/k", Desc: "scroll"},
 		{Key: "g/G", Desc: "top/bot"},

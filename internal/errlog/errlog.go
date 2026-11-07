@@ -61,11 +61,11 @@ func Init() string {
 		}
 		path = filepath.Join(home, ".safina", "errors.log")
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		path = ""
 		return ""
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) // #nosec G304 -- The log path is chosen by the local operator, not remote cluster input.
 	if err != nil {
 		path = ""
 		return ""

@@ -125,6 +125,14 @@ func (s *Shell) Reset(contextName, namespace, pod, container string) {
 // Pod returns the current pod target, used by the root for breadcrumbs.
 func (s *Shell) Pod() string { return s.pod }
 
+// Paste writes clipboard content to the remote terminal without treating
+// pasted letters as Safina shortcuts.
+func (s *Shell) Paste(text string) {
+	if s.phase == phaseLive && s.session != nil {
+		_, _ = s.session.Stdin.Write([]byte(text))
+	}
+}
+
 // SetSize is invoked on every WindowSizeMsg. Sizes the modal and, if a
 // session is live, propagates the new cell dimensions to the pod's TTY so
 // vim/less reflow correctly.
@@ -161,10 +169,7 @@ func (s *Shell) SetSize(termW, termH int) {
 	if s.session != nil {
 		// Non-blocking — the resize chan is buffered.
 		select {
-		case s.session.Resize <- remotecommand.TerminalSize{
-			Width:  uint16(cols),
-			Height: uint16(rows),
-		}:
+		case s.session.Resize <- terminalSize(cols, rows):
 		default:
 		}
 	}
@@ -181,10 +186,7 @@ func (s *Shell) Attach(sess *k8s.ShellSession, isDebug bool) {
 	s.isDebug = s.isDebug || isDebug
 	s.phase = phaseLive
 	select {
-	case sess.Resize <- remotecommand.TerminalSize{
-		Width:  uint16(s.gridCols),
-		Height: uint16(s.gridRows),
-	}:
+	case sess.Resize <- terminalSize(s.gridCols, s.gridRows):
 	default:
 	}
 }
@@ -401,7 +403,7 @@ func (s *Shell) View(c *tuictx.Ctx, termW, termH int) string {
 		border, titleColor = t.P.Yellow, t.P.Yellow
 	case phaseError:
 		border, titleColor = t.P.Red, t.P.Red
-	default:
+	case phaseConnect, phaseLive, phaseDebug:
 		// phaseConnect/phaseLive/phaseDebug — keep cyan accent.
 	}
 
@@ -587,6 +589,8 @@ func (s *Shell) renderTerminal(t *theme.Theme) string {
 // for BG we want "no override" (empty string), so the panel's background
 // shows through and selected text remains visible against the panel bg.
 func vtColorToLipgloss(c vt10x.Color, t *theme.Theme, isFG bool) color.Color {
+	// ANSI palette and truecolor values use the numeric path below.
+	//exhaustive:ignore
 	switch c {
 	case vt10x.DefaultFG:
 		if isFG {
@@ -641,24 +645,25 @@ func (s *Shell) statusRow(c *tuictx.Ctx) string {
 
 // keysRow lists the keys that apply in the current phase.
 func (s *Shell) keysRow(t *theme.Theme) string {
-	pair := func(k, d string) string {
-		return t.HelpKey.Render(k) + " " + t.HelpDesc.Render(d)
-	}
-	sep := t.HelpDesc.Render(" · ")
-
+	var hints []components.KeyDesc
 	switch s.phase {
 	case phaseNoShell:
-		return pair("↵", "confirm") + sep + pair("esc", "cancel")
+		hints = []components.KeyDesc{{Key: "↵", Desc: "attach debug"}, {Key: "esc", Desc: "cancel"}}
 	case phaseConnect, phaseDebug:
-		return pair("esc", "cancel")
+		hints = []components.KeyDesc{{Key: "esc", Desc: "cancel"}}
 	case phaseError:
-		return pair("esc", "close")
+		hints = []components.KeyDesc{{Key: "esc", Desc: "close"}}
 	case phaseLive:
-		return pair("esc", "detach") + sep +
-			pair("ctrl+c", "interrupt") + sep +
-			t.Hint.Render("ephemeral debug containers can't be removed")
+		hints = []components.KeyDesc{{Key: "esc", Desc: "detach"}, {Key: "ctrl+c", Desc: "interrupt"}}
 	}
-	return ""
+	row := components.RenderBoundedHints(t, hints, s.gridCols, components.KeyDesc{})
+	if s.phase == phaseLive && s.isDebug {
+		note := t.Hint.Render(" · debug container remains until pod deletion")
+		if lipgloss.Width(row+note) <= s.gridCols {
+			row += note
+		}
+	}
+	return row
 }
 
 // centerBox renders the lines vertically centred inside a w × h box. Used by
@@ -669,4 +674,10 @@ func centerBox(w, h int, lines ...string) string {
 		Height(h).
 		Align(lipgloss.Center, lipgloss.Center)
 	return box.Render(strings.Join(lines, "\n"))
+}
+
+func terminalSize(cols, rows int) remotecommand.TerminalSize {
+	cols = min(max(cols, 1), 65535)
+	rows = min(max(rows, 1), 65535)
+	return remotecommand.TerminalSize{Width: uint16(cols), Height: uint16(rows)}
 }

@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"context"
+	"strconv"
 	"testing"
 	"time"
 
@@ -10,8 +11,52 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
 )
+
+func TestRollbackNumericRevisionsAndOwnership(t *testing.T) {
+	for _, current := range []int{10, 11, 12} {
+		t.Run(strconv.Itoa(current), func(t *testing.T) {
+			dep := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "qa", UID: "deployment", Annotations: map[string]string{
+					"deployment.kubernetes.io/revision": strconv.Itoa(current),
+				}},
+				Spec: appsv1.DeploymentSpec{Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "web"}}},
+			}
+			objects := make([]runtime.Object, 0, 6)
+			objects = append(objects, dep)
+			for _, rev := range []string{"2", "9", "10", "invalid"} {
+				rs := &appsv1.ReplicaSet{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "web-" + rev, Namespace: "qa", Labels: map[string]string{"app": "web"},
+						Annotations:     map[string]string{"deployment.kubernetes.io/revision": rev},
+						OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(dep, appsv1.SchemeGroupVersion.WithKind("Deployment"))},
+					},
+					Spec: appsv1.ReplicaSetSpec{Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{"app": "web", "version": rev, "pod-template-hash": "old-hash"},
+					}}},
+				}
+				objects = append(objects, rs)
+			}
+			// Same selector and a tempting revision, but a different owner.
+			original, ok := objects[1].(*appsv1.ReplicaSet)
+			require.True(t, ok)
+			foreign := original.DeepCopy()
+			foreign.Name = "foreign"
+			foreign.OwnerReferences[0].UID = "other-deployment"
+			foreign.Annotations["deployment.kubernetes.io/revision"] = strconv.Itoa(current - 1)
+			foreign.Spec.Template.Labels["version"] = "wrong-owner"
+			objects = append(objects, foreign)
+			cs := fake.NewClientset(objects...)
+			require.NoError(t, RollbackDeployment(context.Background(), cs, "qa", "web"))
+			updated, err := cs.AppsV1().Deployments("qa").Get(context.Background(), "web", metav1.GetOptions{})
+			require.NoError(t, err)
+			require.Equal(t, strconv.Itoa(min(current-1, 10)), updated.Spec.Template.Labels["version"])
+			require.NotContains(t, updated.Spec.Template.Labels, "pod-template-hash")
+		})
+	}
+}
 
 func TestScaleDeployment_ErrorOnNotFound(t *testing.T) {
 	// fake.Clientset GetScale panics on missing Scale subresource.
@@ -118,7 +163,7 @@ func TestRollbackDeployment(t *testing.T) {
 				"deployment.kubernetes.io/revision": "2",
 			},
 			OwnerReferences: []metav1.OwnerReference{
-				{UID: "dep-uid", Name: "myapp", Kind: "Deployment"},
+				{UID: "dep-uid", Name: "myapp", Kind: "Deployment", Controller: new(true)},
 			},
 		},
 		Spec: appsv1.ReplicaSetSpec{

@@ -1,6 +1,9 @@
 package sections
 
 import (
+	"cmp"
+	"slices"
+
 	"github.com/yunus/safina/internal/k8s"
 )
 
@@ -22,6 +25,20 @@ type PaletteEntry struct {
 	Hint string
 }
 
+func (e PaletteEntry) kindLabel() string {
+	if e.SubKind != "" {
+		return e.SubKind
+	}
+	switch e.Kind {
+	case k8s.KindNamespaceFolder:
+		return "Namespace"
+	case k8s.KindContext:
+		return "Cluster"
+	default:
+		return e.Kind
+	}
+}
+
 // SearchString is what the fuzzy matcher scores against. We include the
 // kind and namespace as suffix tokens so queries like "secret tls" or
 // "pod shop" naturally narrow even before the matcher runs.
@@ -30,11 +47,7 @@ func (e PaletteEntry) SearchString() string {
 	if e.Namespace != "" {
 		parts += " · " + e.Namespace
 	}
-	if e.SubKind != "" {
-		parts += " · " + e.SubKind
-	} else {
-		parts += " · " + e.Kind
-	}
+	parts += " · " + e.kindLabel()
 	return parts
 }
 
@@ -48,7 +61,13 @@ func BuildPaletteIndex(cache map[string]*Children) []PaletteEntry {
 	out := make([]PaletteEntry, 0, 256)
 	seen := make(map[string]struct{}, 256)
 
-	for path, ch := range cache {
+	paths := make([]string, 0, len(cache))
+	for path := range cache {
+		paths = append(paths, path)
+	}
+	slices.Sort(paths)
+	for _, path := range paths {
+		ch := cache[path]
 		if ch == nil {
 			continue
 		}
@@ -75,20 +94,33 @@ func BuildPaletteIndex(cache map[string]*Children) []PaletteEntry {
 		}
 		for _, ns := range ch.UserNS {
 			add(&out, seen, PaletteEntry{
-				Kind: k8s.KindNamespaceFolder,
-				Name: ns.Name,
-				Path: composeChild(parentPath, NodeRef{Kind: k8s.KindNamespaceFolder, Namespace: ns.Name, Name: ns.Name, Display: ns.Name}),
-				Hint: "ns",
+				Kind:      k8s.KindNamespaceFolder,
+				Namespace: ns.Name,
+				Name:      ns.Name,
+				Path:      composeChild(parentPath, NodeRef{Kind: k8s.KindNamespaceFolder, Namespace: ns.Name, Name: ns.Name, Display: ns.Name}),
+				Hint:      "ns",
 			})
 		}
 		for _, a := range ch.Apps {
 			ref := NodeRef{Kind: k8s.KindApp, SubKind: a.Kind, Namespace: a.Namespace, Name: a.Name, Display: a.Name, UID: a.UID}
+			appPath := parentPath
+			// Namespace and cluster payloads also carry aggregate app data,
+			// but their visible rows are folders. Navigate to a workload list.
+			if len(appPath) > 0 {
+				switch appPath[len(appPath)-1].Kind {
+				case k8s.KindContext:
+					appPath = composeChild(appPath, NodeRef{Kind: k8s.KindNamespaceFolder, Name: a.Namespace, Namespace: a.Namespace, Display: a.Namespace})
+					appPath = composeChild(appPath, NodeRef{Kind: k8s.KindWorkloadsFold, Name: "Workloads", Display: "Workloads"})
+				case k8s.KindNamespace, k8s.KindNamespaceFolder, k8s.KindAllNamespacesFold:
+					appPath = composeChild(appPath, NodeRef{Kind: k8s.KindWorkloadsFold, Name: "Workloads", Display: "Workloads"})
+				}
+			}
 			add(&out, seen, PaletteEntry{
 				Kind:      k8s.KindApp,
 				SubKind:   a.Kind,
 				Namespace: a.Namespace,
 				Name:      a.Name,
-				Path:      composeChild(parentPath, ref),
+				Path:      composeChild(appPath, ref),
 				Hint:      a.Ready,
 			})
 		}
@@ -159,6 +191,15 @@ func BuildPaletteIndex(cache map[string]*Children) []PaletteEntry {
 			})
 		}
 	}
+	slices.SortStableFunc(out, func(a, b PaletteEntry) int {
+		if n := cmp.Compare(a.Name, b.Name); n != 0 {
+			return n
+		}
+		if n := cmp.Compare(a.kindLabel(), b.kindLabel()); n != 0 {
+			return n
+		}
+		return cmp.Compare(a.Namespace, b.Namespace)
+	})
 	return out
 }
 
@@ -167,7 +208,7 @@ func BuildPaletteIndex(cache map[string]*Children) []PaletteEntry {
 // the namespace's Apps view AND under the Network fold) — without dedup
 // the palette would surface duplicate rows.
 func add(out *[]PaletteEntry, seen map[string]struct{}, e PaletteEntry) {
-	id := e.Kind + "/" + e.Namespace + "/" + e.Name
+	id := e.Kind + "/" + e.SubKind + "/" + e.Namespace + "/" + e.Name
 	if _, ok := seen[id]; ok {
 		return
 	}

@@ -120,9 +120,9 @@ func (h Health) Glyph() string {
 		return "↻"
 	case HealthHealthy:
 		return "✓"
-	default:
-		return "…"
+	case HealthUnknown:
 	}
+	return "…"
 }
 
 // Worse returns the worse (smaller) of two healths.
@@ -224,7 +224,7 @@ type NodeInfo struct {
 	CPURequest  int64
 	MemRequest  int64
 	PodsCurrent int32
-	PodsMax     int32
+	PodsMax     int64
 	Schedulable bool
 	Health      Health
 	// Pressures lists the kubelet-asserted pressure conditions that are
@@ -245,7 +245,7 @@ type NodePoolInfo struct {
 	MemUsed     int64
 	MemAlloc    int64
 	PodsCurrent int32
-	PodsMax     int32
+	PodsMax     int64
 	Health      Health
 }
 
@@ -454,21 +454,20 @@ func ListAppsInNamespaces(ctx context.Context, cs kubernetes.Interface, namespac
 		metrics map[string]ResourceUsage
 	)
 
-	// Pre-pull pods + metrics once cross-namespace ("" namespace lists every
-	// namespace the caller can read) so per-app aggregation is a single in-
-	// memory join instead of one List per workload.
+	// Pre-pull enrichment once, scoped to the namespace when browsing one.
+	// This also works with namespace-only RBAC.
 	var wgEnrich sync.WaitGroup
 	wgEnrich.Add(2)
 	go func() {
 		defer wgEnrich.Done()
-		list, err := cs.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
+		list, err := cs.CoreV1().Pods(namespaceScope(namespaces)).List(ctx, metav1.ListOptions{})
 		if err == nil {
 			podsAll = list.Items
 		}
 	}()
 	go func() {
 		defer wgEnrich.Done()
-		metrics, _ = ListPodMetrics(ctx, cs, "")
+		metrics, _ = ListPodMetrics(ctx, cs, namespaceScope(namespaces))
 	}()
 	wgEnrich.Wait()
 
@@ -799,12 +798,15 @@ func aggregateForSelector(namespace string, sel *metav1.LabelSelector, pods []co
 	if sel == nil || metrics == nil {
 		return 0, 0
 	}
-	matchLabels := sel.MatchLabels
+	selector, err := metav1.LabelSelectorAsSelector(sel)
+	if err != nil {
+		return 0, 0
+	}
 	for _, p := range pods {
 		if p.Namespace != namespace {
 			continue
 		}
-		if !labelsMatch(p.Labels, matchLabels) {
+		if !selector.Matches(labels.Set(p.Labels)) {
 			continue
 		}
 		if u, ok := metrics[p.Namespace+"/"+p.Name]; ok {
@@ -820,7 +822,7 @@ func labelsMatch(podLabels, selector map[string]string) bool {
 		return false
 	}
 	for k, v := range selector {
-		if podLabels[k] != v {
+		if value, exists := podLabels[k]; !exists || value != v {
 			return false
 		}
 	}
@@ -1172,7 +1174,7 @@ func nodeToInfo(n corev1.Node, metrics map[string]ResourceUsage, pods []corev1.P
 	ni.CPUAlloc = quantityMilli(n.Status.Allocatable, corev1.ResourceCPU)
 	ni.MemAlloc = quantityBytes(n.Status.Allocatable, corev1.ResourceMemory)
 	if maxPods := quantityValue(n.Status.Allocatable, corev1.ResourcePods); maxPods > 0 {
-		ni.PodsMax = int32(maxPods)
+		ni.PodsMax = maxPods
 	}
 	if metrics != nil {
 		if u, ok := metrics[n.Name]; ok {
@@ -1424,7 +1426,7 @@ func (ch *ClusterHealth) addPod(p corev1.Pod) {
 		ch.PodsRunning++
 	case corev1.PodPending:
 		ch.PodsPending++
-	default:
+	case corev1.PodSucceeded, corev1.PodFailed, corev1.PodUnknown:
 		// PodSucceeded/PodFailed/PodUnknown — counted as Total but not Running/Pending.
 	}
 	// CrashLoopBackOff lives at the container-status level, not pod phase.
@@ -1695,6 +1697,14 @@ func summarizeProbe(p *corev1.Probe) string {
 		return fmt.Sprintf("grpc :%d", p.GRPC.Port)
 	case p.Exec != nil:
 		return "exec " + strings.Join(p.Exec.Command, " ")
+	}
+	return ""
+}
+
+// namespaceScope preserves narrow API reads when the caller selected one namespace.
+func namespaceScope(namespaces []string) string {
+	if len(namespaces) == 1 {
+		return namespaces[0]
 	}
 	return ""
 }

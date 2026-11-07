@@ -573,7 +573,10 @@ func (i *Inspector) buildSnapshot(tr *Tree, ref NodeRef, det *inspectorDetail) *
 			subtitle: "press ↵ to drill in",
 		}
 	}
-	return &inspectorSnapshot{title: stringsTitle(ref.Kind) + " · " + ref.Display}
+	if isResourceGroup(ref.Kind) {
+		return &inspectorSnapshot{title: selectionTitle(ref), subtitle: "press ↵ to browse resources"}
+	}
+	return &inspectorSnapshot{title: selectionTitle(ref)}
 }
 
 // ── per-kind builders ───────────────────────────────────────────────

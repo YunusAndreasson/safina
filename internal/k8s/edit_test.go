@@ -10,6 +10,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
+	"sigs.k8s.io/yaml"
 )
 
 func TestBuildEditableYAML_ConfigMap(t *testing.T) {
@@ -202,5 +203,37 @@ stringData:
 	// would consume it. Either field reaching this point is the win.
 	if got.StringData["password"] != "new" && string(got.Data["password"]) != "new" {
 		t.Fatalf("expected password=new in stringData or data, got %#v / %#v", got.StringData, got.Data)
+	}
+}
+
+func TestApplyEditedYAML_RejectsLossyInputBeforeUpdate(t *testing.T) {
+	for _, data := range []string{
+		"metadata: {name: settings, namespace: ns}\ndtaa: {key: value}\n",
+		"metadata: {name: settings, namespace: ns}\ndata: {key: first, key: second}\n",
+	} {
+		cs := fake.NewSimpleClientset()
+		err := ApplyEditedYAML(t.Context(), cs, EditKindConfigMap, "ns", "settings", []byte(data))
+		require.ErrorContains(t, err, "yaml parse")
+		assert.Empty(t, cs.Actions(), "invalid edits must never reach the API server")
+	}
+}
+
+func TestSecretYAML_PreservesBinaryValues(t *testing.T) {
+	binary := []byte{0xff, 0xfe, 0, 0x80}
+	cs := fake.NewSimpleClientset(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "mixed", Namespace: "ns"},
+		Data:       map[string][]byte{"text": []byte("hello"), "binary": binary},
+	})
+	for _, build := range []func() (string, error){
+		func() (string, error) { return BuildEditableYAML(t.Context(), cs, EditKindSecret, "ns", "mixed") },
+		func() (string, error) { return RevealSecretYAML(t.Context(), cs, "ns", "mixed") },
+	} {
+		rendered, err := build()
+		require.NoError(t, err)
+		var secret corev1.Secret
+		require.NoError(t, yaml.UnmarshalStrict([]byte(rendered), &secret))
+		assert.Equal(t, binary, secret.Data["binary"])
+		assert.Equal(t, "hello", secret.StringData["text"])
+		assert.NotContains(t, secret.StringData, "binary")
 	}
 }
