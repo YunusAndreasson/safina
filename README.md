@@ -33,7 +33,8 @@ make install  # copies to $GOPATH/bin
 Or:
 
 ```bash
-go build -o bin/safina ./cmd/safina
+make native
+PKG_CONFIG_PATH="$PWD/.build/libghostty/native/lib/pkgconfig" go build -o bin/safina ./cmd/safina
 cp bin/safina /usr/local/bin/
 ```
 
@@ -94,6 +95,12 @@ keys mutate cluster state.
 | D | Drain node |
 | K | Delete selected resource |
 
+Node drain uses kubectl's filtering and eviction handling. Unmanaged pods block
+drain unless force is explicitly enabled; terminating pods remain pending until
+they disappear. Safina requires the eviction API and never falls back to direct
+pod deletion. Cancelling or timing out after cordoning leaves the node cordoned;
+inspect the remaining pods, then explicitly uncordon when appropriate.
+
 ### Meta
 
 | Key | Action |
@@ -121,6 +128,14 @@ keys mutate cluster state.
 ### Log View
 
 Logs use compact UTC times with date markers. Copying logs preserves the original timestamps and text.
+The `/` filter accepts smart-case text searches or a `jq:` predicate for JSON logs,
+for example `jq: .level == "error"` or `jq: select(.duration_ms > 1000)`.
+A truthy result keeps the original line; `false`, `null`, and no output exclude it.
+Kubernetes timestamp prefixes are removed only for JSON parsing. Non-JSON and
+unfinished JSON lines do not match. Expressions have a 50 ms batch budget and a
+256-result limit per line; errors appear in the log pane until the filter is edited.
+JSON lines over 256 KiB are skipped. jq filtering uses the embedded gojq library;
+no separate jq executable, environment access, or module loader is needed.
 
 | Key | Action |
 |-----|--------|
@@ -178,6 +193,11 @@ safina/
 ## Requirements
 
 - Go 1.27.3+ (CI reads the version from `go.mod`)
+- For source builds: Python 3.12+, a C compiler, and pkg-config; CGO must be enabled.
+  `make` downloads checksum-verified Zig and Ghostty sources into `.build/libghostty`
+  and builds the static terminal library. The first build can take several minutes.
+  The bootstrap supports Linux/macOS on x86-64/ARM64; Linux x86-64 is locally verified.
+  Installed binaries do not require Zig or a separate libghostty shared library.
 - `make lint` / `make fmt` download and run golangci-lint 2.15.0
 - Access to a Kubernetes cluster (via kubeconfig)
 
@@ -236,6 +256,58 @@ tests. Both run in the existing test and race gates without a cluster or new too
 ## License
 
 MIT
+
+## Terminal library evaluation
+
+Safina uses `libghostty-vt` through the pinned Go bindings for its embedded shell.
+It replaces vt10x and the custom cell renderer and key-sequence encoder. Bubble
+Tea places the cursor, and Lip Gloss pads the formatted grid into the panel.
+The native source and toolchain pins are in `scripts/libghostty.json`.
+
+`bench/terminal` retains an isolated comparison of the previous vt10x adapter,
+Charm's `x/vt`, and `libghostty-vt`, including versions, checksums, contract results,
+and raw benchmark samples.
+
+The November 7, 2026 run covered 17 selected contracts: screen updates, Unicode
+across stream boundaries, key modes, paste, resize reflow, device replies, and
+synthetic vim/less recordings. Libghostty passed all 17; Charm passed 14; the
+previous vt10x adapter passed 9. These are targeted compatibility checks, not a
+complete terminal conformance suite. The legacy key/paste/reply tests mirror
+Safina's adapter, while screen tests inspect the emulator directly.
+
+| Backend | Contracts passed | Median parse time | Median plain snapshot time |
+| --- | ---: | ---: | ---: |
+| vt10x | 9/17 | 380 µs | 240 µs |
+| Charm x/vt | 14/17 | 742 µs | 274 µs |
+| libghostty-vt | 17/17 | 20 µs | 79 µs |
+
+Parsing overwrites a fixed 120×40 screen without scrolling. Snapshot timings
+include adapter and text-normalization work, not Safina's styled rendering.
+These three-sample measurements came from a shared development host and are not
+performance regression thresholds or whole-app speedups. Go allocation counters
+exclude native allocations. Adding statically linked libghostty to the stripped
+comparison test executable increased it from 3,903,751 to 6,609,536 bytes; this
+is not a measurement of Safina's eventual binary size.
+
+To reproduce on Linux x86-64 with Go, Python 3.12+, a C compiler and pkg-config:
+
+```sh
+cd bench/terminal
+make native             # Downloads verified Zig and pinned Ghostty into .build
+make compare            # Intentionally fails the incompatible baseline cases
+make ghostty-contracts  # Runs only the libghostty contracts
+make bench              # Three samples, one Go execution thread
+```
+
+The cold native build can take several minutes. `build_native.py --cache PATH`
+can reuse a separate build directory; pass `NATIVE_PREFIX=PATH/native` to the
+other Make targets. The synthetic recordings can be regenerated with
+`python3 capture.py` when vim and less are installed. Production adapter tests
+in `internal/terminal` and `internal/tui/sections` cover styled output, cursor
+placement, Unicode stream boundaries, alternate screens, keys, paste, replies,
+resize and cleanup. Session tests cover ordered input, backpressure and shutdown.
+These do not establish compatibility with every interactive program or validate
+macOS/ARM64 release packaging.
 
 ## Cluster overview cache
 
@@ -313,14 +385,28 @@ submit the message.
 
 ### Storage, privacy, and configuration
 
+Action records are stored in `history.sqlite` using SQLite transactions and indexed
+queries. Evidence remains in JSONL files, and exports keep their portable JSONL format.
 Action records retain 90 days by default, evidence 14 days, subject to separate
-256 MiB/1 GiB limits. The oldest closed files are removed when a pool reaches its
-limit. Active captures reserve up to 10 MiB each. The UI warns persistently if
+256 MiB/1 GiB limits. The action limit counts encoded record payloads; SQLite indexes,
+free pages, and its WAL add disk overhead. Freed pages are reused. The oldest action
+records or closed evidence files are removed when their pool reaches its limit.
+Active captures reserve up to 10 MiB each. The UI warns persistently if
 recording fails; cluster operations remain available. Expired/missing evidence,
 capacity pruning, truncation, and incomplete JSONL tails are surfaced in queries
 or exports. Exported bundles are outside automatic retention; remove them yourself
 when no longer needed. Existing `errors.log` and optional debug logging retain
 their separate behavior and are not imported into history.
+
+On the first writable open, existing action JSONL files are imported in one transaction.
+Event IDs, operation links, and redacted content are preserved. Close older Safina
+sessions before upgrading; older versions cannot read or append to the new database.
+The original `actions/` files remain as a recovery backup and are not reimported or
+subject to automatic retention after migration. Remove that backup once you have
+verified the import and no longer need it. A failed import is retried on the next open;
+queries report an incomplete migration instead of silently showing an empty history.
+Read-only history commands can still read an unmigrated JSONL directory.
+The broker's separate investigation journal is unchanged by this history migration.
 
 Viewed container logs are captured before display filtering/scrollback eviction,
 with original and observed timestamps. Captures stop at 10 MiB; lines over

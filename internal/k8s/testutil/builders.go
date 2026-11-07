@@ -60,5 +60,5 @@ func OwnedByReplicaSet() []metav1.OwnerReference {
 
 func OwnedByDaemonSet() []metav1.OwnerReference {
 	ctrl := true
-	return []metav1.OwnerReference{{Kind: "DaemonSet", Name: "ds", Controller: &ctrl}}
+	return []metav1.OwnerReference{{APIVersion: "apps/v1", Kind: "DaemonSet", Name: "ds", Controller: &ctrl}}
 }

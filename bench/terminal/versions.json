@@ -1,0 +1,23 @@
+{
+  "ghostty_commit": "5813c9461d5af78b6307a1254d00b1bc190eaccd",
+  "go_bindings": "go.mitchellh.com/libghostty@v0.0.0-20261107144202-b13f277ddcb2",
+  "charm": "github.com/charmbracelet/x/vt@v0.1.0",
+  "zig": "0.17.0",
+  "zig_platform": "x86_64-linux",
+  "zig_url": "https://ziglang.org/download/0.17.0/zig-x86_64-linux-0.17.0.tar.xz",
+  "zig_sha256": "1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026",
+  "source_url": "https://codeload.github.com/ghostty-org/ghostty/tar.gz/5813c9461d5af78b6307a1254d00b1bc190eaccd",
+  "source_sha256": "c1d0bc5227d024f4b82ee205a647260debd1b700d7b5f390a4c8e8c80362ffb5",
+  "native_flags": [
+    "-Demit-lib-vt",
+    "-Doptimize=ReleaseFast",
+    "-Demit-exe=false",
+    "-Demit-xcframework=false"
+  ],
+  "go": "go version go1.27.3 linux/amd64",
+  "notes": [
+    "Comparative contract failures are expected for the legacy and Charm implementations.",
+    "Benchmarks run on a shared development host, not an isolated performance runner.",
+    "Native allocations are excluded from Go allocation counters."
+  ]
+}

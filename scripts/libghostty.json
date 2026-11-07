@@ -1,0 +1,31 @@
+{
+  "ghostty_commit": "5813c9461d5af78b6307a1254d00b1bc190eaccd",
+  "go_bindings": "go.mitchellh.com/libghostty@v0.0.0-20261107144202-b13f277ddcb2",
+  "zig": "0.17.0",
+  "source_url": "https://codeload.github.com/ghostty-org/ghostty/tar.gz/5813c9461d5af78b6307a1254d00b1bc190eaccd",
+  "source_sha256": "c1d0bc5227d024f4b82ee205a647260debd1b700d7b5f390a4c8e8c80362ffb5",
+  "native_flags": [
+    "-Demit-lib-vt",
+    "-Doptimize=ReleaseFast",
+    "-Demit-exe=false",
+    "-Demit-xcframework=false"
+  ],
+  "toolchains": {
+    "x86_64-linux": {
+      "url": "https://ziglang.org/download/0.17.0/zig-x86_64-linux-0.17.0.tar.xz",
+      "sha256": "1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026"
+    },
+    "aarch64-linux": {
+      "url": "https://ziglang.org/download/0.17.0/zig-aarch64-linux-0.17.0.tar.xz",
+      "sha256": "9e8d11661d4ae3bd57702a3832781e23ad151dde5798e16a5ccd503f65234ff8"
+    },
+    "x86_64-macos": {
+      "url": "https://ziglang.org/download/0.17.0/zig-x86_64-macos-0.17.0.tar.xz",
+      "sha256": "4f9a1c5269aa17ebda5e6d3c2b89d6cbf36f7d2b22a0306e9ab98f25f95529c6"
+    },
+    "aarch64-macos": {
+      "url": "https://ziglang.org/download/0.17.0/zig-aarch64-macos-0.17.0.tar.xz",
+      "sha256": "b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a"
+    }
+  }
+}

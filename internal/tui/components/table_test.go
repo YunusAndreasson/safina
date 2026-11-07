@@ -5,9 +5,34 @@ import (
 	"testing"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yunus/safina/internal/tui/theme"
 )
+
+func TestTruncPadDisplayWidth(t *testing.T) {
+	for _, tc := range []struct {
+		name, input, want string
+		width             int
+	}{
+		{"wide", "界界界", "界… ", 4},
+		{"combining", "e\u0301xyz", "e\u0301x…", 3},
+		{"emoji", "👩‍💻xyz", "👩‍💻…", 3},
+		{"styled", "\x1b[31mabcdef\x1b[0m", "abc…", 4},
+		{"exact", "界界", "界界", 4},
+		{"minimum", "abc", "…", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := TruncPad(tc.input, tc.width)
+			if plain := ansi.Strip(got); plain != tc.want {
+				t.Errorf("text = %q, want %q", plain, tc.want)
+			}
+			if width := lipgloss.Width(got); width != max(1, tc.width) {
+				t.Errorf("width = %d, want %d", width, max(1, tc.width))
+			}
+		})
+	}
+}
 
 // TestHeader_WidthMatchesSpec asserts the Header's rendered visual width is
 // exactly sumWidths + (n-1)*gap + 2*edgePad. If lipgloss's display-width math

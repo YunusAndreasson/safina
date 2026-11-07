@@ -46,7 +46,7 @@ func TestJournalSurvivesRestartAndSeparatesOperations(t *testing.T) {
 	require.Error(t, Export(s.Directory(), dest, Filter{}))
 }
 
-func TestConcurrentSessionsAndTruncatedTail(t *testing.T) {
+func TestConcurrentSessions(t *testing.T) {
 	dir := t.TempDir()
 	a, err := Open(Options{Directory: dir})
 	require.NoError(t, err)
@@ -63,17 +63,9 @@ func TestConcurrentSessionsAndTruncatedTail(t *testing.T) {
 	wg.Wait()
 	require.NoError(t, a.Close())
 	require.NoError(t, b.Close())
-	files, err := filepath.Glob(filepath.Join(dir, "actions", "*", "*", "*.jsonl"))
-	require.NoError(t, err)
-	f, err := os.OpenFile(files[0], os.O_APPEND|os.O_WRONLY, 0)
-	require.NoError(t, err)
-	_, err = f.WriteString(`{"broken":`)
-	require.NoError(t, err)
-	require.NoError(t, f.Close())
 	result, err := Query(dir, Filter{Limit: 200})
 	require.NoError(t, err)
 	require.Len(t, result.Records, 124)
-	require.NotEmpty(t, result.Warnings)
 	seen := map[string]bool{}
 	for _, r := range result.Records {
 		require.False(t, seen[r.ID])
@@ -170,19 +162,7 @@ func TestCapacityReservationsAndPrivateKeyRedaction(t *testing.T) {
 		s.Begin(Target{}, "describe", nil)
 	}
 	var bytes int64
-	require.NoError(t, filepath.WalkDir(filepath.Join(s.Directory(), "actions"), func(_ string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if !d.IsDir() && strings.HasSuffix(d.Name(), ".jsonl") {
-			info, e := d.Info()
-			if e != nil {
-				return e
-			}
-			bytes += info.Size()
-		}
-		return nil
-	}))
+	require.NoError(t, s.db.QueryRowContext(t.Context(), "SELECT value FROM metadata WHERE key='bytes'").Scan(&bytes))
 	require.LessOrEqual(t, bytes, int64(4096))
 }
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync/atomic"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
@@ -30,7 +31,7 @@ type ShellEvent struct {
 }
 
 // ShellSession is a live remotecommand exec/attach pipe wired up for an
-// embedded terminal modal. Caller writes user input to Stdin and reads
+// embedded terminal modal. Caller queues user input with SendInput and reads
 // terminal output from Events. Resize accepts new cell dimensions whenever
 // the modal panel changes size.
 type ShellSession struct {
@@ -38,13 +39,47 @@ type ShellSession struct {
 	Events <-chan ShellEvent
 	Resize chan<- remotecommand.TerminalSize
 
-	cancel context.CancelFunc
+	cancel   context.CancelFunc
+	input    chan []byte
+	done     <-chan struct{}
+	inputErr atomic.Pointer[shellInputError]
+}
+
+type shellInputError struct{ err error }
+
+// SendInput queues a bounded copy without blocking the UI on the remote shell.
+func (s *ShellSession) SendInput(data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	if len(data) > 64<<10 {
+		return errors.New("shell input exceeds 64 KiB")
+	}
+	if failure := s.inputErr.Load(); failure != nil {
+		return failure.err
+	}
+	select {
+	case <-s.done:
+		return io.ErrClosedPipe
+	default:
+	}
+	select {
+	case s.input <- append([]byte(nil), data...):
+		return nil
+	case <-s.done:
+		return io.ErrClosedPipe
+	default:
+		return errors.New("shell input queue is full")
+	}
 }
 
 // Close terminates the session. Safe to call multiple times.
 func (s *ShellSession) Close() {
 	if s.cancel != nil {
 		s.cancel()
+	}
+	if s.Stdin != nil {
+		_ = s.Stdin.Close()
 	}
 }
 
@@ -107,7 +142,22 @@ func startSession(parent context.Context, executor remotecommand.Executor) *Shel
 
 	streamCtx, cancel := context.WithCancel(parent)
 
+	session := &ShellSession{Stdin: stdinW, Events: events, Resize: resize, cancel: cancel, input: make(chan []byte, 16), done: streamCtx.Done()}
 	go func() {
+		for {
+			select {
+			case data := <-session.input:
+				if _, err := stdinW.Write(data); err != nil {
+					session.inputErr.Store(&shellInputError{err})
+					return
+				}
+			case <-streamCtx.Done():
+				return
+			}
+		}
+	}()
+	go func() {
+		defer cancel()
 		defer close(events)
 		defer func() { _ = stdinR.Close() }()
 
@@ -141,12 +191,7 @@ func startSession(parent context.Context, executor remotecommand.Executor) *Shel
 		}
 	}()
 
-	return &ShellSession{
-		Stdin:  stdinW,
-		Events: events,
-		Resize: resize,
-		cancel: cancel,
-	}
+	return session
 }
 
 // looksLikeNoShell pattern-matches the kubelet/runtime error when the exec

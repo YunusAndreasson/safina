@@ -101,7 +101,7 @@ type ShellSessionStartedMsg struct {
 }
 
 // ShellOutputMsg carries one chunk of stdout/stderr bytes from the running
-// shell. The section feeds it into the vt10x emulator.
+// shell. The section feeds it into the libghostty emulator.
 type ShellOutputMsg struct {
 	Bytes []byte
 }

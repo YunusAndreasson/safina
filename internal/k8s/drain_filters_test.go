@@ -7,16 +7,18 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/yunus/safina/internal/k8s/testutil"
 )
 
 // All these tests pin filter behavior for the drain path. Subtle bugs here
 // can either (a) leave a pod un-evicted forever (drain hangs) or (b) evict
-// something that shouldn't be touched (mirror pods, terminating pods,
+// something that shouldn't be touched (mirror pods,
 // orphans without --force) — both are user-visible foot-guns.
 
-func TestListDrainablePods_SkipsTerminatingPods(t *testing.T) {
+func TestListDrainablePods_WaitsForTerminatingPods(t *testing.T) {
 	// Recorded fixture has DeletionTimestamp set in the JSON — closer to a
 	// real terminating pod than a synthesized one with `time.Now()` baked
 	// in at test runtime.
@@ -26,20 +28,19 @@ func TestListDrainablePods_SkipsTerminatingPods(t *testing.T) {
 
 	pods, err := listDrainablePods(context.Background(), cs, "n1", DefaultDrainOptions())
 	require.NoError(t, err)
-	assert.Empty(t, pods, "terminating pod must be skipped")
+	assert.Len(t, pods, 1, "terminating pod must remain until deletion completes")
 }
 
-func TestListDrainablePods_SkipsOrphansWhenForceFalse(t *testing.T) {
+func TestListDrainablePods_RejectsOrphansWhenForceFalse(t *testing.T) {
 	// An orphan pod (no controller) would NOT be re-created after eviction.
-	// Skipping unless Force=true matches kubectl drain behavior. The TUI's
-	// hardcoded Force=false means an orphan keeps the drain from
-	// completing — that's a load-bearing failure mode, not a bug.
+	// Without Force, unmanaged pods must block drain rather than disappear
+	// from its completion criteria.
 	orphan := testutil.Pod("orphan", testutil.WithOrphan())
 	cs := testutil.NewClientset(t, orphan)
 
 	pods, err := listDrainablePods(context.Background(), cs, "n1", DefaultDrainOptions())
-	require.NoError(t, err)
-	assert.Empty(t, pods, "orphan pod must be skipped when Force=false")
+	require.Error(t, err)
+	assert.Empty(t, pods)
 }
 
 func TestListDrainablePods_IncludesOrphansWhenForceTrue(t *testing.T) {
@@ -54,15 +55,15 @@ func TestListDrainablePods_IncludesOrphansWhenForceTrue(t *testing.T) {
 	assert.Equal(t, "orphan", pods[0].Name)
 }
 
-func TestListDrainablePods_SkipsEmptyDirWhenDeleteEmptyDirFalse(t *testing.T) {
+func TestListDrainablePods_RejectsEmptyDirWhenDeleteEmptyDirFalse(t *testing.T) {
 	p := testutil.Pod("scratch", testutil.WithEmptyDirVolume("tmp"))
 	cs := testutil.NewClientset(t, p)
 
 	opts := DefaultDrainOptions()
 	opts.DeleteEmptyDir = false
 	pods, err := listDrainablePods(context.Background(), cs, "n1", opts)
-	require.NoError(t, err)
-	assert.Empty(t, pods, "emptyDir pod must be skipped when DeleteEmptyDir=false")
+	require.Error(t, err)
+	assert.Empty(t, pods)
 }
 
 func TestListDrainablePods_IncludesEmptyDirWhenDefault(t *testing.T) {
@@ -83,7 +84,7 @@ func TestListDrainablePods_DaemonSetAlwaysSkippedWithDefaults(t *testing.T) {
 	// filtered or drain would hang re-listing the same DS-managed pod
 	// forever (the DS recreates it immediately after eviction).
 	ds := testutil.Pod("ds-pod", testutil.WithOwnedByDaemonSet())
-	cs := testutil.NewClientset(t, ds)
+	cs := testutil.NewClientset(t, ds, &appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Name: "ds", Namespace: "default"}})
 
 	pods, err := listDrainablePods(context.Background(), cs, "n1", DefaultDrainOptions())
 	require.NoError(t, err)
@@ -108,7 +109,7 @@ func TestPodsOnNode_MatchesListDrainablePodsCount(t *testing.T) {
 	// is being lied to about a destructive action. Pin the invariant.
 	good := testutil.Pod("good")
 	ds := testutil.Pod("dsp", testutil.WithOwnedByDaemonSet())
-	cs := testutil.NewClientset(t, good, ds)
+	cs := testutil.NewClientset(t, good, ds, &appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Name: "ds", Namespace: "default"}})
 
 	n, err := PodsOnNode(context.Background(), cs, "n1", DefaultDrainOptions())
 	require.NoError(t, err)

@@ -65,6 +65,8 @@ func (m *Model) View() tea.View {
 	// This feature applies only to the states listed; all others use the fallback.
 	//exhaustive:ignore
 	switch m.state {
+	case stateShellView:
+		v.Cursor = m.shell.Cursor(m.ctx.Width, m.ctx.Height)
 	case stateChatView:
 		if !m.treeFocusInImmersive {
 			v.Cursor = m.chat.Cursor()

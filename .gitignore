@@ -1,5 +1,6 @@
 # Build output
 /bin/
+/.build/
 
 # Bench harness outputs (timestamped CSV + Markdown reports). bench/baseline.json
 # is the only checked-in artifact — the regression-gate contract.

@@ -552,6 +552,7 @@ func (m *Model) saveConfig() {
 // from every quit path (and only quit paths).
 func (m *Model) shutdown() {
 	m.stopLogStream()
+	m.shell.Close()
 	m.saveConfig()
 	for _, op := range m.operations {
 		op.journal.Record("interrupted", "Safina exited before readiness was established", nil)

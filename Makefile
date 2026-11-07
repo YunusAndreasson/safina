@@ -1,8 +1,11 @@
 .PHONY: build install dev clean test test-race verify verify-all site-verify tidy lint lint-fix fmt bench-build bench-seed bench-teardown bench-quick bench-full bench-record
 
 BINARY_NAME = safina
+.DEFAULT_GOAL := build
 BUILD_DIR = bin
 MAIN_PATH = ./cmd/safina
+NATIVE_CACHE ?= $(CURDIR)/.build/libghostty
+export PKG_CONFIG_PATH := $(NATIVE_CACHE)/native/lib/pkgconfig:$(PKG_CONFIG_PATH)
 GOLANGCI_LINT_VERSION = v2.15.0
 GOLANGCI_LINT = go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 GO_BIN_DIR = $(shell go env GOBIN)
@@ -16,6 +19,12 @@ LDFLAGS = -X github.com/yunus/safina/internal/version.Version=$(VERSION)
 BENCH_BINARY = $(BUILD_DIR)/safina-bench
 BENCH_CONTEXT ?= safina-bench
 BENCH_KUBECONFIG ?= $(HOME)/.kube/config
+
+.PHONY: native
+native:
+	python3 scripts/build-libghostty.py --cache "$(NATIVE_CACHE)"
+
+build dev test test-race verify lint lint-fix fmt bench-build: native
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_PATH)

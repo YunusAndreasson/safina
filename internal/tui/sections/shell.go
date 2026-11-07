@@ -2,16 +2,14 @@ package sections
 
 import (
 	"fmt"
-	"image/color"
-	"strconv"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/hinshun/vt10x"
 	"k8s.io/client-go/tools/remotecommand"
 
 	"github.com/yunus/safina/internal/k8s"
+	"github.com/yunus/safina/internal/terminal"
 	"github.com/yunus/safina/internal/tui/components"
 	"github.com/yunus/safina/internal/tui/theme"
 	"github.com/yunus/safina/internal/tui/tuictx"
@@ -26,30 +24,17 @@ type shellPhase int
 
 const (
 	phaseConnect shellPhase = iota // dialing remotecommand
-	phaseLive                      // terminal connected, vt10x rendering
+	phaseLive                      // terminal connected, libghostty rendering
 	phaseNoShell                   // exec failed because no shell binary — offer debug
 	phaseDebug                     // creating netshoot ephemeral container
 	phaseError                     // any other dial-time error
 )
 
 // shellModalChrome is the rows the panel reserves: 2 borders + 1 status row +
-// 1 keys-hint row. The vt10x grid gets everything else.
+// 1 keys-hint row. The terminal grid gets everything else.
 const shellModalChrome = 4
 
-// vt10x's attribute bits live in an unexported constants block in state.go;
-// we pin our own copy here so the renderer can read Glyph.Mode directly.
-// These are stable: the package is API-frozen and the bits are part of the
-// Glyph layout that callers depend on.
-const (
-	vtAttrReverse   = 1 << 0
-	vtAttrUnderline = 1 << 1
-	vtAttrBold      = 1 << 2
-	vtAttrGfx       = 1 << 3
-	vtAttrItalic    = 1 << 4
-	vtAttrBlink     = 1 << 5
-)
-
-// Shell is the embedded interactive-terminal modal. It owns a vt10x emulator
+// Shell is the embedded interactive-terminal modal. It owns a libghostty emulator
 // that consumes the byte stream coming back from a kubectl-exec-equivalent
 // remotecommand session. Key events are translated to the byte sequences a
 // real terminal would send and forwarded into the session's stdin pipe.
@@ -68,7 +53,7 @@ type Shell struct {
 	contextName string
 
 	// session state
-	term    vt10x.Terminal
+	term    *terminal.Terminal
 	session *k8s.ShellSession
 	err     error
 	isDebug bool // true once we've attached to a netshoot debug container
@@ -97,6 +82,7 @@ func NewShell(c *tuictx.Ctx) Shell {
 // phaseConnect; the root issues OpenShell alongside the modal switch so the
 // stream starts dialing the moment the modal appears.
 func (s *Shell) Reset(contextName, namespace, pod, container string) {
+	s.Close()
 	s.phase = phaseConnect
 	s.contextName = contextName
 	s.namespace = namespace
@@ -119,7 +105,10 @@ func (s *Shell) Reset(contextName, namespace, pod, container string) {
 	if rows < 1 {
 		rows = 24
 	}
-	s.term = vt10x.New(vt10x.WithSize(cols, rows))
+	s.term, s.err = terminal.New(cols, rows)
+	if s.err != nil {
+		s.phase = phaseError
+	}
 }
 
 // Pod returns the current pod target, used by the root for breadcrumbs.
@@ -129,7 +118,8 @@ func (s *Shell) Pod() string { return s.pod }
 // pasted letters as Safina shortcuts.
 func (s *Shell) Paste(text string) {
 	if s.phase == phaseLive && s.session != nil {
-		_, _ = s.session.Stdin.Write([]byte(text))
+		data, err := s.term.Paste(text)
+		s.sendInput(data, err)
 	}
 }
 
@@ -164,7 +154,8 @@ func (s *Shell) SetSize(termW, termH int) {
 	s.gridRows = rows
 
 	if s.term != nil {
-		s.term.Resize(cols, rows)
+		data, err := s.term.Resize(cols, rows)
+		s.sendInput(data, err)
 	}
 	if s.session != nil {
 		// Non-blocking — the resize chan is buffered.
@@ -182,6 +173,10 @@ func (s *Shell) SetSize(termW, termH int) {
 // isDebug records whether this came from the netshoot fall-back so the
 // title can reflect it.
 func (s *Shell) Attach(sess *k8s.ShellSession, isDebug bool) {
+	if s.term == nil {
+		sess.Close()
+		return
+	}
 	s.session = sess
 	s.isDebug = s.isDebug || isDebug
 	s.phase = phaseLive
@@ -196,7 +191,8 @@ func (s *Shell) IngestBytes(b []byte) {
 	if s.term == nil {
 		return
 	}
-	_, _ = s.term.Write(b)
+	data, err := s.term.Feed(b)
+	s.sendInput(data, err)
 }
 
 // HandleExit transitions to phaseNoShell or phaseError when the session ends
@@ -267,109 +263,56 @@ func (s *Shell) handleKey(km tea.KeyPressMsg, c *tuictx.Ctx) (tea.Cmd, bool) {
 	return nil, false
 }
 
-// forwardKey translates a tea.KeyPressMsg into the byte sequence a real terminal
-// would emit, then writes it to the session's stdin pipe.
-func (s *Shell) forwardKey(km tea.KeyPressMsg) {
-	if s.session == nil {
-		return
+// Close releases native state and stops a live session. Reset, detach and
+// application shutdown all call this; it is safe to repeat.
+func (s *Shell) Close() {
+	if s.session != nil {
+		s.session.Close()
+		s.session = nil
 	}
-	b := keyToBytes(km)
-	if len(b) == 0 {
-		return
+	if s.term != nil {
+		s.term.Close()
+		s.term = nil
 	}
-	_, _ = s.session.Stdin.Write(b)
 }
 
-// keyToBytes maps Bubble Tea key events to terminal input bytes. Covers the
-// keys the on-caller actually uses: navigation, line editing, control codes
-// for shell readline, function keys, and printable runes (with alt-prefix).
-func keyToBytes(km tea.KeyPressMsg) []byte {
-	// Ctrl+letter: emit the raw control byte a real PTY would send
-	// (ctrl+a → 0x01, ctrl+z → 0x1a, plus the punctuation block).
-	if km.Mod.Contains(tea.ModCtrl) && len(km.Text) == 0 {
-		switch {
-		case km.Code >= 'a' && km.Code <= 'z':
-			return []byte{byte(km.Code - 'a' + 1)}
-		case km.Code == '@':
-			return []byte{0x00}
-		case km.Code == '[':
-			return []byte{0x1b}
-		case km.Code == '\\':
-			return []byte{0x1c}
-		case km.Code == ']':
-			return []byte{0x1d}
-		case km.Code == '^':
-			return []byte{0x1e}
-		case km.Code == '_':
-			return []byte{0x1f}
+func (s *Shell) sendInput(data []byte, err error) {
+	if err == nil && s.session != nil {
+		err = s.session.SendInput(data)
+	}
+	if err != nil {
+		s.err = err
+		s.phase = phaseError
+		if s.session != nil {
+			s.session.Close()
 		}
 	}
+}
 
-	switch km.Code {
-	case tea.KeyEnter:
-		return []byte{'\r'}
-	case tea.KeyTab:
-		if km.Mod.Contains(tea.ModShift) {
-			return []byte("\x1b[Z")
-		}
-		return []byte{'\t'}
-	case tea.KeyBackspace:
-		return []byte{0x7f}
-	case tea.KeyDelete:
-		return []byte("\x1b[3~")
-	case tea.KeyEscape:
-		return []byte{0x1b}
-	case tea.KeySpace:
-		return []byte{' '}
-	case tea.KeyUp:
-		return []byte("\x1b[A")
-	case tea.KeyDown:
-		return []byte("\x1b[B")
-	case tea.KeyRight:
-		return []byte("\x1b[C")
-	case tea.KeyLeft:
-		return []byte("\x1b[D")
-	case tea.KeyHome:
-		return []byte("\x1b[H")
-	case tea.KeyEnd:
-		return []byte("\x1b[F")
-	case tea.KeyPgUp:
-		return []byte("\x1b[5~")
-	case tea.KeyPgDown:
-		return []byte("\x1b[6~")
-	case tea.KeyF1:
-		return []byte("\x1bOP")
-	case tea.KeyF2:
-		return []byte("\x1bOQ")
-	case tea.KeyF3:
-		return []byte("\x1bOR")
-	case tea.KeyF4:
-		return []byte("\x1bOS")
-	case tea.KeyF5:
-		return []byte("\x1b[15~")
-	case tea.KeyF6:
-		return []byte("\x1b[17~")
-	case tea.KeyF7:
-		return []byte("\x1b[18~")
-	case tea.KeyF8:
-		return []byte("\x1b[19~")
-	case tea.KeyF9:
-		return []byte("\x1b[20~")
-	case tea.KeyF10:
-		return []byte("\x1b[21~")
-	case tea.KeyF11:
-		return []byte("\x1b[23~")
-	case tea.KeyF12:
-		return []byte("\x1b[24~")
+func (s *Shell) forwardKey(key tea.KeyPressMsg) {
+	if s.session == nil || s.term == nil {
+		return
 	}
+	data, err := s.term.Key(key)
+	s.sendInput(data, err)
+}
 
-	if km.Text != "" {
-		if km.Mod.Contains(tea.ModAlt) {
-			return append([]byte{0x1b}, []byte(km.Text)...)
-		}
-		return []byte(km.Text)
+// Cursor projects the remote terminal cursor inside the centered panel. Keeping
+// it in Bubble Tea avoids custom cell rendering, including wide-character cases.
+func (s *Shell) Cursor(width, height int) *tea.Cursor {
+	if s.term == nil || s.phase != phaseLive || width < 50 || height < 14 {
+		return nil
 	}
-	return nil
+	_, cursor, err := s.term.Frame()
+	if err != nil || cursor == nil {
+		return nil
+	}
+	cursor.X += max(0, width-s.modalW)/2 + 1
+	cursor.Y += max(0, height-s.modalH)/2 + 2
+	if cursor.X >= width || cursor.Y >= height {
+		return nil
+	}
+	return cursor
 }
 
 // View renders the modal centred over a backdrop, dispatching by phase.
@@ -461,157 +404,15 @@ func (s *Shell) bodyForPhase(c *tuictx.Ctx) string {
 	return centerBox(w, h, "")
 }
 
-// runKey identifies a styled run inside a row — every cell with the same key
-// renders under one lipgloss.Style call, instead of one Style+Render per cell.
-// vt10x.Color is uint32 so the key is small and map-friendly.
-type runKey struct {
-	fg, bg vt10x.Color
-	mode   int16
-	cursor bool
-}
-
-// renderTerminal walks the vt10x cell grid and turns it into a styled string
-// the panel can show. We hold the emulator's lock for the whole walk so the
-// background goroutine can't mutate cells mid-frame.
-//
-// Cells are coalesced into runs of identical attributes per row. A typical
-// shell line is ~120 chars but maybe 5–10 attribute changes; emitting a
-// single Render per run instead of per cell is a 10×–30× cut in lipgloss
-// allocations and ANSI bytes. Trailing default-attr blanks are trimmed
-// because PanelWithAccent right-pads short lines anyway. Style values are
-// memoized for the frame so identical runs share a prebuilt Style.
 func (s *Shell) renderTerminal(t *theme.Theme) string {
 	if s.term == nil {
 		return centerBox(s.gridCols, s.gridRows, "")
 	}
-	s.term.Lock()
-	defer s.term.Unlock()
-
-	cols, rows := s.term.Size()
-	cur := s.term.Cursor()
-	cursorVisible := s.term.CursorVisible()
-
-	cache := make(map[runKey]lipgloss.Style, 32)
-	getStyle := func(k runKey) lipgloss.Style {
-		if st, ok := cache[k]; ok {
-			return st
-		}
-		style := lipgloss.NewStyle()
-		if fg := vtColorToLipgloss(k.fg, t, true); fg != nil {
-			style = style.Foreground(fg)
-		}
-		if bg := vtColorToLipgloss(k.bg, t, false); bg != nil {
-			style = style.Background(bg)
-		}
-		if k.mode&vtAttrBold != 0 {
-			style = style.Bold(true)
-		}
-		if k.mode&vtAttrItalic != 0 {
-			style = style.Italic(true)
-		}
-		if k.mode&vtAttrUnderline != 0 {
-			style = style.Underline(true)
-		}
-		if k.cursor {
-			style = style.Reverse(true)
-		}
-		cache[k] = style
-		return style
+	frame, _, err := s.term.Frame()
+	if err != nil {
+		return t.DimTxt.Render("terminal: " + err.Error())
 	}
-
-	var out strings.Builder
-	out.Grow(cols * rows * 2)
-	var run strings.Builder
-	var curKey runKey
-	hasRun := false
-
-	flush := func() {
-		if !hasRun {
-			return
-		}
-		out.WriteString(getStyle(curKey).Render(run.String()))
-		run.Reset()
-		hasRun = false
-	}
-
-	for y := range rows {
-		// Find the rightmost meaningful cell on this row so trailing
-		// default-blanks aren't styled and emitted. The panel pads short
-		// lines, so this is purely a perf win — and a big one because most
-		// rows have a lot of empty tail (think prompt + half a command).
-		lastIdx := -1
-		for x := cols - 1; x >= 0; x-- {
-			cell := s.term.Cell(x, y)
-			if cell.Char != 0 && cell.Char != ' ' {
-				lastIdx = x
-				break
-			}
-			if cell.FG != vt10x.DefaultFG || cell.BG != vt10x.DefaultBG || cell.Mode != 0 {
-				lastIdx = x
-				break
-			}
-		}
-		if cursorVisible && cur.Y == y && cur.X > lastIdx {
-			lastIdx = cur.X
-		}
-
-		for x := 0; x <= lastIdx; x++ {
-			cell := s.term.Cell(x, y)
-			ch := cell.Char
-			if ch == 0 {
-				ch = ' '
-			}
-			k := runKey{
-				fg:     cell.FG,
-				bg:     cell.BG,
-				mode:   cell.Mode,
-				cursor: cursorVisible && x == cur.X && y == cur.Y,
-			}
-			if hasRun && k != curKey {
-				flush()
-			}
-			if !hasRun {
-				curKey = k
-				hasRun = true
-			}
-			run.WriteRune(ch)
-		}
-		flush()
-		if y < rows-1 {
-			out.WriteByte('\n')
-		}
-	}
-	return out.String()
-}
-
-// vtColorToLipgloss maps a vt10x Color to a lipgloss color string. isFG flips
-// the default-color behaviour: for FG we want the theme's default foreground;
-// for BG we want "no override" (empty string), so the panel's background
-// shows through and selected text remains visible against the panel bg.
-func vtColorToLipgloss(c vt10x.Color, t *theme.Theme, isFG bool) color.Color {
-	// ANSI palette and truecolor values use the numeric path below.
-	//exhaustive:ignore
-	switch c {
-	case vt10x.DefaultFG:
-		if isFG {
-			return t.P.FG
-		}
-		return nil
-	case vt10x.DefaultBG, vt10x.DefaultCursor:
-		return nil
-	default:
-		// named ANSI / 256 / truecolor — handled by the numeric path below.
-	}
-	if c < 256 {
-		// ANSI 0..15 + xterm 256-color: pass numeric index through to lipgloss,
-		// which knows the standard palette mapping per the user's colorprofile.
-		return lipgloss.Color(strconv.Itoa(int(c)))
-	}
-	// truecolor RGB packed into the low 24 bits.
-	r := byte((c >> 16) & 0xff)
-	gg := byte((c >> 8) & 0xff)
-	b := byte(c & 0xff)
-	return lipgloss.Color(fmt.Sprintf("#%02x%02x%02x", r, gg, b))
+	return frame
 }
 
 // statusRow shows a one-line summary above the body. In phaseLive it doubles

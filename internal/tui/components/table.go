@@ -126,15 +126,8 @@ func TruncPad(s string, w int) string {
 	if w < 1 {
 		w = 1
 	}
-	rs := []rune(s)
-	if len(rs) > w {
-		return string(rs[:w-1]) + "…"
-	}
-	pad := w - lipgloss.Width(s)
-	if pad < 0 {
-		return s
-	}
-	return s + strings.Repeat(" ", pad)
+	s = ansi.Truncate(s, w, "…")
+	return s + strings.Repeat(" ", max(0, w-lipgloss.Width(s)))
 }
 
 func sumWidths(w []int) int {

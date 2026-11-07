@@ -1,0 +1,134 @@
+{
+  "date": "2026-11-07",
+  "contracts": {
+    "vt10x": {
+      "TestScreenContracts/overwrite": "pass",
+      "TestScreenContracts/erase": "pass",
+      "TestScreenContracts/alternate-screen": "pass",
+      "TestScreenContracts/wide": "pass",
+      "TestScreenContracts/combining": "pass",
+      "TestScreenContracts/emoji": "pass",
+      "TestScreenContracts/split-utf8": "fail",
+      "TestScreenContracts/split-grapheme": "fail",
+      "TestInputContracts/normal-up": "pass",
+      "TestInputContracts/application-up": "fail",
+      "TestInputContracts/ctrl-up": "fail",
+      "TestInputContracts/plain-paste": "pass",
+      "TestInputContracts/bracketed-paste": "fail",
+      "TestResizeReflows": "fail",
+      "TestRecordedApplications/vim": "pass",
+      "TestRecordedApplications/less": "fail",
+      "TestDeviceReplies": "fail"
+    },
+    "charm": {
+      "TestScreenContracts/overwrite": "pass",
+      "TestScreenContracts/erase": "pass",
+      "TestScreenContracts/alternate-screen": "pass",
+      "TestScreenContracts/wide": "pass",
+      "TestScreenContracts/combining": "pass",
+      "TestScreenContracts/emoji": "pass",
+      "TestScreenContracts/split-utf8": "pass",
+      "TestScreenContracts/split-grapheme": "fail",
+      "TestInputContracts/normal-up": "pass",
+      "TestInputContracts/application-up": "pass",
+      "TestInputContracts/ctrl-up": "fail",
+      "TestInputContracts/plain-paste": "pass",
+      "TestInputContracts/bracketed-paste": "pass",
+      "TestResizeReflows": "fail",
+      "TestRecordedApplications/vim": "pass",
+      "TestRecordedApplications/less": "pass",
+      "TestDeviceReplies": "pass"
+    },
+    "ghostty": {
+      "TestScreenContracts/overwrite": "pass",
+      "TestScreenContracts/erase": "pass",
+      "TestScreenContracts/alternate-screen": "pass",
+      "TestScreenContracts/wide": "pass",
+      "TestScreenContracts/combining": "pass",
+      "TestScreenContracts/emoji": "pass",
+      "TestScreenContracts/split-utf8": "pass",
+      "TestScreenContracts/split-grapheme": "pass",
+      "TestInputContracts/normal-up": "pass",
+      "TestInputContracts/application-up": "pass",
+      "TestInputContracts/ctrl-up": "pass",
+      "TestInputContracts/plain-paste": "pass",
+      "TestInputContracts/bracketed-paste": "pass",
+      "TestResizeReflows": "pass",
+      "TestRecordedApplications/vim": "pass",
+      "TestRecordedApplications/less": "pass",
+      "TestDeviceReplies": "pass"
+    }
+  },
+  "benchmarks": {
+    "BenchmarkParse/vt10x": {
+      "ns_per_op": [
+        380132,
+        481952,
+        365558
+      ],
+      "median_ns_per_op": 380132
+    },
+    "BenchmarkParse/charm": {
+      "ns_per_op": [
+        623258,
+        741754,
+        766086
+      ],
+      "median_ns_per_op": 741754
+    },
+    "BenchmarkParse/ghostty": {
+      "ns_per_op": [
+        23173,
+        18086,
+        19864
+      ],
+      "median_ns_per_op": 19864
+    },
+    "BenchmarkPlainSnapshot/vt10x": {
+      "ns_per_op": [
+        248542,
+        240034,
+        227812
+      ],
+      "median_ns_per_op": 240034
+    },
+    "BenchmarkPlainSnapshot/charm": {
+      "ns_per_op": [
+        286022,
+        274040,
+        264689
+      ],
+      "median_ns_per_op": 274040
+    },
+    "BenchmarkPlainSnapshot/ghostty": {
+      "ns_per_op": [
+        128606,
+        78681,
+        39739
+      ],
+      "median_ns_per_op": 78681
+    }
+  },
+  "limitations": [
+    "Tests cover selected terminal contracts and synthetic vim/less replays, not full terminal conformance.",
+    "Legacy key/paste/reply behavior mirrors the current Safina adapter; screen snapshots use vt10x.String rather than Safina rendering.",
+    "Parsing benchmark overwrites a fixed screen without scrolling; it excludes Kubernetes transport and UI rendering.",
+    "Plain snapshot benchmark includes adapter and normalization costs; it is not a styled frame benchmark.",
+    "Measurements are from a shared developer machine with background load; do not use as a regression threshold.",
+    "Go allocation counters omit native allocations."
+  ],
+  "stripped_test_executable_bytes": {
+    "pure_go": 3903751,
+    "with_ghostty": 6609536,
+    "delta": 2705785
+  },
+  "validation": {
+    "ghostty_contracts": "pass",
+    "ghostty_race_contracts": "pass",
+    "native_bootstrap_cached_build": "pass",
+    "runtime_shared_libraries": [
+      "libc.so.6",
+      "Linux dynamic loader (no libghostty shared-library dependency)"
+    ]
+  }
+}

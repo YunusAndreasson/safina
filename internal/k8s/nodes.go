@@ -3,17 +3,19 @@ package k8s
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"sync"
 	"time"
 
 	"github.com/yunus/safina/internal/history"
 
 	corev1 "k8s.io/api/core/v1"
-	policyv1 "k8s.io/api/policy/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/kubectl/pkg/drain"
 )
 
 // CordonNode marks the node unschedulable. New pods won't be placed here,
@@ -66,7 +68,7 @@ func setUnschedulable(ctx context.Context, cs kubernetes.Interface, name string,
 type DrainOptions struct {
 	IgnoreDaemonSets bool
 	DeleteEmptyDir   bool
-	Force            bool // when true, evict mirror pods and orphans too
+	Force            bool // permit unmanaged pods; mirror pods are always skipped
 	GracePeriod      time.Duration
 	Timeout          time.Duration
 }
@@ -99,19 +101,11 @@ type DrainEvent struct {
 	StartTimestamp time.Time
 }
 
-// DrainNode runs the eviction loop. Closes progress when it exits — the
-// caller MUST consume the channel or the goroutine wedges. The function
-// itself returns when the loop finishes (or fails or times out); progress
-// observers can also detect the end via Done=true.
-//
-// Implicit cordon: we cordon before we evict, since uncordoned-mid-drain
-// would let new pods race in behind us. If the caller cancels ctx, we
-// uncordon on the way out — leaving the node half-drained AND cordoned is
-// the surprising failure mode we close.
+// DrainNode delegates filtering, eviction retries and termination waiting to kubectl.
+// Safina retains progress reporting and per-attempt activity recording.
 func DrainNode(ctx context.Context, cs kubernetes.Interface, nodeName string, opts DrainOptions, progress chan<- DrainEvent) error {
 	defer close(progress)
 	start := time.Now()
-
 	emit := func(e DrainEvent) {
 		e.StartTimestamp = start
 		select {
@@ -119,179 +113,103 @@ func DrainNode(ctx context.Context, cs kubernetes.Interface, nodeName string, op
 		case <-ctx.Done():
 		}
 	}
-
-	emit(DrainEvent{Phase: "cordoning", Msg: "cordoning " + nodeName})
-	if err := CordonNode(ctx, cs, nodeName); err != nil {
-		emit(DrainEvent{Phase: "done", Err: err, Done: true})
-		return fmt.Errorf("cordon: %w", err)
-	}
-
-	// On any non-success exit, uncordon the node. The user can always re-
-	// cordon explicitly; a node that was cordoned-for-drain-then-aborted
-	// being left cordoned is the silent foot-gun.
-	committed := false
-	defer func() {
-		if !committed && ctx.Err() != nil {
-			// Best-effort uncordon on cancellation. We deliberately use a
-			// fresh background context with a short timeout — the user's
-			// ctx is already dead so we can't use it.
-			uctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-			defer cancel()
-			_ = UncordonNode(uctx, cs, nodeName)
-		}
-	}()
-
 	timeout := opts.Timeout
 	if timeout <= 0 {
 		timeout = 10 * time.Minute
 	}
-	deadline := time.Now().Add(timeout)
-
-	for {
-		if time.Now().After(deadline) {
-			err := fmt.Errorf("drain timed out after %s", timeout)
-			emit(DrainEvent{Phase: "done", Err: err, Done: true})
+	drainCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	helper := newDrainHelper(drainCtx, cs, opts)
+	list, errs := helper.GetPodsForDeletion(nodeName)
+	if err := errors.Join(errs...); err != nil {
+		emit(DrainEvent{Phase: "done", Done: true, Err: err})
+		return err
+	}
+	pods := list.Pods()
+	// Validate eviction support before cordoning. The wrapped discovery client also
+	// checks each later discovery, preventing kubectl's direct-delete fallback.
+	if len(pods) > 0 {
+		if _, err := drain.CheckEvictionSupport(helper.Client); err != nil {
+			emit(DrainEvent{Phase: "done", Done: true, Err: err})
 			return err
 		}
-		if err := ctx.Err(); err != nil {
-			emit(DrainEvent{Phase: "done", Err: err, Done: true})
-			return err
+	}
+	emit(DrainEvent{Phase: "cordoning", Msg: "cordoning " + nodeName})
+	if err := CordonNode(drainCtx, cs, nodeName); err != nil {
+		emit(DrainEvent{Phase: "done", Done: true, Err: err})
+		return fmt.Errorf("cordon: %w", err)
+	}
+	// Keep a cancelled drain cordoned: some evictions may already be accepted.
+	// Uncordoning is an explicit operator action, including for pre-cordoned nodes.
+	// List again after cordoning to include pods scheduled during preflight.
+	list, errs = helper.GetPodsForDeletion(nodeName)
+	if err := errors.Join(errs...); err != nil {
+		emit(DrainEvent{Phase: "done", Done: true, Err: err})
+		return err
+	}
+	pods = list.Pods()
+	uids := make(map[string]types.UID, len(pods))
+	for _, pod := range pods {
+		uids[pod.Namespace+"/"+pod.Name] = pod.UID
+	}
+	helper.Client = drainClient{Interface: cs, uids: uids}
+	var mu sync.Mutex
+	remaining := make(map[string]bool, len(pods))
+	for _, p := range pods {
+		remaining[p.Namespace+"/"+p.Name] = true
+	}
+	publish := func(phase string) {
+		names := make([]string, 0, len(remaining))
+		for name := range remaining {
+			names = append(names, name)
 		}
+		emit(DrainEvent{Phase: phase, PodsTotal: len(pods), PodsEvicted: len(pods) - len(remaining), PodsRemaining: len(remaining), RemainingPods: names})
+	}
+	publish("evicting")
+	helper.OnPodDeletionOrEvictionFinished = func(p *corev1.Pod, _ bool, err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if err == nil {
+			delete(remaining, p.Namespace+"/"+p.Name)
+		}
+		publish("waiting")
+	}
+	err := helper.DeleteOrEvictPods(pods)
+	if err != nil && drainCtx.Err() != nil {
+		// kubectl's timeout errors do not consistently wrap the context error.
+		// Preserve it so the logbook distinguishes cancellation and timeout.
+		err = errors.Join(err, drainCtx.Err())
+	}
+	message := "drained " + nodeName
+	if err != nil {
+		message = "drain incomplete; node remains cordoned"
+	} else {
+		// An eviction can return NotFound before kubectl's completion callback.
+		clear(remaining)
+	}
+	emit(DrainEvent{Phase: "done", Done: true, Err: err, Msg: message, PodsTotal: len(pods), PodsEvicted: len(pods) - len(remaining), PodsRemaining: len(remaining)})
+	return err
+}
 
-		victims, err := listDrainablePods(ctx, cs, nodeName, opts)
-		if err != nil {
-			emit(DrainEvent{Phase: "done", Err: err, Done: true})
-			return err
-		}
-		if len(victims) == 0 {
-			committed = true
-			emit(DrainEvent{Phase: "done", Done: true, Msg: "drained " + nodeName})
-			return nil
-		}
-
-		names := make([]string, 0, len(victims))
-		for _, p := range victims {
-			names = append(names, p.Namespace+"/"+p.Name)
-		}
-		emit(DrainEvent{
-			Phase:         "evicting",
-			PodsRemaining: len(victims),
-			RemainingPods: names,
-			Msg:           fmt.Sprintf("evicting %d pods", len(victims)),
-		})
-
-		for _, p := range victims {
-			if err := ctx.Err(); err != nil {
-				emit(DrainEvent{Phase: "done", Err: err, Done: true})
-				return err
-			}
-			grace := int64(opts.GracePeriod / time.Second)
-			eviction := &policyv1.Eviction{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      p.Name,
-					Namespace: p.Namespace,
-				},
-				DeleteOptions: &metav1.DeleteOptions{
-					GracePeriodSeconds: &grace,
-				},
-			}
-			var evictionOp *history.Operation
-			if parent := history.FromContext(ctx); parent != nil {
-				t := parent.Target
-				t.Kind = "Pod"
-				t.Name = p.Name
-				t.Namespace = p.Namespace
-				t.UID = string(p.UID)
-				evictionOp = parent.Store.Begin(t, "evict", map[string]string{"drainOperation": parent.ID})
-			}
-			err := cs.PolicyV1().Evictions(p.Namespace).Evict(ctx, eviction)
-			if evictionOp != nil {
-				evictionOp.Finish(err, "accepted")
-			}
-			if err != nil && !apierrors.IsNotFound(err) {
-				// 429 = PDB blocking; keep trying on the next loop iteration.
-				// Anything else, we surface and bail — a real error here
-				// (RBAC denied, API down) won't fix itself.
-				if !apierrors.IsTooManyRequests(err) {
-					emit(DrainEvent{Phase: "done", Err: err, Done: true})
-					return err
-				}
-			}
-		}
-
-		// Brief breather before re-listing so we don't busy-loop while
-		// pods are mid-termination.
-		select {
-		case <-ctx.Done():
-			emit(DrainEvent{Phase: "done", Err: ctx.Err(), Done: true})
-			return ctx.Err()
-		case <-time.After(2 * time.Second):
-		}
+func newDrainHelper(ctx context.Context, cs kubernetes.Interface, opts DrainOptions) *drain.Helper {
+	return &drain.Helper{
+		Ctx: ctx, Client: drainClient{Interface: cs}, Force: opts.Force,
+		GracePeriodSeconds:  int(opts.GracePeriod / time.Second),
+		IgnoreAllDaemonSets: opts.IgnoreDaemonSets, DeleteEmptyDirData: opts.DeleteEmptyDir,
+		Timeout: opts.Timeout, EvictErrorRetryDelay: 2 * time.Second, ChunkSize: 500,
+		Out: io.Discard, ErrOut: io.Discard,
 	}
 }
 
-// listDrainablePods returns pods on nodeName that should be evicted under
-// the given opts. Filters out:
-//   - DaemonSet-managed pods (when IgnoreDaemonSets)
-//   - Mirror pods (static pods from /etc/kubernetes/manifests; nothing the
-//     API can do about them)
-//   - Pods using emptyDir volumes (unless DeleteEmptyDir)
-//   - Orphan pods (no controller; lose data if evicted — unless Force)
-//   - Already-terminating pods (DeletionTimestamp set)
+// listDrainablePods includes terminating pods until they disappear and returns
+// errors for unmanaged pods and disallowed local storage rather than hiding them.
 func listDrainablePods(ctx context.Context, cs kubernetes.Interface, nodeName string, opts DrainOptions) ([]corev1.Pod, error) {
-	pods, err := cs.CoreV1().Pods("").List(ctx, metav1.ListOptions{
-		FieldSelector: "spec.nodeName=" + nodeName,
-	})
-	if err != nil {
+	helper := newDrainHelper(ctx, cs, opts)
+	list, errs := helper.GetPodsForDeletion(nodeName)
+	if err := errors.Join(errs...); err != nil {
 		return nil, err
 	}
-	out := make([]corev1.Pod, 0, len(pods.Items))
-	for _, p := range pods.Items {
-		if p.DeletionTimestamp != nil {
-			continue
-		}
-		// Mirror pods (kube-system static pods) can't be evicted via the
-		// API; the kubelet owns their lifecycle. Skipping them silently
-		// matches kubectl drain's behaviour.
-		if _, ok := p.Annotations["kubernetes.io/config.mirror"]; ok {
-			continue
-		}
-		owner := topLevelOwner(p)
-		if owner == "DaemonSet" && opts.IgnoreDaemonSets {
-			continue
-		}
-		if owner == "" && !opts.Force {
-			// Orphan: no controller will re-create it after eviction.
-			// Skipping unless --force matches kubectl semantics; safina's
-			// hardcoded opts.Force=false means an orphan pinned to a node
-			// keeps the drain from completing. That's intentional — we
-			// fail loud rather than lose data silently.
-			continue
-		}
-		if !opts.DeleteEmptyDir && hasEmptyDir(p) {
-			continue
-		}
-		out = append(out, p)
-	}
-	return out, nil
-}
-
-func topLevelOwner(p corev1.Pod) string {
-	for _, ref := range p.OwnerReferences {
-		if ref.Controller != nil && *ref.Controller {
-			return ref.Kind
-		}
-	}
-	return ""
-}
-
-func hasEmptyDir(p corev1.Pod) bool {
-	for _, v := range p.Spec.Volumes {
-		if v.EmptyDir != nil {
-			return true
-		}
-	}
-	return false
+	return list.Pods(), nil
 }
 
 // PodsOnNode counts the pods scheduled on nodeName — used by the drain

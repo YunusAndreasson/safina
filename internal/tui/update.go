@@ -520,6 +520,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.shell.HandleExit(msg.NoShell, msg.Err)
 		if !msg.NoShell && msg.Err == nil {
+			m.shell.Close()
 			m.ctx.ResetBackground()
 			m.state = stateMain
 		}
@@ -1220,6 +1221,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case stateShellView:
 		cmd, leave := m.shell.Update(msg, m.ctx)
 		if leave {
+			m.shell.Close()
 			if m.shellSession != nil {
 				m.shellJournal.Record("disconnected", "", nil)
 				m.shellJournal = nil
@@ -2104,9 +2106,8 @@ func (m *Model) handlePortForwardInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd)
 
 // handleDrainProgress consumes keys while the drain-progress modal is open.
 // Only ctrl+c does anything (cancels) — esc is intentionally a no-op so the
-// user can't half-drain a node by accident. The cancel handler relies on
-// DrainNode's deferred uncordon, so a cancelled drain leaves the node
-// uncordoned (the recoverable state) rather than cordoned-with-half-evicted.
+// user can't half-drain a node by accident. Cancellation leaves the node
+// cordoned; the operator explicitly uncordons after inspecting the outcome.
 func (m *Model) handleDrainProgress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "ctrl+c" {
 		m.drain.Cancel()

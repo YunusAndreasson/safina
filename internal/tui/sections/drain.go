@@ -46,8 +46,8 @@ func (d *Drain) Reset(node string, cancel context.CancelFunc) {
 	d.cancel = cancel
 }
 
-// Cancel asks the running drain to abort. The DrainNode function uncordons
-// the node on cancel so we don't leave it stuck in a cordoned state.
+// Cancel stops the running drain. The node remains cordoned because
+// accepted evictions cannot be undone; uncordoning is an explicit action.
 func (d *Drain) Cancel() {
 	if d.cancel != nil {
 		d.cancel()
@@ -116,7 +116,7 @@ func (d *Drain) View(w int) string {
 		elapsed = lipgloss.NewStyle().Foreground(t.P.Dim).Render(fmt.Sprintf("elapsed %ds", int(time.Since(d.latest.StartTimestamp).Seconds())))
 	}
 
-	footer := t.Hint.Render("ctrl+c cancel (uncordons before exit)")
+	footer := t.Hint.Render("ctrl+c cancel (node stays cordoned)")
 
 	parts := []string{title, "", phaseLine, statsLine}
 	if remain != "" {
@@ -193,8 +193,7 @@ func StartDrain(parentCtx context.Context, mgr *k8s.Manager, contextName, nodeNa
 		}
 		// cancel is intentionally returned to the model — the user can hit
 		// ctrl+c in the progress modal to abort. The model wires it onto
-		// the Drain section; DrainNode's deferred-uncordon hook makes
-		// abort safe (no half-cordoned-half-drained limbo).
+		// the Drain section. The node stays cordoned after cancellation.
 		ctx, cancel := context.WithCancel(history.WithOperation(parentCtx, op)) //nolint:gosec // ownership transfers via DrainStartedMsg
 		ch := make(chan k8s.DrainEvent, 16)
 		go func() {

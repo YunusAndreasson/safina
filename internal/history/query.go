@@ -36,7 +36,7 @@ func matches(r Record, f Filter) bool {
 		(f.Since.IsZero() || !r.Time.Before(f.Since)) && (f.Until.IsZero() || !r.Time.After(f.Until))
 }
 
-func Query(dir string, f Filter) (Result, error) {
+func queryLegacy(dir string, f Filter) (Result, error) {
 	var result Result
 	gapSessions := map[string]bool{}
 	root, openErr := os.OpenRoot(dir)
@@ -132,7 +132,10 @@ func Query(dir string, f Filter) (Result, error) {
 func sortRecords(rs []Record) {
 	sort.Slice(rs, func(i, j int) bool {
 		if rs[i].Time.Equal(rs[j].Time) {
-			if rs[i].Session == rs[j].Session {
+			if rs[i].Session != rs[j].Session {
+				return rs[i].Session < rs[j].Session
+			}
+			if rs[i].Sequence != rs[j].Sequence {
 				return rs[i].Sequence < rs[j].Sequence
 			}
 			return rs[i].ID < rs[j].ID
@@ -178,7 +181,7 @@ type retainedFile struct {
 	at   time.Time
 }
 
-// Prune never deletes a writer's locked file. Run on startup and periodically.
+// Prune expires action rows and closed evidence files. Active captures remain protected.
 func (s *Store) Prune() error {
 	if s == nil {
 		return nil
@@ -188,10 +191,10 @@ func (s *Store) Prune() error {
 	if s.closed {
 		return nil
 	}
-	for key, seg := range s.segments {
-		if time.Since(seg.last) > time.Hour {
-			s.closeSegment(seg)
-			delete(s.segments, key)
+	if s.db != nil {
+		if err := s.pruneRecords(); err != nil {
+			s.fail(err)
+			return err
 		}
 	}
 	quota, err := s.quotaLock()
@@ -203,7 +206,7 @@ func (s *Store) Prune() error {
 		name string
 		days int
 		cap  int64
-	}{{"actions", s.opts.ActionDays, s.opts.ActionBytes}, {"evidence", s.opts.EvidenceDays, s.opts.EvidenceBytes}} {
+	}{{"evidence", s.opts.EvidenceDays, s.opts.EvidenceBytes}} {
 		var files []retainedFile
 		var total int64
 		err := filepath.WalkDir(filepath.Join(s.opts.Directory, pool.name), func(path string, d fs.DirEntry, err error) error {

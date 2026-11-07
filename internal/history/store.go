@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -19,14 +20,12 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/sys/unix"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 const (
-	SegmentBytes int64 = 16 << 20
-	CaptureBytes       = 10 << 20
-	LineBytes          = 256 << 10
+	CaptureBytes = 10 << 20
+	LineBytes    = 256 << 10
 )
 
 type Options struct {
@@ -94,18 +93,12 @@ type Record struct {
 	Evidence      string            `json:"evidence,omitempty"`
 }
 
-type segment struct {
-	file        *os.File
-	size        int64
-	first, last time.Time
-}
-
 type Store struct {
 	mu         sync.Mutex
 	opts       Options
 	session    string
 	seq        uint64
-	segments   map[string]*segment
+	db         *sql.DB
 	patterns   []*regexp.Regexp
 	health     string
 	incomplete bool
@@ -146,7 +139,7 @@ var credentialPatterns = []*regexp.Regexp{
 
 func Open(opts Options) (*Store, error) {
 	opts = opts.Defaults()
-	s := &Store{opts: opts, session: ID(), segments: make(map[string]*segment)}
+	s := &Store{opts: opts, session: ID()}
 	if opts.Enabled != nil && !*opts.Enabled {
 		s.closed = true
 		return s, nil
@@ -162,6 +155,19 @@ func Open(opts Options) (*Store, error) {
 	}
 	if err := os.MkdirAll(opts.Directory, 0o700); err != nil {
 		s.fail(err)
+		return s, err
+	}
+	var err error
+	s.db, err = openDatabase(opts.Directory, false)
+	if err == nil {
+		err = s.importLegacy()
+	}
+	if err != nil {
+		s.fail(err)
+		if s.db != nil {
+			_ = s.db.Close()
+			s.db = nil
+		}
 		return s, err
 	}
 	if err := s.Prune(); err != nil {
@@ -251,95 +257,15 @@ func (s *Store) Append(r Record) string {
 		s.fail(err)
 		return ""
 	}
-	data = append(data, '\n')
-	quota, err := s.quotaLock()
-	if err != nil {
+	if err = s.writeRecord(r, data); err != nil {
 		s.fail(err)
 		return ""
 	}
-	defer func() { _ = quota.Close() }()
-	if err = s.capacity("actions", int64(len(data))); err != nil {
-		// Release our segments so normal capacity pruning can reclaim them.
-		for key, seg := range s.segments {
-			s.closeSegment(seg)
-			delete(s.segments, key)
-		}
-		if err = s.capacity("actions", int64(len(data))); err != nil {
-			s.fail(err)
-			return ""
-		}
-	}
-	cluster := r.Target.Cluster
-	if cluster == "" {
-		cluster = "session"
-	}
-	// Hash identifiers used as paths: even malicious kubeconfig/resource strings
-	// cannot escape the history root.
-	key := ClusterID(cluster, nil) + "/" + r.Time.UTC().Format("2006-01-02")
-	seg := s.segments[key]
-	if seg != nil && seg.size+int64(len(data)) > SegmentBytes {
-		s.closeSegment(seg)
-		delete(s.segments, key)
-		seg = nil
-	}
-	if seg == nil {
-		dir := filepath.Join(s.opts.Directory, "actions", filepath.FromSlash(key))
-		if err = os.MkdirAll(dir, 0o700); err == nil {
-			var f *os.File
-			f, err = os.OpenFile(filepath.Join(dir, s.session+"-"+ID()+".jsonl"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) // #nosec G304 -- Generated identifiers beneath the operator-configured history root.
-			if err == nil {
-				err = unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB)
-				if err != nil {
-					_ = f.Close()
-				} else {
-					seg = &segment{file: f, first: r.Time}
-					s.segments[key] = seg
-				}
-			}
-		}
-		if err != nil {
-			s.fail(err)
-			return ""
-		}
-	}
-	n, err := seg.file.Write(data)
-	seg.size += int64(n)
-	if r.Time.Before(seg.first) {
-		seg.first = r.Time
-	}
-	if r.Time.After(seg.last) {
-		seg.last = r.Time
-	}
-	if err == nil {
-		err = seg.file.Sync()
-	}
-	if err != nil {
-		s.fail(err)
-		s.closeSegment(seg)
-		delete(s.segments, key)
-		return ""
-	}
+
 	if s.incomplete {
 		s.health = "Logbook incomplete; latest action saved, but earlier recording failures remain"
 	}
 	return r.ID
-}
-
-func (s *Store) closeSegment(seg *segment) {
-	// Sidecar is advisory and rebuildable: readers scan files without an index.
-	data, err := json.Marshal(struct {
-		First time.Time `json:"first"`
-		Last  time.Time `json:"last"`
-	}{seg.first, seg.last})
-	if err == nil {
-		err = os.WriteFile(seg.file.Name()+".index", data, 0o600)
-	}
-	if err != nil {
-		s.fail(err)
-	}
-	if err = seg.file.Close(); err != nil {
-		s.fail(err)
-	}
 }
 
 func (s *Store) Close() error {
@@ -367,10 +293,12 @@ func (s *Store) Close() error {
 		return nil
 	}
 	s.closed = true
-	for _, seg := range s.segments {
-		s.closeSegment(seg)
+	if s.db != nil {
+		if err := s.db.Close(); err != nil {
+			s.fail(err)
+		}
 	}
-	clear(s.segments)
+
 	if s.incomplete {
 		return errors.New(s.health)
 	}

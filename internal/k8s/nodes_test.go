@@ -3,10 +3,10 @@ package k8s
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
@@ -53,48 +53,6 @@ func TestDrain_EmptyNode_FinishesImmediately(t *testing.T) {
 	assert.True(t, got.Spec.Unschedulable, "successful drain should leave node cordoned")
 }
 
-func TestDrain_CancelUncordons(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "n1"}}
-	// Seed with a workload pod so the eviction loop has something to do.
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "p1", Namespace: "default",
-			OwnerReferences: []metav1.OwnerReference{
-				{Kind: "ReplicaSet", Name: "rs", Controller: boolPtr(true)},
-			},
-		},
-		Spec: corev1.PodSpec{NodeName: "n1"},
-	}
-	cs := fake.NewSimpleClientset(node, pod)
-
-	ch := make(chan DrainEvent, 8)
-	go func() { _ = DrainNode(ctx, cs, "n1", DefaultDrainOptions(), ch) }()
-
-	// Wait for cordoning to land, then cancel.
-	for e := range ch {
-		if e.Phase == "cordoning" {
-			cancel()
-		}
-		if e.Done {
-			break
-		}
-	}
-
-	// Give the deferred uncordon a moment to fire (uses a fresh ctx).
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		got, _ := cs.CoreV1().Nodes().Get(context.Background(), "n1", metav1.GetOptions{})
-		if got != nil && !got.Spec.Unschedulable {
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	got, _ := cs.CoreV1().Nodes().Get(context.Background(), "n1", metav1.GetOptions{})
-	assert.False(t, got.Spec.Unschedulable, "cancel should uncordon the node")
-}
-
 func TestListDrainablePods_FiltersDaemonSetAndMirror(t *testing.T) {
 	ctx := context.Background()
 	good := &corev1.Pod{
@@ -110,7 +68,7 @@ func TestListDrainablePods_FiltersDaemonSetAndMirror(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "ds", Namespace: "default",
 			OwnerReferences: []metav1.OwnerReference{
-				{Kind: "DaemonSet", Controller: boolPtr(true)},
+				{APIVersion: "apps/v1", Kind: "DaemonSet", Name: "ds", Controller: boolPtr(true)},
 			},
 		},
 		Spec: corev1.PodSpec{NodeName: "n1"},
@@ -131,7 +89,7 @@ func TestListDrainablePods_FiltersDaemonSetAndMirror(t *testing.T) {
 		},
 		Spec: corev1.PodSpec{NodeName: "n2"},
 	}
-	cs := fake.NewSimpleClientset(good, ds, mirror, other)
+	cs := fake.NewSimpleClientset(good, ds, mirror, other, &appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Name: "ds", Namespace: "default"}})
 
 	// NB: fake clientset's FieldSelector support is patchy; verify ours
 	// works *for the fields we care about* by counting what we get.

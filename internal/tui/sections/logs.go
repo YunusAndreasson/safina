@@ -38,6 +38,7 @@ type Logs struct {
 	vp     viewport.Model
 	follow bool
 	filter components.Filter
+	jq     logJQ
 	// wrap drives the viewport's soft-wrap mode. Default false (long
 	// lines truncate at the panel's right edge, matching every log
 	// viewer the on-caller has seen); `w` toggles it for the times a
@@ -91,6 +92,7 @@ func (l *Logs) Reset(pod, namespace string) {
 	l.renderTail = logRenderCheckpoint{}
 	l.follow = true
 	l.filter.Clear()
+	l.jq = logJQ{}
 	l.filter.Close()
 	l.vp.SetContent("")
 	l.vp.GotoTop()
@@ -207,6 +209,10 @@ func (l *Logs) Append(s string) {
 		l.filtered = l.filtered[:len(l.filtered)-1]
 	}
 	l.appendFiltered(start)
+	if l.jq.err != nil {
+		l.refreshContent()
+		return
+	}
 	// If the reusable prefix already contains every match, incoming records
 	// changed only raw storage. Keep the viewport (and its scroll position)
 	// intact instead of rescanning the unchanged displayed backlog.
@@ -223,11 +229,16 @@ func (l *Logs) Append(s string) {
 // recomputeFilter rebuilds matches after a query change.
 func (l *Logs) recomputeFilter() {
 	l.filtered = l.filtered[:0]
+	l.jq = logJQ{}
 	l.appendFiltered(0)
 }
 
 func (l *Logs) appendFiltered(start int) {
 	q := l.filter.Value()
+	if strings.HasPrefix(q, "jq:") {
+		l.appendJQ(start, q)
+		return
+	}
 	if q == "" {
 		for i := start; i < len(l.lines); i++ {
 			l.filtered = append(l.filtered, i)
@@ -263,6 +274,9 @@ func (l *Logs) renderContent(prefix logRenderCheckpoint) {
 		return
 	}
 	q := l.filter.Value()
+	if strings.HasPrefix(q, "jq:") {
+		q = ""
+	}
 	var b strings.Builder
 	b.Grow(len(l.rendered))
 	b.WriteString(l.rendered[:prefix.bytes])
@@ -472,6 +486,8 @@ func (l *Logs) handleFilterKey(km tea.KeyPressMsg) (tea.Cmd, bool) {
 func (l *Logs) viewportBlock(c *tuictx.Ctx) string {
 	st := components.BlockState{}
 	switch {
+	case l.jq.err != nil:
+		st.Err = l.jq.err
 	case len(l.lines) == 0 && l.streamEnded:
 		st.Empty = true
 		st.Empty_ = "No log output. Press l to reopen logs."
@@ -536,7 +552,7 @@ func (l *Logs) renderKeysRow() string {
 		timeDesc = "short time"
 	}
 	return components.RenderModalKeysRow(l.theme, []components.KeyDesc{
-		{Key: "/", Desc: "filter"},
+		{Key: "/", Desc: "text / jq: filter"},
 		{Key: "space", Desc: followDesc},
 		{Key: "t", Desc: timeDesc},
 		{Key: "w", Desc: wrapDesc},
