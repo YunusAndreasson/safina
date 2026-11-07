@@ -44,7 +44,7 @@ func actionCmd(mgr *k8s.Manager, contextName, action, subject string, do func(*k
 
 // LoadDescribe fetches the YAML representation of a single resource. Used by
 // the describe modal.
-func LoadDescribe(ctx context.Context, mgr *k8s.Manager, contextName, namespace, kind, name string) tea.Cmd {
+func rawLoadDescribe(ctx context.Context, mgr *k8s.Manager, contextName, namespace, kind, name string) tea.Cmd {
 	return func() tea.Msg {
 		defer debug.Track("k8s.describe", "context", contextName, "kind", kind, "name", name)()
 		client, ok := mgr.GetClient(contextName)
@@ -59,7 +59,7 @@ func LoadDescribe(ctx context.Context, mgr *k8s.Manager, contextName, namespace,
 // LoadSecretReveal fetches a Secret with its Data base64-decoded into
 // stringData and emits a DescribeLoadedMsg so the describe modal can render
 // it like any other YAML dump. Bound to the Reveal key on Secret rows.
-func LoadSecretReveal(ctx context.Context, mgr *k8s.Manager, contextName, namespace, name string) tea.Cmd {
+func rawLoadSecretReveal(ctx context.Context, mgr *k8s.Manager, contextName, namespace, name string) tea.Cmd {
 	return func() tea.Msg {
 		defer debug.Track("k8s.reveal_secret", "context", contextName, "namespace", namespace, "name", name)()
 		client, ok := mgr.GetClient(contextName)
@@ -75,7 +75,7 @@ func LoadSecretReveal(ctx context.Context, mgr *k8s.Manager, contextName, namesp
 // payload (with namespace/kind/name echoed back) is delivered as
 // EditYAMLLoadedMsg; the root model then writes it to a tempfile and hands
 // off to $EDITOR.
-func LoadEditYAML(ctx context.Context, mgr *k8s.Manager, contextName, namespace, kind, name string) tea.Cmd {
+func rawLoadEditYAML(ctx context.Context, mgr *k8s.Manager, contextName, namespace, kind, name string) tea.Cmd {
 	return func() tea.Msg {
 		defer debug.Track("k8s.edit_load", "context", contextName, "kind", kind, "name", name)()
 		client, ok := mgr.GetClient(contextName)
@@ -91,7 +91,7 @@ func LoadEditYAML(ctx context.Context, mgr *k8s.Manager, contextName, namespace,
 // k8s.ApplyEditedYAML call in the standard ActionDoneMsg envelope so the
 // success/error banner pipeline lights up exactly like every other mutating
 // action (delete, scale, restart, …).
-func ApplyEdit(ctx context.Context, mgr *k8s.Manager, contextName, namespace, kind, name string, data []byte) tea.Cmd {
+func rawApplyEdit(ctx context.Context, mgr *k8s.Manager, contextName, namespace, kind, name string, data []byte) tea.Cmd {
 	return func() tea.Msg {
 		defer debug.Track("k8s.edit_apply", "context", contextName, "kind", kind, "name", name)()
 		subject := fmt.Sprintf("%s/%s", kind, name)
@@ -109,7 +109,7 @@ func ApplyEdit(ctx context.Context, mgr *k8s.Manager, contextName, namespace, ki
 // Pods without metrics (metrics-server unavailable, or pod hasn't reported
 // yet) are excluded — the hot list is meaningless if you can't sort by
 // usage, and rendering them at the top with "—" would mislead the operator.
-func LoadHot(ctx context.Context, mgr *k8s.Manager, contextName string) tea.Cmd {
+func rawLoadHot(ctx context.Context, mgr *k8s.Manager, contextName string) tea.Cmd {
 	return func() tea.Msg {
 		defer debug.Track("k8s.hot", "context", contextName)()
 		client, ok := mgr.GetClient(contextName)
@@ -123,7 +123,7 @@ func LoadHot(ctx context.Context, mgr *k8s.Manager, contextName string) tea.Cmd 
 
 // LoadEvents fetches the event list for involvedObject = kind/name in
 // namespace. Newest first.
-func LoadEvents(ctx context.Context, mgr *k8s.Manager, contextName, namespace, kind, name string) tea.Cmd {
+func rawLoadEvents(ctx context.Context, mgr *k8s.Manager, contextName, namespace, kind, name string) tea.Cmd {
 	return func() tea.Msg {
 		defer debug.Track("k8s.events", "context", contextName, "kind", kind, "name", name)()
 		client, ok := mgr.GetClient(contextName)
@@ -138,7 +138,7 @@ func LoadEvents(ctx context.Context, mgr *k8s.Manager, contextName, namespace, k
 // LoadDiscovery enumerates every GVR the API server exposes. Best-
 // effort — partial discovery (one CRD group wedged) still returns
 // useful data.
-func LoadDiscovery(ctx context.Context, mgr *k8s.Manager, contextName string) tea.Cmd {
+func rawLoadDiscovery(mgr *k8s.Manager, contextName string) tea.Cmd {
 	return func() tea.Msg {
 		defer debug.Track("k8s.discovery", "context", contextName)()
 		client, ok := mgr.GetClient(contextName)
@@ -154,19 +154,19 @@ func LoadDiscovery(ctx context.Context, mgr *k8s.Manager, contextName string) te
 // surfaces. Subject is just the bare name — the success/failure banner
 // reads "deleted · frontend" without the kind, matching how the user
 // referred to the row when they pressed the verb.
-func DeleteResource(ctx context.Context, mgr *k8s.Manager, contextName, kind, namespace, name string) tea.Cmd {
+func rawDeleteResource(ctx context.Context, mgr *k8s.Manager, contextName, kind, namespace, name string) tea.Cmd {
 	return actionCmd(mgr, contextName, "delete", name, func(c *k8s.Client) error {
 		return k8s.DeleteResource(ctx, c.Clientset, kind, namespace, name)
 	})
 }
 
-func ScaleWorkload(ctx context.Context, mgr *k8s.Manager, contextName, namespace, kind, name string, replicas int32) tea.Cmd {
+func rawScaleWorkload(ctx context.Context, mgr *k8s.Manager, contextName, namespace, kind, name string, replicas int32) tea.Cmd {
 	return trackedAction(actionCmd(mgr, contextName, "scale", fmt.Sprintf("%s → %d", name, replicas), func(c *k8s.Client) error {
 		return k8s.ScaleWorkload(ctx, c.Clientset, namespace, kind, name, replicas)
 	}), WorkloadTarget{Context: contextName, Namespace: namespace, Kind: kind, Name: name})
 }
 
-func RollbackDeployment(ctx context.Context, mgr *k8s.Manager, contextName, namespace, name string) tea.Cmd {
+func rawRollbackDeployment(ctx context.Context, mgr *k8s.Manager, contextName, namespace, name string) tea.Cmd {
 	return actionCmd(mgr, contextName, "rollback", name, func(c *k8s.Client) error {
 		return k8s.RollbackDeployment(ctx, c.Clientset, namespace, name)
 	})
@@ -176,7 +176,7 @@ func RollbackDeployment(ctx context.Context, mgr *k8s.Manager, contextName, name
 // Mirrors StreamLogs in shape but routes dial-time errors through
 // ShellExitMsg so the modal flips to phaseError instead of leaving the
 // "connecting…" spinner spinning forever.
-func OpenShell(ctx context.Context, mgr *k8s.Manager, contextName, namespace, pod, container string) tea.Cmd {
+func rawOpenShell(ctx context.Context, mgr *k8s.Manager, contextName, namespace, pod, container string) tea.Cmd {
 	return func() tea.Msg {
 		client, ok := mgr.GetClient(contextName)
 		if !ok {
@@ -193,7 +193,7 @@ func OpenShell(ctx context.Context, mgr *k8s.Manager, contextName, namespace, po
 // AttachDebug creates a netshoot ephemeral container targeting the named
 // container and attaches an interactive session to it. Used as the fall-back
 // when ExecPod fails because the container has no shell.
-func AttachDebug(ctx context.Context, mgr *k8s.Manager, contextName, namespace, pod, targetContainer, image string) tea.Cmd {
+func rawAttachDebug(ctx context.Context, mgr *k8s.Manager, contextName, namespace, pod, targetContainer, image string) tea.Cmd {
 	return func() tea.Msg {
 		client, ok := mgr.GetClient(contextName)
 		if !ok {
@@ -211,7 +211,7 @@ func AttachDebug(ctx context.Context, mgr *k8s.Manager, contextName, namespace, 
 // At the API level this is a delete; we wrap it here so the success banner
 // reads "restart · podname" — matching the verb the keymap and footer
 // taught, instead of the lower-level "delete" emitted by DeleteResource.
-func RestartPod(ctx context.Context, mgr *k8s.Manager, contextName, namespace, name string) tea.Cmd {
+func rawRestartPod(ctx context.Context, mgr *k8s.Manager, contextName, namespace, name string) tea.Cmd {
 	return actionCmd(mgr, contextName, "restart", name, func(c *k8s.Client) error {
 		return k8s.DeleteResource(ctx, c.Clientset, "Pod", namespace, name)
 	})
@@ -219,7 +219,7 @@ func RestartPod(ctx context.Context, mgr *k8s.Manager, contextName, namespace, n
 
 // RestartApp triggers a rolling restart for an App by patching the pod
 // template's annotations. Works for Deployment / StatefulSet / DaemonSet.
-func RestartApp(ctx context.Context, mgr *k8s.Manager, contextName, namespace, kind, name string) tea.Cmd {
+func rawRestartApp(ctx context.Context, mgr *k8s.Manager, contextName, namespace, kind, name string) tea.Cmd {
 	return trackedAction(actionCmd(mgr, contextName, "restart", name, func(c *k8s.Client) error {
 		return k8s.RestartWorkload(ctx, c.Clientset, namespace, kind, name)
 	}), WorkloadTarget{Context: contextName, Namespace: namespace, Kind: kind, Name: name})

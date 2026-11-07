@@ -1,8 +1,11 @@
 package k8s
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -10,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/yaml"
+	yamlv3 "sigs.k8s.io/yaml/goyaml.v3"
 )
 
 // Kinds exposed to the Edit flow. The TUI uses these strings as the kind
@@ -152,13 +156,29 @@ func ApplyEditedYAML(ctx context.Context, cs kubernetes.Interface, kind, namespa
 func applyEditedObject[T metav1.Object](ctx context.Context, data []byte, obj T, namespace, name string,
 	update func(context.Context, T, metav1.UpdateOptions) (T, error),
 ) error {
+	// UnmarshalStrict only reads the first YAML document. Reject a stream
+	// instead of reporting success after silently discarding later edits.
+	decoder := yamlv3.NewDecoder(bytes.NewReader(data))
+	var document yamlv3.Node
+	if err := decoder.Decode(&document); err != nil {
+		return fmt.Errorf("yaml parse: %w", err)
+	}
+	if err := decoder.Decode(&yamlv3.Node{}); !errors.Is(err, io.EOF) {
+		return errors.New("yaml parse: expected a single resource document")
+	}
 	if err := yaml.UnmarshalStrict(data, obj); err != nil {
 		return fmt.Errorf("yaml parse: %w", err)
 	}
 	if err := assertSameTarget(obj.GetNamespace(), obj.GetName(), namespace, name); err != nil {
 		return err
 	}
-	_, err := update(ctx, obj, metav1.UpdateOptions{})
+	// Some API resources allow unconditional updates without a version.
+	// An editor save must retain the version read to avoid lost updates.
+	if obj.GetResourceVersion() == "" {
+		return errors.New("edit: refusing to apply — metadata.resourceVersion must be retained")
+	}
+	result, err := update(ctx, obj, metav1.UpdateOptions{})
+	RecordMutationResponse(ctx, result, err)
 	return err
 }
 

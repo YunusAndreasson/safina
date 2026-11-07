@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/yunus/safina/internal/history"
 	"github.com/yunus/safina/internal/k8s"
 	"github.com/yunus/safina/internal/tui/theme"
 	"github.com/yunus/safina/internal/tui/tuictx"
@@ -158,8 +159,10 @@ func CordonNode(ctx context.Context, mgr *k8s.Manager, contextName, name string,
 		if desiredSchedulable {
 			action = "uncordon"
 		}
+		op := mgr.History.Begin(mgr.HistoryTarget(contextName, "", "Node", name), action, nil)
 		client, ok := mgr.GetClient(contextName)
 		if !ok {
+			op.Finish(errContextNotFound, "accepted")
 			return ActionDoneMsg{Action: action, Subject: name, Err: errContextNotFound}
 		}
 		var err error
@@ -168,6 +171,7 @@ func CordonNode(ctx context.Context, mgr *k8s.Manager, contextName, name string,
 		} else {
 			err = k8s.CordonNode(ctx, client.Clientset, name)
 		}
+		op.Finish(err, "accepted")
 		return ActionDoneMsg{Action: action, Subject: name, Err: err}
 	}
 }
@@ -178,9 +182,11 @@ func CordonNode(ctx context.Context, mgr *k8s.Manager, contextName, name string,
 // model is responsible for pumping events through nextDrainEvent.
 func StartDrain(parentCtx context.Context, mgr *k8s.Manager, contextName, nodeName string) tea.Cmd {
 	return func() tea.Msg {
+		op := mgr.History.Begin(mgr.HistoryTarget(contextName, "", "Node", nodeName), "drain", nil)
 		client, ok := mgr.GetClient(contextName)
 		if !ok {
 			ch := make(chan k8s.DrainEvent, 1)
+			op.Finish(errContextNotFound, "completed")
 			ch <- k8s.DrainEvent{Phase: "done", Err: errContextNotFound, Done: true}
 			close(ch)
 			return DrainStartedMsg{Node: nodeName, Cancel: func() {}, Channel: ch}
@@ -189,10 +195,11 @@ func StartDrain(parentCtx context.Context, mgr *k8s.Manager, contextName, nodeNa
 		// ctrl+c in the progress modal to abort. The model wires it onto
 		// the Drain section; DrainNode's deferred-uncordon hook makes
 		// abort safe (no half-cordoned-half-drained limbo).
-		ctx, cancel := context.WithCancel(parentCtx) //nolint:gosec // ownership transfers via DrainStartedMsg
+		ctx, cancel := context.WithCancel(history.WithOperation(parentCtx, op)) //nolint:gosec // ownership transfers via DrainStartedMsg
 		ch := make(chan k8s.DrainEvent, 16)
 		go func() {
-			_ = k8s.DrainNode(ctx, client.Clientset, nodeName, k8s.DefaultDrainOptions(), ch)
+			err := k8s.DrainNode(ctx, client.Clientset, nodeName, k8s.DefaultDrainOptions(), ch)
+			op.Finish(err, "completed")
 		}()
 		return DrainStartedMsg{Node: nodeName, Cancel: cancel, Channel: ch}
 	}

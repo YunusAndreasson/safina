@@ -810,3 +810,13 @@ func indent(s, prefix string) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+// AttachHistory adds selected evidence to a reviewable draft, without sending it.
+func (c *Chat) AttachHistory(text string) {
+	draft := c.input.Value()
+	if draft != "" {
+		draft += "\n\n"
+	}
+	c.input.SetValue(draft + text)
+	c.layout()
+}

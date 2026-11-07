@@ -1,15 +1,20 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
 
+	"github.com/yunus/safina/internal/broker"
 	"github.com/yunus/safina/internal/config"
 	"github.com/yunus/safina/internal/debug"
 	"github.com/yunus/safina/internal/errlog"
+	"github.com/yunus/safina/internal/history"
 	"github.com/yunus/safina/internal/k8s"
 	"github.com/yunus/safina/internal/tui"
 	"github.com/yunus/safina/internal/version"
@@ -21,6 +26,9 @@ var (
 	namespace  string
 	debugFlag  bool
 	logFile    string
+	runtimeDir string
+	stateDir   string
+	historyDir string
 )
 
 func main() {
@@ -58,6 +66,11 @@ color-coded status, and perform actions like scaling, rollback, and log viewing.
 				"namespace_flag", namespace)
 
 			appCfg, _ := config.Load()
+			if historyDir != "" {
+				appCfg.History.Directory = historyDir
+			}
+			journal, historyErr := history.Open(appCfg.History)
+			defer func() { _ = journal.Close() }()
 
 			rawCfg, err := config.LoadKubeConfig(kubeconfig)
 			if err != nil {
@@ -84,7 +97,12 @@ color-coded status, and perform actions like scaling, rollback, and log viewing.
 				"skipped", len(mgr.Skipped),
 				"skipped_names", skipNames)
 
+			mgr.History = journal
 			model := tui.NewModel(mgr, appCfg)
+			model.SetBrokerOptions(broker.Options{Kubeconfig: kubeconfig, RuntimeDir: runtimeDir, StateDir: stateDir, History: appCfg.History})
+			if historyErr != nil {
+				model.SetStartupBanner(journal.Health())
+			}
 			model.SetContexts(contexts)
 
 			if context != "" {
@@ -132,6 +150,12 @@ color-coded status, and perform actions like scaling, rollback, and log viewing.
 		},
 	}
 
+	rootCmd.AddCommand(historyCommand())
+	rootCmd.AddCommand(brokerCommands()...)
+	rootCmd.AddCommand(mcpCommand())
+	rootCmd.Flags().StringVar(&runtimeDir, "runtime-dir", "", "Owner-only broker runtime directory")
+	rootCmd.Flags().StringVar(&stateDir, "state-dir", "", "Durable investigation directory")
+	rootCmd.Flags().StringVar(&historyDir, "history-dir", "", "Logbook directory")
 	rootCmd.Flags().StringVar(&kubeconfig, "kubeconfig", "", "Path to kubeconfig file")
 	rootCmd.Flags().StringVar(&context, "context", "", "Kubernetes context to use")
 	rootCmd.Flags().StringVar(&namespace, "namespace", "", "Kubernetes namespace to use")
@@ -142,4 +166,85 @@ color-coded status, and perform actions like scaling, rollback, and log viewing.
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func historyCommand() *cobra.Command {
+	parent := &cobra.Command{Use: "history", Short: "Inspect saved Safina activity without cluster access"}
+	for _, verb := range []string{"list", "show", "export"} {
+		var f history.Filter
+		var since, until, format, out string
+		command := &cobra.Command{Use: verb, Short: verb + " saved history", RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, _ := config.Load()
+			opts := cfg.History.Defaults()
+			var err error
+			if f.Limit < 1 || f.Limit > 1000000 {
+				return errors.New("limit must be between 1 and 1000000")
+			}
+			if since != "" {
+				f.Since, err = time.Parse(time.RFC3339, since)
+				if err != nil {
+					return err
+				}
+			}
+			if until != "" {
+				f.Until, err = time.Parse(time.RFC3339, until)
+				if err != nil {
+					return err
+				}
+			}
+			if !f.Since.IsZero() && !f.Until.IsZero() && f.Until.Before(f.Since) {
+				return errors.New("until must be after since")
+			}
+			if verb == "show" {
+				if len(args) != 1 {
+					return errors.New("show requires an event or operation ID")
+				}
+				f.ID = args[0]
+			} else if len(args) != 0 {
+				return errors.New("unexpected arguments")
+			}
+			if verb == "export" {
+				if out == "" {
+					return errors.New("export requires --output directory")
+				}
+				return history.Export(opts.Directory, out, f)
+			}
+			result, err := history.Query(opts.Directory, f)
+			if err != nil {
+				return err
+			}
+			switch format {
+			case "jsonl":
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				for _, r := range result.Records {
+					if err = enc.Encode(r); err != nil {
+						return err
+					}
+				}
+			case "text":
+				_, err = fmt.Fprint(cmd.OutOrStdout(), history.Summary(result, 16<<20))
+			default:
+				return errors.New("format must be text or jsonl")
+			}
+			for _, w := range result.Warnings {
+				cmd.PrintErrln(w)
+			}
+			if result.Omitted > 0 {
+				cmd.PrintErrf("%d older records omitted; narrow time filters or increase --limit\n", result.Omitted)
+			}
+			return err
+		}}
+		flags := command.Flags()
+		flags.StringVar(&f.Cluster, "cluster", "", "Cluster ID or context alias")
+		flags.StringVar(&f.Namespace, "namespace", "", "Namespace")
+		flags.StringVar(&f.Resource, "resource", "", "Resource name or Kind/name")
+		flags.StringVar(&f.Session, "session", "", "Safina session ID")
+		flags.StringVar(&since, "since", "", "Inclusive UTC/RFC3339 start")
+		flags.StringVar(&until, "until", "", "Inclusive UTC/RFC3339 end")
+		flags.IntVar(&f.Limit, "limit", 10000, "Maximum newest records")
+		flags.StringVar(&format, "format", "text", "text or jsonl")
+		flags.StringVar(&out, "output", "", "New export directory")
+		parent.AddCommand(command)
+	}
+	return parent
 }

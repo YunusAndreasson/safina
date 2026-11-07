@@ -18,6 +18,7 @@ import (
 
 	"github.com/yunus/safina/internal/config"
 	"github.com/yunus/safina/internal/debug"
+	"github.com/yunus/safina/internal/history"
 	"github.com/yunus/safina/internal/k8s"
 	"github.com/yunus/safina/internal/tui/sections"
 )
@@ -31,13 +32,84 @@ func isCtxDone(err error) bool {
 
 // Register the stream in the update loop before scheduling any reads. Send
 // launches its subprocess asynchronously, so this does not block the UI.
+type historyChatReadyMsg struct {
+	request uint64
+	prompt  string
+}
+
 func (m *Model) startChatStream(prompt string) tea.Cmd {
+	m.historyChatRequest++
+	m.chatStreamCh = nil // Reject late events while the new history query is pending.
+	if m.ctx.Manager.History != nil && !strings.Contains(prompt, "[Attached Safina evidence]") {
+		request := m.historyChatRequest
+		dir := m.ctx.Manager.History.Directory()
+		f := m.selectedHistoryFilter()
+		f.Since = time.Now().Add(-24 * time.Hour)
+		f.Limit = 50
+		return func() tea.Msg {
+			if result, err := history.Query(dir, f); err == nil && len(result.Records) > 0 {
+				prompt += "\n\n" + history.Summary(result, 16<<10)
+			}
+			return historyChatReadyMsg{request, prompt}
+		}
+	}
 	m.chatStreamCh = m.claudeSvc.Send(m.ctx.Background, prompt)
 	return sections.NextChatEvent(m.chatStreamCh)
 }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case incomingTickMsg:
+		var detail tea.Cmd
+		if m.state == stateIncoming && m.incoming.mode == "outcome" && !m.incoming.busy {
+			detail = m.incomingCommand("details")
+		}
+		return m, tea.Batch(m.loadIncoming(), detail, incomingTick())
+	case incomingInboxMsg:
+		if msg.request != m.incoming.inboxRequest {
+			return m, nil
+		}
+		m.incoming.inboxBusy = false
+		if msg.err == nil {
+			rows := m.incomingRows()
+			var selected incomingRow
+			if m.incoming.cursor < len(rows) {
+				selected = rows[m.incoming.cursor]
+			}
+			m.incoming.inbox = msg.inbox
+			m.incoming.inboxErr = ""
+			rows = m.incomingRows()
+			m.incoming.cursor = min(m.incoming.cursor, max(0, len(rows)-1))
+			for i, row := range rows {
+				if row.investigation.ID == selected.investigation.ID && row.proposal.ID == selected.proposal.ID && row.proposal.Revision == selected.proposal.Revision {
+					m.incoming.cursor = i
+					break
+				}
+			}
+		} else {
+			m.incoming.inboxErr = msg.err.Error()
+		}
+		return m, nil
+	case incomingResultMsg:
+		return m, m.incomingResult(msg)
+	case historyChatReadyMsg:
+		if msg.request != m.historyChatRequest || !m.chat.Streaming() {
+			return m, nil
+		}
+		m.chatStreamCh = m.claudeSvc.Send(m.ctx.Background, msg.prompt)
+		return m, sections.NextChatEvent(m.chatStreamCh)
+	case historyLoadedMsg:
+		return m, m.showHistory(msg)
+	case historyDetailMsg:
+		m.showHistoryDetail(msg)
+		return m, nil
+	case historyExportMsg:
+		if msg.err != nil {
+			return m, m.raiseError("Logbook export: " + msg.err.Error())
+		}
+		return m, m.raiseStatus("Logbook exported: " + msg.path)
+	case historyPrunedMsg:
+		return m, historyPruneTick(m.ctx.Manager.History)
 
 	case operationCheckMsg:
 		return m, m.checkOperation(msg.key, msg.revision)
@@ -94,6 +166,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// it up: set ActiveContext, drop stale caches, re-stamp the window
 		// title, and persist. The load fires from the cache-miss check below.
 		focus := msg.Path[len(msg.Path)-1]
+		cluster := m.ctx.ActiveContext
+		if focus.Kind == k8s.KindContext {
+			cluster = focus.Name
+		}
+		m.ctx.Manager.History.Append(history.Record{Target: m.ctx.Manager.HistoryTarget(cluster, focus.Namespace, focus.Kind, focus.Name), Action: "browse", Outcome: "selected"})
 		debug.Log("tree.focus",
 			"kind", focus.Kind,
 			"name", focus.Name,
@@ -109,6 +186,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if focus.Kind == k8s.KindContext && m.ctx.ActiveContext != focus.Name {
 			m.ctx.ActiveContext = focus.Name
+			m.ctx.Manager.History.Append(history.Record{Target: m.ctx.Manager.HistoryTarget(focus.Name, "", "", ""), Action: "context_switch", Outcome: "selected"})
 			if !m.bannerErr {
 				m.dismissBanner()
 			}
@@ -274,7 +352,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// reflect the new state. Doherty Threshold: a sub-second cue.
 		var statusCmd tea.Cmd
 		if msg.Target != nil {
-			statusCmd = tea.Batch(m.raiseStatus(msg.Action+" accepted · "+msg.Subject), m.trackOperation(*msg.Target, msg.Action))
+			statusCmd = tea.Batch(m.raiseStatus(msg.Action+" accepted · "+msg.Subject), m.trackRecordedOperation(*msg.Target, msg.Action, msg.Operation, msg.Generation))
 		} else {
 			statusCmd = m.raiseStatus(actionSuccessMsg(msg.Action, msg.Subject))
 		}
@@ -394,8 +472,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the session is orphaned — close it so we don't leak the stream.
 		if m.state != stateShellView {
 			msg.Session.Close()
+			msg.Operation.Record("disconnected", "view closed before connection arrived", nil)
 			return m, nil
 		}
+		m.shellJournal = msg.Operation
 		m.shellSession = msg.Session
 		m.shell.Attach(msg.Session, msg.IsDebug)
 		return m, m.nextShellEvent()
@@ -409,6 +489,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.shell.IngestBytes(msg.Bytes)
 		}
 		if m.shellSession != nil {
+			m.shellJournal.Record("disconnected", "", nil)
+			m.shellJournal = nil
 			m.shellSession.Close()
 			m.shellSession = nil
 		}
@@ -610,9 +692,22 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case tea.PasteMsg:
+		if m.state == stateIncoming {
+			if m.incoming.mode == "edit" && !m.incoming.busy {
+				if len(m.incoming.edit)+len(msg.Content) > 1024 {
+					m.incoming.err = "Action parameter is too long"
+				} else {
+					m.incoming.edit += msg.Content
+				}
+			}
+			return m, nil
+		}
 		return m, m.handlePaste(msg)
 
 	case tea.MouseClickMsg:
+		if m.state == stateIncoming {
+			return m, nil
+		}
 		if m.choices != nil {
 			return m, nil
 		}
@@ -638,6 +733,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseWheelMsg:
+		if m.state == stateIncoming {
+			var cmd tea.Cmd
+			m.incoming.viewport, cmd = m.incoming.viewport.Update(msg)
+			return m, cmd
+		}
 		if m.choices != nil {
 			var cmd tea.Cmd
 			m.choices.model, cmd = m.choices.model.Update(msg)
@@ -936,6 +1036,9 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.ctx.Cancel()
 		return m, tea.Quit
 	}
+	if m.state == stateIncoming {
+		return m.handleIncoming(msg)
+	}
 	if m.choices != nil {
 		return m.handleChoices(msg)
 	}
@@ -1051,6 +1154,8 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	treeOwnsKeysInImmersive := m.treeFocusInImmersive && m.isImmersiveState()
 
 	switch m.state {
+	case stateIncoming:
+		return m.handleIncoming(msg)
 	case stateMain, stateChatView:
 		// Main workspace input is handled below.
 	case stateLogView:
@@ -1092,6 +1197,8 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		cmd, leave := m.shell.Update(msg, m.ctx)
 		if leave {
 			if m.shellSession != nil {
+				m.shellJournal.Record("disconnected", "", nil)
+				m.shellJournal = nil
 				m.shellSession.Close()
 				m.shellSession = nil
 			}
@@ -1138,6 +1245,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.state = stateMain
 			return m, nil
 		case key.Matches(msg, m.ctx.Keys.Refresh):
+			m.recordSelection("refresh")
 			m.hot.Reset()
 			return m, sections.LoadHot(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext)
 		case key.Matches(msg, m.ctx.Keys.Up):
@@ -1207,7 +1315,10 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// FilterActive check keeps `:` literal inside the / filter input.
 		m.searchRequest++
 		m.searchLoading = false
-		m.palette.Open(sections.BuildPaletteIndex(m.tree.Cache()))
+		entries := sections.BuildPaletteIndex(m.tree.Cache())
+		entries = append([]sections.PaletteEntry{{Kind: "Incoming", Name: "Incoming proposals", Hint: "Review agent proposals and broker outcomes"}, {Kind: "History", Name: "Logbook", Hint: "What you did and saw, saved across sessions"}}, entries...)
+		m.palette.Open(entries)
+		m.recordSelection("search")
 		m.state = statePalette
 		return m, nil
 
@@ -1250,6 +1361,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.openBrowser()
 
 	case key.Matches(msg, m.ctx.Keys.Refresh):
+		m.recordSelection("refresh")
 		if m.ctx.ActiveContext != "" && m.tree.Focus().Kind != k8s.KindContextList {
 			m.tree.InvalidateFocus()
 			m.tree.Loading = true
@@ -1335,6 +1447,12 @@ func (m *Model) handlePalette(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.ctx.Keys.Enter):
 		if entry, ok := m.palette.Selected(); ok {
 			m.state = stateMain
+			if entry.Kind == "Incoming" {
+				return m, m.openIncoming()
+			}
+			if entry.Kind == "History" {
+				return m, m.openHistory()
+			}
 			return m.drillToPaletteEntry(entry)
 		}
 		return m, nil

@@ -3,6 +3,7 @@ package sections
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/yunus/safina/internal/history"
 	"github.com/yunus/safina/internal/k8s"
 	"github.com/yunus/safina/internal/tui/components"
 	"github.com/yunus/safina/internal/tui/theme"
@@ -189,15 +191,22 @@ func StartPortForward(
 ) tea.Cmd {
 	requested := localPort
 	return func() tea.Msg {
+		op := mgr.History.Begin(mgr.HistoryTarget(contextName, namespace, targetKind, targetName), "port_forward", map[string]string{"localPort": strconv.Itoa(localPort), "remotePort": strconv.Itoa(remotePort)})
 		client, ok := mgr.GetClient(contextName)
 		if !ok {
+			op.Finish(errContextNotFound, "connected")
 			return PortForwardStartedMsg{Requested: requested, Err: errContextNotFound}
 		}
 		pf, err := mgr.Forwards.StartPortForward(
-			ctx, client.Clientset, client.RESTConfig,
+			history.WithOperation(ctx, op), client.Clientset, client.RESTConfig,
 			contextName, namespace, targetKind, targetName,
 			localPort, remotePort,
 		)
+		op.Finish(err, "connected")
+		if err == nil {
+			op.Record("resolved", "", map[string]string{"forward": pf.ID, "pod": pf.ResolvedPod, "localPort": strconv.Itoa(pf.LocalPort)})
+			mgr.Forwards.SetHistory(pf.ID, op)
+		}
 		return PortForwardStartedMsg{Forward: pf, Requested: requested, Err: err}
 	}
 }
@@ -205,6 +214,16 @@ func StartPortForward(
 // StopPortForward tears one forward down.
 func StopPortForward(mgr *k8s.Manager, id string) tea.Cmd {
 	return func() tea.Msg {
-		return PortForwardStoppedMsg{ID: id, Err: mgr.Forwards.Stop(id)}
+		target := history.Target{}
+		for _, forward := range mgr.Forwards.List() {
+			if forward.ID == id {
+				target = mgr.HistoryTarget(forward.ContextName, forward.Namespace, forward.TargetKind, forward.TargetName)
+				break
+			}
+		}
+		op := mgr.History.Begin(target, "port_forward_stop", map[string]string{"forward": id})
+		err := mgr.Forwards.Stop(id)
+		op.Finish(err, "disconnected")
+		return PortForwardStoppedMsg{ID: id, Err: err}
 	}
 }

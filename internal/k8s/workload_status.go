@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -13,11 +14,20 @@ import (
 // WorkloadProgress uses controller-observed status, rather than treating a
 // successful write as completion. Controller failure conditions remain visible.
 func WorkloadProgress(ctx context.Context, cs kubernetes.Interface, namespace, kind, name string, rollout bool) (string, bool, error) {
+	return WorkloadProgressForGeneration(ctx, cs, namespace, kind, name, rollout, "", "")
+}
+
+var ErrOperationSuperseded = errors.New("resource identity or generation changed")
+
+func WorkloadProgressForGeneration(ctx context.Context, cs kubernetes.Interface, namespace, kind, name string, rollout bool, uid, generation string) (string, bool, error) {
 	switch kind {
 	case AppKindDeployment:
 		d, err := cs.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			return "", false, err
+		}
+		if !expectedWorkload(d, uid, generation) {
+			return "", false, ErrOperationSuperseded
 		}
 		desired := int32(1)
 		if d.Spec.Replicas != nil {
@@ -38,6 +48,9 @@ func WorkloadProgress(ctx context.Context, cs kubernetes.Interface, namespace, k
 		if err != nil {
 			return "", false, err
 		}
+		if !expectedWorkload(d, uid, generation) {
+			return "", false, ErrOperationSuperseded
+		}
 		desired := int32(1)
 		if d.Spec.Replicas != nil {
 			desired = *d.Spec.Replicas
@@ -57,6 +70,9 @@ func WorkloadProgress(ctx context.Context, cs kubernetes.Interface, namespace, k
 		if err != nil {
 			return "", false, err
 		}
+		if !expectedWorkload(d, uid, generation) {
+			return "", false, ErrOperationSuperseded
+		}
 		text := fmt.Sprintf("%d/%d ready", d.Status.NumberAvailable, d.Status.DesiredNumberScheduled)
 		if d.Spec.UpdateStrategy.Type == appsv1.OnDeleteDaemonSetStrategyType {
 			return text, false, errors.New("OnDelete strategy requires manual pod replacement")
@@ -65,4 +81,8 @@ func WorkloadProgress(ctx context.Context, cs kubernetes.Interface, namespace, k
 	default:
 		return "", false, fmt.Errorf("progress unavailable for %s", kind)
 	}
+}
+
+func expectedWorkload(obj metav1.Object, uid, generation string) bool {
+	return (uid == "" || string(obj.GetUID()) == uid) && (generation == "" || strconv.FormatInt(obj.GetGeneration(), 10) == generation)
 }

@@ -133,6 +133,9 @@ func (m *Model) render() string {
 		return m.shell.View(m.ctx, w, h)
 	}
 
+	if m.state == stateIncoming {
+		return m.renderIncoming()
+	}
 	base := m.renderBase(w, h)
 	if m.choices != nil {
 		return m.composeCard(base, m.choicesCard())
@@ -248,6 +251,10 @@ func (m *Model) renderBase(w, h int) string {
 		m.topbarClusterHealth(),
 	))
 	used++
+	if m.incoming.inbox.Pending > 0 {
+		parts = append(parts, m.ctx.Theme.CyanBold.Render(fmt.Sprintf("Incoming proposals: %d · : → Incoming proposals", m.incoming.inbox.Pending)))
+		used++
+	}
 
 	if m.hasFeedback() {
 		banner := m.renderBanner(w)
@@ -524,6 +531,9 @@ func (m *Model) renderTabBody(tab sections.WorkspaceTab, w, h int) string {
 // renderBanner draws the transient status/error line above the main split.
 // Errors render in red (✗), successful action confirmations in green (✓).
 func (m *Model) renderBanner(w int) string {
+	if warning := m.ctx.Manager.History.Health(); warning != "" {
+		return m.ctx.Theme.ErrLine.Width(w).Render(ansi.Truncate(warning, max(1, w), "…"))
+	}
 	if m.bannerMsg == "" {
 		return m.ctx.Theme.Hint.Width(w).MaxHeight(3).Render("  ◌  " + m.operationSummary())
 	}

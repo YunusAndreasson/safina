@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/yunus/safina/internal/history"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -63,6 +65,9 @@ func AttachDebugContainer(
 		return nil, fmt.Errorf("create ephemeral container: %w", err)
 	}
 
+	if op := history.FromContext(ctx); op != nil {
+		op.Record("container_created", "", map[string]string{"container": name, "image": image})
+	}
 	if err = waitEphemeralRunning(ctx, cs, namespace, pod, name, 60*time.Second); err != nil {
 		return nil, err
 	}

@@ -25,7 +25,8 @@ func ScaleDeployment(ctx context.Context, cs kubernetes.Interface, namespace, na
 		return fmt.Errorf("failed to get scale: %w", err)
 	}
 	scale.Spec.Replicas = replicas
-	_, err = cs.AppsV1().Deployments(namespace).UpdateScale(ctx, name, scale, metav1.UpdateOptions{})
+	result, err := cs.AppsV1().Deployments(namespace).UpdateScale(ctx, name, scale, metav1.UpdateOptions{})
+	RecordMutationResponse(ctx, result, err)
 	return err
 }
 
@@ -43,7 +44,8 @@ func ScaleWorkload(ctx context.Context, cs kubernetes.Interface, namespace, kind
 			return fmt.Errorf("failed to get scale: %w", err)
 		}
 		scale.Spec.Replicas = replicas
-		_, err = cs.AppsV1().StatefulSets(namespace).UpdateScale(ctx, name, scale, metav1.UpdateOptions{})
+		result, err := cs.AppsV1().StatefulSets(namespace).UpdateScale(ctx, name, scale, metav1.UpdateOptions{})
+		RecordMutationResponse(ctx, result, err)
 		return err
 	default:
 		return fmt.Errorf("scaling %s is not supported", kind)
@@ -61,13 +63,16 @@ func RestartWorkload(ctx context.Context, cs kubernetes.Interface, namespace, ki
 	))
 	switch kind {
 	case "Deployment":
-		_, err := cs.AppsV1().Deployments(namespace).Patch(ctx, name, k8stypes.StrategicMergePatchType, patch, metav1.PatchOptions{})
+		result, err := cs.AppsV1().Deployments(namespace).Patch(ctx, name, k8stypes.StrategicMergePatchType, patch, metav1.PatchOptions{})
+		RecordMutationResponse(ctx, result, err)
 		return err
 	case "StatefulSet":
-		_, err := cs.AppsV1().StatefulSets(namespace).Patch(ctx, name, k8stypes.StrategicMergePatchType, patch, metav1.PatchOptions{})
+		result, err := cs.AppsV1().StatefulSets(namespace).Patch(ctx, name, k8stypes.StrategicMergePatchType, patch, metav1.PatchOptions{})
+		RecordMutationResponse(ctx, result, err)
 		return err
 	case "DaemonSet":
-		_, err := cs.AppsV1().DaemonSets(namespace).Patch(ctx, name, k8stypes.StrategicMergePatchType, patch, metav1.PatchOptions{})
+		result, err := cs.AppsV1().DaemonSets(namespace).Patch(ctx, name, k8stypes.StrategicMergePatchType, patch, metav1.PatchOptions{})
+		RecordMutationResponse(ctx, result, err)
 		return err
 	}
 	return fmt.Errorf("restart not supported for kind %q", kind)
@@ -115,10 +120,11 @@ func RollbackDeployment(ctx context.Context, cs kubernetes.Interface, namespace,
 	latest := deployment.DeepCopy()
 	latest.Spec.Template = *targetRS.Spec.Template.DeepCopy()
 	delete(latest.Spec.Template.Labels, "pod-template-hash")
-	_, err = cs.AppsV1().Deployments(namespace).Update(ctx, latest, metav1.UpdateOptions{})
+	result, err := cs.AppsV1().Deployments(namespace).Update(ctx, latest, metav1.UpdateOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to update deployment for rollback: %w", err)
 	}
 
+	RecordMutationResponse(ctx, result, nil)
 	return nil
 }

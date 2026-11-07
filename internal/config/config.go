@@ -5,12 +5,14 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/yunus/safina/internal/history"
 	"sigs.k8s.io/yaml"
 )
 
 type AppConfig struct {
-	LastCluster   string `json:"lastCluster,omitempty"`
-	LastNamespace string `json:"lastNamespace,omitempty"`
+	History       history.Options `json:"history,omitempty"`
+	LastCluster   string          `json:"lastCluster,omitempty"`
+	LastNamespace string          `json:"lastNamespace,omitempty"`
 
 	// UserNamespaces / SystemNamespaces override the built-in namespace
 	// classifier (which uses prefix-matching against well-known control-plane

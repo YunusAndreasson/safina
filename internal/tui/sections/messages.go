@@ -1,6 +1,9 @@
 package sections
 
-import "github.com/yunus/safina/internal/k8s"
+import (
+	"github.com/yunus/safina/internal/history"
+	"github.com/yunus/safina/internal/k8s"
+)
 
 // Message types emitted across the sections package. The Cmd builders that
 // produce these live in commands.go (and tree_children.go for the tree
@@ -33,10 +36,12 @@ type TreeChildrenLoadedMsg struct {
 type WorkloadTarget struct{ Context, Namespace, Kind, Name string }
 
 type ActionDoneMsg struct {
-	Target  *WorkloadTarget
-	Action  string
-	Subject string
-	Err     error
+	Operation  *history.Operation
+	Generation string
+	Target     *WorkloadTarget
+	Action     string
+	Subject    string
+	Err        error
 }
 
 type LogStreamStartedMsg struct {
@@ -90,8 +95,9 @@ type EditorExitedMsg struct {
 // dialed. The Shell section attaches to Session and the root pump-loop
 // starts pulling ShellEvent messages from it.
 type ShellSessionStartedMsg struct {
-	Session *k8s.ShellSession
-	IsDebug bool // true when this came from AttachDebug (netshoot fall-back)
+	Operation *history.Operation
+	Session   *k8s.ShellSession
+	IsDebug   bool // true when this came from AttachDebug (netshoot fall-back)
 }
 
 // ShellOutputMsg carries one chunk of stdout/stderr bytes from the running

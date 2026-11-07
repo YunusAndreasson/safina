@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "safina": {
+      "command": "safina",
+      "args": ["mcp"]
+    }
+  }
+}

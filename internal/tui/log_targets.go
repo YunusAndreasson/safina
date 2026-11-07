@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -107,16 +108,46 @@ func (m *Model) startTargetLogs(target logTarget, previous bool) tea.Cmd {
 	m.logCancel = cancel
 	mgr, cluster := m.ctx.Manager, m.ctx.ActiveContext
 	return func() tea.Msg {
+		t := mgr.HistoryTarget(cluster, target.namespace, "Pod", target.pod)
+		t.Container = target.container
+		op := mgr.History.Begin(t, "logs", map[string]string{"previous": strconv.FormatBool(previous)})
 		client, ok := mgr.GetClient(cluster)
 		if !ok {
-			return sections.LogStreamStartedMsg{Request: request, Err: errors.New("context unavailable")}
+			err := errors.New("context unavailable")
+			op.Finish(err, "stream_ended")
+			return sections.LogStreamStartedMsg{Request: request, Err: err}
 		}
 		cs := client.StreamClientset
 		if cs == nil {
 			cs = client.Clientset
 		}
 		ch := make(chan k8s.PodLogEvent)
-		go k8s.StreamPodContainerLogs(ctx, cs, target.namespace, target.pod, target.container, previous, ch)
+		go func() {
+			if mgr.History.EvidenceEnabled() {
+				snapshotCtx, cancel := k8s.SnapshotContext(ctx)
+				op.Target, _ = client.HistorySnapshot(snapshotCtx, t)
+				cancel()
+			}
+			capture := mgr.History.Capture(op)
+			defer capture.Close()
+			source := make(chan k8s.PodLogEvent)
+			go k8s.StreamPodContainerLogs(ctx, cs, target.namespace, target.pod, target.container, previous, source)
+			defer close(ch)
+			for event := range source {
+				capture.Append(event.Line)
+				if event.Done {
+					err := event.Err
+					if err == nil {
+						err = ctx.Err()
+					}
+					op.Finish(err, "stream_ended")
+				}
+				select {
+				case ch <- event:
+				case <-ctx.Done():
+				}
+			}
+		}()
 		return sections.LogStreamStartedMsg{Pod: target.pod, Ch: ch, Request: request}
 	}
 }

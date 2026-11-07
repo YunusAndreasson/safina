@@ -1,0 +1,7 @@
+{
+  "name": "safina",
+  "version": "0.1.0",
+  "description": "Investigate Kubernetes with scoped evidence and history, then hand typed alternatives to Safina for operator review.",
+  "author": { "name": "Safina contributors" },
+  "license": "MIT"
+}

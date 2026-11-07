@@ -20,6 +20,7 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
 	"github.com/yunus/safina/internal/debug"
+	"github.com/yunus/safina/internal/history"
 	"github.com/yunus/safina/internal/version"
 )
 
@@ -101,6 +102,7 @@ type SkippedContext struct {
 }
 
 type Manager struct {
+	History *history.Store
 	Clients map[string]*Client
 	// Skipped lists contexts whose REST config or clientset failed to build.
 	// The reachability of each cluster is NOT verified at construction (no

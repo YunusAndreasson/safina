@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/yunus/safina/internal/history"
+
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -42,7 +44,18 @@ func setUnschedulable(ctx context.Context, cs kubernetes.Interface, name string,
 	if err != nil {
 		return err
 	}
+	var op *history.Operation
+	if parent := history.FromContext(ctx); parent != nil {
+		action := "cordon"
+		if !unschedulable {
+			action = "uncordon"
+		}
+		op = parent.Store.Begin(parent.Target, action, map[string]string{"drainOperation": parent.ID})
+	}
 	_, err = cs.CoreV1().Nodes().Patch(ctx, name, types.StrategicMergePatchType, body, metav1.PatchOptions{})
+	if op != nil {
+		op.Finish(err, "accepted")
+	}
 	return err
 }
 
@@ -182,7 +195,19 @@ func DrainNode(ctx context.Context, cs kubernetes.Interface, nodeName string, op
 					GracePeriodSeconds: &grace,
 				},
 			}
+			var evictionOp *history.Operation
+			if parent := history.FromContext(ctx); parent != nil {
+				t := parent.Target
+				t.Kind = "Pod"
+				t.Name = p.Name
+				t.Namespace = p.Namespace
+				t.UID = string(p.UID)
+				evictionOp = parent.Store.Begin(t, "evict", map[string]string{"drainOperation": parent.ID})
+			}
 			err := cs.PolicyV1().Evictions(p.Namespace).Evict(ctx, eviction)
+			if evictionOp != nil {
+				evictionOp.Finish(err, "accepted")
+			}
 			if err != nil && !apierrors.IsNotFound(err) {
 				// 429 = PDB blocking; keep trying on the next loop iteration.
 				// Anything else, we surface and bail — a real error here

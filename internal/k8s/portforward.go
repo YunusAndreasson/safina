@@ -22,6 +22,7 @@ import (
 	"k8s.io/client-go/transport/spdy"
 
 	"github.com/yunus/safina/internal/debug"
+	"github.com/yunus/safina/internal/history"
 )
 
 // PortForwardTargetKind names the two things you can forward to.
@@ -77,9 +78,10 @@ type PortForwardSnapshot struct {
 // every modal/state transition — including drilling into a different
 // context. Shut down via Close() on app exit.
 type ForwardManager struct {
-	mu     sync.Mutex
-	active map[string]*PortForward
-	seq    int
+	mu       sync.Mutex
+	active   map[string]*PortForward
+	seq      int
+	journals map[string]*history.Operation
 }
 
 // NewForwardManager builds an empty manager. The Manager owns one.
@@ -244,7 +246,11 @@ func (fm *ForwardManager) StartPortForward(
 	}
 
 	go func() {
-		errCh <- fwd.ForwardPorts()
+		err := fwd.ForwardPorts()
+		if op := history.FromContext(ctx); op != nil {
+			op.Finish(err, "stream_ended")
+		}
+		errCh <- err
 	}()
 
 	// Wait for ready (or an early error / context cancel). Without this the
@@ -293,7 +299,10 @@ func (fm *ForwardManager) Stop(id string) error {
 		return fmt.Errorf("forward %q not found", id)
 	}
 	delete(fm.active, id)
+	op := fm.journals[id]
+	delete(fm.journals, id)
 	fm.mu.Unlock()
+	op.Record("disconnected", "", nil)
 	close(pf.stop)
 	return nil
 }
@@ -403,4 +412,17 @@ func ParsePortPair(s string) (int, int, error) {
 		return 0, 0, err
 	}
 	return l, r, nil
+}
+
+func (fm *ForwardManager) SetHistory(id string, op *history.Operation) {
+	fm.mu.Lock()
+	defer fm.mu.Unlock()
+	if _, ok := fm.active[id]; !ok {
+		op.Record("disconnected", "closed before recording attached", nil)
+		return
+	}
+	if fm.journals == nil {
+		fm.journals = make(map[string]*history.Operation)
+	}
+	fm.journals[id] = op
 }

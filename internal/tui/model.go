@@ -14,6 +14,7 @@ import (
 	"github.com/yunus/safina/internal/claude"
 	"github.com/yunus/safina/internal/config"
 	"github.com/yunus/safina/internal/debug"
+	"github.com/yunus/safina/internal/history"
 	"github.com/yunus/safina/internal/k8s"
 	"github.com/yunus/safina/internal/tui/components"
 	"github.com/yunus/safina/internal/tui/keys"
@@ -29,6 +30,7 @@ type state int
 
 const (
 	stateMain state = iota
+	stateIncoming
 	// stateLogView / stateEventsView / stateDescribeView / stateHotView /
 	// stateForwardsList / stateDrainProgress are kept as drivers of *which*
 	// workspace tab is active. In the cosmic-horizon redesign these are no
@@ -118,7 +120,13 @@ func (s *editSession) LineDiffStat() (added, removed int) {
 // to a cluster the same way they drill into a deployment, and "esc"s their
 // way back out.
 type Model struct {
-	ctx *tuictx.Ctx
+	incoming           incomingState
+	historyChatRequest uint64
+	historyRequest     uint64
+	shellJournal       *history.Operation
+	historyFilter      history.Filter
+	historySelection   *history.Record
+	ctx                *tuictx.Ctx
 
 	tree      sections.Tree
 	chat      sections.Chat
@@ -533,7 +541,12 @@ func (m *Model) saveConfig() {
 // shutdown persists config and releases process-lifetime resources. Called
 // from every quit path (and only quit paths).
 func (m *Model) shutdown() {
+	m.stopLogStream()
 	m.saveConfig()
+	for _, op := range m.operations {
+		op.journal.Record("interrupted", "Safina exited before readiness was established", nil)
+	}
+	m.shellJournal.Record("disconnected", "Safina exited", nil)
 	// Forwards live in user space (a local TCP listener); they don't survive
 	// the process anyway, but we close them explicitly so the topbar pill
 	// can't lie about active count if anything else inspects the manager
@@ -561,9 +574,13 @@ func (m *Model) shutdown() {
 func (m *Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{
 		m.autoRefreshTick(),
+		m.loadIncoming(),
 		m.clockTick(),
 		m.ctx.Spinner.Tick,
 		tea.RequestBackgroundColor,
+	}
+	if m.incoming.client != nil {
+		cmds = append(cmds, incomingTick())
 	}
 	// An explicit CLI context is a cluster choice, unlike a remembered
 	// default. Route it through the normal focus handler to start watches.
@@ -586,7 +603,7 @@ func (m *Model) Init() tea.Cmd {
 		cmds = append(cmds, m.raiseError(m.startupBanner))
 		m.startupBanner = ""
 	}
-	return tea.Batch(cmds...)
+	return tea.Batch(append(cmds, historyPruneTick(m.ctx.Manager.History))...)
 }
 
 // formatSkippedContexts builds the one-line banner shown at startup when one
