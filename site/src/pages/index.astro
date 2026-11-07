@@ -7,6 +7,7 @@ import Tour from "../components/Tour.astro";
 import Feature from "../components/Feature.astro";
 import Frame from "../components/Frame.astro";
 import KeyList from "../components/KeyList.astro";
+import Aboard from "../components/Aboard.astro";
 import Install from "../components/Install.astro";
 import Footer from "../components/Footer.astro";
 
@@ -20,21 +21,22 @@ const shot = (name: string) => {
 
 <Base
   title="Safina: the Kubernetes terminal UI for teams that ship"
-  description="The Kubernetes terminal UI for teams that ship, built for the people on call. Find what is broken, see why, and fix it without leaving the keyboard."
+  description="The Kubernetes terminal UI for teams that ship, built for the people on call. Find what is broken, see why, fix it without leaving the keyboard, and keep the record for the morning."
 >
   <Nav />
   <main id="main">
     <Opening />
     <Tour />
 
-    <Feature id="claude" heading="Ask Claude what’s wrong">
+    <Feature id="claude" name="Ask Claude" heading="It already knows what you’re looking at.">
       <p>
-        Press <kbd class="cap">i</kbd> and ask a question. Safina gives Claude the cluster, namespace and resource you
-        have selected, so there is nothing&nbsp;to&nbsp;paste.
+        Press <kbd class="cap">i</kbd> and ask what’s wrong. Claude already has the cluster, namespace and resource
+        you have selected and what you have already tried on it, and <kbd class="cap">c</kbd> in the Logbook hands
+        it the logs you read. Nothing to paste, nothing to explain&nbsp;twice.
       </p>
       <p>
-        Claude gives shura, counsel: it tells you which safina keys to press next but can’t press them, and anything
-        that writes still asks you first. The amanah, the trust of the cluster, stays&nbsp;with&nbsp;you.
+        Its counsel comes as keys: it tells you which safina keys to press next but can’t press them, and anything
+        that writes still asks you first. The <i>amanah</i>, the trust of the cluster, stays&nbsp;with&nbsp;you.
       </p>
       <p class="quiet">Uses the <code>claude</code> CLI you are signed in to. No API&nbsp;key&nbsp;needed.</p>
       <Frame
@@ -42,32 +44,63 @@ const shot = (name: string) => {
         src={shot("chat")}
         crop={shot("chat-m")}
         panCols={86}
-        alt="The chat tab beside the workloads list, with the failing ledger-api selected. Asked why it keeps restarting, Claude says the selection does not show a reason yet, lists the safina keys that will (Enter for its pods, e for events, d for the exit code, l for logs), and explains what each common reason means."
+        alt="The chat tab beside the workloads list. With the ledger-api logs attached from the Logbook, Claude explains that the pod panics on startup because the name ledger-db-primary does not resolve, warns not to press R because a restart would crash the same way, and lists the keys to check next: / to filter for ledger-db, e for events, d to find where the host is set, U to roll back."
       />
     </Feature>
 
-    <Feature id="safety" heading="Lowercase reads. Uppercase writes.">
+    <Feature id="safety" name="Barbarossa mode" heading="Lowercase reads. Uppercase writes.">
       <p>
-        Every key that changes the cluster is a capital letter, so a typo can only read. To write, Shift into
-        Barbarossa mode, after the Ottoman admiral. Writes confirm first: scaling asks for a count, restarts and
-        rollbacks ask for a yes, and edits show the diff before anything&nbsp;is&nbsp;applied.
+        Every key that changes the cluster is a capital letter, so a slip of the finger can only read. Hold Shift
+        and you are in <b>Barbarossa mode</b>, after the red-&#8288;bearded Ottoman admiral: the keys that write are red,
+        and so is every confirmation. Scaling asks for a count, restarts and rollbacks ask for a yes, edits show
+        the diff&nbsp;first.
+      </p>
+      <p>
+        Then <b>Rollout watch</b> takes over. A scale or restart isn’t done when the API accepts it, so safina
+        follows it until the pods are ready, and tells you if they never&nbsp;get&nbsp;there.
       </p>
       <p class="quiet">
-        Safina never sets a course for you, either: every session starts on the clusters in your kubeconfig, and you
-        pick one.
+        <b>No autopilot</b>, either: safina never sets a course for you. Every session starts on the clusters in
+        your kubeconfig, and you pick&nbsp;one.
       </p>
       <Frame
         slot="figure"
         src={shot("diff-f")}
         crop={shot("diff-m")}
         panCols={78}
-        alt="An edit to the ledger-api Deployment waiting for confirmation: a one-line diff changes DATABASE_URL from ledger-db-primary to ledger-db, with y to apply and n to cancel."
+        alt="An edit to the ledger-api Deployment waiting for confirmation in a red frame: a one-line diff changes DATABASE_URL from ledger-db-primary to ledger-db, with a red y to apply and n to cancel."
       />
       <div slot="after" class="keys">
         <KeyList />
       </div>
     </Feature>
 
+    <Feature id="logbook" name="Logbook" heading="Still there in the morning.">
+      <p>
+        Kubernetes keeps events for an hour, and a replaced pod takes its logs with it. The <b>Logbook</b> keeps
+        what you looked at: the logs and events you read, every write with the state before and after it, and when
+        each&nbsp;happened.
+      </p>
+      <p>
+        Open it from <kbd class="cap">:</kbd>. When the storm has passed, export the night as a timeline with a
+        postmortem template, no cluster needed, and read it back in calm water, or hand it to Claude to
+        piece&nbsp;together. Every entry keeps its <i>isnad</i>, its chain: which cluster, which session, when it
+        happened and when you&nbsp;saw&nbsp;it.
+      </p>
+      <p class="quiet">
+        Kept on your machine, readable only by you, with secrets redacted. It records what you did and saw in
+        safina; it is not an audit of the&nbsp;cluster.
+      </p>
+      <Frame
+        slot="figure"
+        src={shot("history")}
+        crop={shot("history-m")}
+        panCols={80}
+        alt="The Logbook for payments-api, newest first: a restart and, before it, a scale to 3 replicas, each step timestamped from requested, through the before snapshot, the API accepting it and the after snapshot, to progress and completed at 3 of 3 ready."
+      />
+    </Feature>
+
+    <Aboard />
     <Install />
   </main>
   <Footer />

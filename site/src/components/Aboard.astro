@@ -1,0 +1,124 @@
+---
+// The smaller features, each a name and the one line that sells it. On the
+// page grid: the title on the title line, the list on the text line.
+const items: { name: string; keys: string[]; text: string }[] = [
+  {
+    name: "Shell anywhere",
+    keys: ["s"],
+    text: "A shell in any container. When the image has none, safina brings its own in a debug container.",
+  },
+  {
+    name: "Forward list",
+    keys: ["Ctrl", "F"],
+    text: "Every port-forward in one place, so none is left running in a tab you forgot.",
+  },
+  {
+    name: "Quick switch",
+    keys: ["Ctrl", "K"],
+    text: "Change cluster mid-incident, without restarting safina.",
+  },
+  {
+    name: "Jump search",
+    keys: [":"],
+    text: "Type a name to jump to anything you have loaded. Tab shows what you can do to it.",
+  },
+  {
+    name: "Copy over SSH",
+    keys: ["y"],
+    text: "The selection, the YAML or the logs land on your own clipboard, even from a remote box.",
+  },
+  {
+    name: "Beacon",
+    keys: [],
+    text: "On terminals that show it, safina’s tab tells you when Claude is answering or a write is waiting for your yes.",
+  },
+];
+---
+
+<section class="aboard" id="aboard" aria-labelledby="aboard-title">
+  <div class="wrap split">
+    <h2 id="aboard-title">Also on board</h2>
+    <dl class="aboard__list">
+      {
+        items.map((it) => (
+          <div class="aboard__item">
+            <dt>
+              <span class="aboard__name">{it.name}</span>
+              {it.keys.length > 0 && (
+                <span class="aboard__keys">
+                  {it.keys.map((k) => (
+                    <kbd class="cap">{k}</kbd>
+                  ))}
+                </span>
+              )}
+            </dt>
+            <dd>{it.text}</dd>
+          </div>
+        ))
+      }
+    </dl>
+  </div>
+</section>
+
+<style>
+  .aboard {
+    padding-top: var(--s5);
+    background: var(--abyss);
+  }
+  .aboard .split {
+    row-gap: var(--s3);
+  }
+  .aboard h2 {
+    max-width: 17ch;
+  }
+  /* Two a row on the text line, ruled like the key list's groups; one a
+     row on a phone. */
+  .aboard__list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--s3) var(--s3);
+
+    @media (width <= 1100px) {
+      max-width: var(--measure);
+    }
+    @media (width <= 640px) {
+      grid-template-columns: minmax(0, 1fr);
+      gap: var(--s2);
+    }
+  }
+  .aboard__item {
+    padding-top: var(--s1);
+    border-top: 1px solid var(--hairline);
+  }
+  dt {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 2em;
+  }
+  /* The feature names' hull lettering (Feature.astro), at the size of a
+     label. */
+  .aboard__name {
+    font-size: var(--t-ui);
+    font-weight: 400;
+    font-stretch: 125%;
+    letter-spacing: 0.08em;
+    color: var(--foam);
+  }
+  .aboard__keys {
+    display: inline-flex;
+    gap: 4px;
+  }
+  .aboard__keys .cap {
+    font-size: var(--t-micro);
+    height: 1.9em;
+  }
+  dd {
+    margin: var(--s1) 0 0;
+    color: var(--spray);
+    font-size: var(--t-small);
+    line-height: 1.55;
+    text-wrap: pretty;
+  }
+</style>

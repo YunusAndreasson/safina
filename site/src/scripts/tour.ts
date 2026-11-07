@@ -1,3 +1,5 @@
+import { runs } from "../lib/typeset";
+
 function setupTour(root: HTMLElement) {
   const tabs = [...root.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
   const caption = root.querySelector<HTMLElement>("[data-caption-out]");
@@ -41,7 +43,11 @@ function setupTour(root: HTMLElement) {
         const panel = panelOf(t);
         if (panel) panel.hidden = !on;
       }
-      caption.textContent = tab.dataset.caption ?? "";
+      caption.replaceChildren(
+        ...runs(tab.dataset.caption ?? "").map((r) =>
+          r.term ? Object.assign(document.createElement("i"), { textContent: r.text }) : r.text,
+        ),
+      );
     };
     if ("startViewTransition" in document && !reduce.matches) {
       // A newer keypress may supersede this transition; that is expected.

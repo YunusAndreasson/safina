@@ -2,7 +2,7 @@
 import Frame from "./Frame.astro";
 import KeyGlyph from "./KeyGlyph.astro";
 import { tour } from "../data/tour";
-import { unrunt } from "../lib/typeset";
+import { runs, unrunt } from "../lib/typeset";
 
 // The tour window is the product itself, so on wide screens it breaks out
 // of the 1240px text column to as much as 1400px (24px from the edges), where
@@ -54,7 +54,9 @@ const sizes = "(width >= 1448px) 1400px, (width >= 1400px) calc(100vw - 48px), (
         <span class="hint--touch">Tap a key to see that screen.</span>
       </p>
     </div>
-    <p class="tour__caption" data-caption-out aria-live="polite">{unrunt(tour[0].caption)}</p>
+    <p class="tour__caption" data-caption-out aria-live="polite">
+      {runs(unrunt(tour[0].caption)).map((r) => (r.term ? <i>{r.text}</i> : r.text))}
+    </p>
   </div>
 </section>
 

@@ -19,6 +19,7 @@ export interface Stop {
   /** what the keycap shows */
   glyph: string;
   name: string;
+  /** Plain text; `_word_` marks an Arabic term (lib/typeset `runs`). */
   caption: string;
   alt: string;
   shot: ImageMetadata;
@@ -32,8 +33,8 @@ export const tour = [
     glyph: "↵",
     name: "Drill in",
     caption:
-      "Clusters, namespaces, workloads, pods. Enter goes one level deeper, Esc goes back, and the inspector on the right follows the cursor.",
-    alt: "safina showing every workload in the cluster with CPU and memory trend lines. payments-api is selected; the inspector shows its live CPU graph, replicas, and the config map and secret it uses.",
+      "Clusters, namespaces, workloads, pods: Enter goes deeper, Esc goes back, the inspector follows the cursor.",
+    alt: "safina showing every workload in the cluster with its readiness and CPU and memory trend lines; ledger-api and search-indexer show none ready, in red. payments-api is selected; the inspector shows its live CPU graph, replicas, and the config map and secret it uses.",
     shot: workloads,
     crop: workloadsM,
   },
@@ -42,8 +43,8 @@ export const tour = [
     key: "n",
     glyph: "n",
     name: "Next failing",
-    caption: "Jumps to the next resource with a problem: a crash loop, a pod that cannot be scheduled, a stalled rollout.",
-    alt: "The cursor has jumped to ledger-api, marked as failing. The inspector reads Unavailable, with 0 of 2 replicas ready.",
+    caption: "Straight to the next crash loop, unschedulable pod or stalled rollout. No scanning for red.",
+    alt: "The cursor has jumped to ledger-api, 0 of 2 ready. The inspector reads Unavailable: 2 updated, 0 ready, 2 desired.",
     shot: failing,
     crop: failingM,
   },
@@ -52,8 +53,8 @@ export const tour = [
     key: "l",
     glyph: "l",
     name: "Logs",
-    caption: "Streams the pod's logs live, with log levels, JSON and stack traces highlighted.",
-    alt: "Live logs for a ledger-api pod: info lines, three warnings that the database is unreachable, an error from a failed DNS lookup, then a Go panic with its stack trace.",
+    caption: "The pod's logs, live or from the last crash, with levels, JSON and stack traces picked out.",
+    alt: "The last crashed container's logs for a ledger-api pod: three info lines, three warnings that the database is not reachable, an error from a failed DNS lookup of ledger-db-primary, then a Go panic with its stack trace.",
     shot: logs,
     crop: logsM,
   },
@@ -62,8 +63,8 @@ export const tour = [
     key: "e",
     glyph: "e",
     name: "Events",
-    caption: "Kubernetes events for the selected resource, newest first, with warnings highlighted.",
-    alt: "Events for the ledger-api pod, newest first: a Back-off restarting failed container warning, then the container created, pulled and started again; the same cycle two hours earlier; and the pod first being scheduled.",
+    caption: "Why Kubernetes did what it did: events for the selected resource, newest first, warnings lit.",
+    alt: "Events for a ledger-api pod, newest first: a Back-off restarting failed container warning seen 205 times, the image pulled again 49 times, and the container created 44 times.",
     shot: events,
     crop: eventsM,
   },
@@ -72,8 +73,8 @@ export const tour = [
     key: "h",
     glyph: "h",
     name: "Hot pods",
-    caption: "The pods using the most CPU across the whole cluster, from wherever you are.",
-    alt: "The hot pods table: every pod in the cluster ranked by CPU, led by settlement-worker and payments-api, with namespace, status, memory and restarts.",
+    caption: "Every pod in the cluster, weighed by CPU, from wherever you are.",
+    alt: "The hot pods table: every pod in the cluster ranked by CPU, led by settlement-worker at 529m and two payments-api pods, with namespace, status, memory and restarts.",
     shot: hot,
     crop: hotM,
   },

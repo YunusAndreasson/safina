@@ -25,15 +25,16 @@ crop() { # name col row cols rows
 
 crop workloads 0 1 52 18
 crop failing 52 1 52 16
-crop logs 84 4 55 22
-crop events 52 1 58 10
-crop hot 52 1 62 18
-crop chat 54 4 86 28
-crop diff 31 9 78 21
+crop logs 62 6 55 15
+crop events 53 4 60 11
+crop hot 53 4 74 18
+crop chat 54 4 86 21
+crop diff 17 3 78 19 # shot at 140x26, where the edit modal fits its diff
+crop history 18 4 80 22
 
 # Feature strips: the full 140-column width, so they share the tour's text
 # scale, cut down to the rows that matter. Used from tablet width up.
 cropf() { # like crop, but writes <name>-f.png and leaves <name>-m.png alone
 	cut "$1.png" "$1-f.png" "$2" "$3" "$4" "$5"
 }
-cropf diff 0 8 140 23
+cropf diff 0 1 140 23

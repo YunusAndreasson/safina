@@ -18,7 +18,7 @@ const changes = [
   ["E", "Edit YAML"],
   ["C", "Cordon"],
   ["D", "Drain"],
-  ["K", "Kill"],
+  ["K", "Delete"],
 ];
 ---
 
@@ -39,7 +39,7 @@ const changes = [
     </dl>
   </div>
   <div class="keylist__col keylist__col--change">
-    <h3 class="label">Write, after you confirm</h3>
+    <h3 class="label">Write, in Barbarossa mode</h3>
     <dl>
       {
         changes.map(([k, v]) => (
@@ -104,13 +104,15 @@ const changes = [
     margin: 0;
     color: var(--spray);
   }
+  /* The write keys in the app's danger red, the colour of Barbarossa mode
+     there: the keys themselves and the confirmation each one opens. */
   .keylist__col--change .cap {
-    color: var(--beacon);
-    border-color: rgb(from var(--beacon) r g b / 40%);
+    color: var(--danger);
+    border-color: rgb(from var(--danger) r g b / 40%);
     background:
-      linear-gradient(rgb(from var(--beacon) r g b / 14%), rgb(from var(--beacon) r g b / 4%)),
+      linear-gradient(rgb(from var(--danger) r g b / 14%), rgb(from var(--danger) r g b / 4%)),
       linear-gradient(var(--shelf), var(--deep));
-    box-shadow: 0 1px 0 0 rgb(from var(--beacon) r g b / 30%) inset;
+    box-shadow: 0 1px 0 0 rgb(from var(--danger) r g b / 30%) inset;
   }
   /* One column of groups: each list fills the width, three keys a row
      where they fit, two on a phone. */

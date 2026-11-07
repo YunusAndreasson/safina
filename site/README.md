@@ -53,7 +53,13 @@ scripts/demo-cluster.sh stop       # or `delete`
 
 Let safina sit on the Workloads view for ~15 minutes before shooting so the
 trend lines have history. `scripts/edit-fix.sh` is the stand-in `$EDITOR`
-used for the diff screenshot.
+used for the diff screenshot (answer `n`: the shot is the confirmation).
+
+The session keeps its own Logbook in `.demo/history`, emptied on every
+`start`, so demo activity never reaches `~/.safina/history`. Shoot the
+read-only screens first, then the writes the `history` shot shows
+(scale and restart payments-api, view ledger-api's logs and events), then
+`:` → Logbook for `history`.
 
 ## Images
 
@@ -83,12 +89,33 @@ pyftsubset node_modules/@fontsource-variable/reem-kufi/files/reem-kufi-arabic-wg
 
 ## Voice
 
-The name is Arabic, and the copy carries a few Arabic and Islamic touches.
-Each one names something safina really does, with a word or two of gloss so
-a reader who has never met the term still follows: Barbarossa mode (after
-the Ottoman admiral) for the Shift keys that write, shura (counsel) for
-asking Claude, the amanah (the trust of the cluster) for what stays with
-you. Hint, never explain: no stories, no verse references in the copy.
+Lead with the benefit, in plain English: what the on-call engineer gets,
+not how safina does it. Every feature has a name, short and easy to say,
+and the name is what the app itself shows (the `:` palette says Logbook,
+not History). Names: Barbarossa mode (the Shift keys that write),
+Rollout watch (following a write until the pods are ready), No autopilot
+(no cluster is ever picked for you), Logbook (the saved activity), and the
+Also on board list (Shell anywhere, Forward list, Quick switch, Jump search,
+Copy over SSH, Beacon). A feature section puts its name over a headline
+that says what it does for you (`<Feature name heading>`). The nav lists
+those named features and nothing else, like a family of small products
+under the wordmark, in the wordmark's own lettering.
+
+The name is Arabic, and the copy carries a few Arabic and Islamic touches,
+kept subtle enough that a reader who has never met them loses nothing.
+Three terms, each once, each glossed in the same sentence, never in a
+heading and never at the start of a sentence: Barbarossa mode (after the
+red-bearded Ottoman admiral; in the app its keys and confirmations are red,
+and the site's write keys match), the amanah (the trust of the cluster, which stays with
+you when Claude advises) and the isnad (the Logbook's chain: which cluster,
+which session, when). Everywhere else the imagery lives in English words:
+pods weighed by CPU, a write kept on watch, the storm and the calm
+water after it. The tour is plain English. Hint, never
+explain: no stories, no verse references in the copy.
+
+Mark a name safina gives its own behaviour with `<b>` and an Arabic term
+with `<i>` (in a tour caption, `_word_`). Both render upright in the
+brightest ink; `<b>` also takes the UI weight.
 Quieter marks: "in sha Allah" on the release promise, the Hijri year in the
 footer, the 404 ("Overboard", and the belly of a whale), and the words Nuh
 spoke boarding the ark at the top of the page source (`Base.astro`).
@@ -118,6 +145,10 @@ Dark ocean, defined once in `src/styles/global.css`: the page is the abyss
 (`--abyss`), and every fade, letterbox bar and shade dissolves into it. The
 one accent is `--beacon`, the cyan of the app's own title bar
 (`--tn-cyan`, from `internal/tui/theme/palette.go`), kept for what acts or
-marks where you are: the wordmark, the primary button, focus, the selected
-tour key and the write keys. Tints are relative colors of these tokens, never
+marks where you are: the wordmark, the feature names set like it, the
+primary button, focus and the selected tour key. Its one counterpart is
+`--danger`, the app's red (`--tn-red`), for the write keys only: in the app
+those keys and every write confirmation are red (Barbarossa mode), so the
+site's key list matches. The red beard is a pun, not a history claim: never
+say the red itself is historical. Tints are relative colors of these tokens, never
 raw channels.

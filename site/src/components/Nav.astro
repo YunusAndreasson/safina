@@ -1,8 +1,10 @@
 ---
+// The features by their own names, exactly as each section heads itself
+// (the tour has the hero's own button).
 const links = [
-  { href: "#tour", label: "Tour" },
   { href: "#claude", label: "Ask Claude" },
-  { href: "#safety", label: "Safe writes" },
+  { href: "#safety", label: "Barbarossa mode" },
+  { href: "#logbook", label: "Logbook" },
 ];
 ---
 
@@ -36,13 +38,20 @@ const links = [
     list-style: none;
     font-size: var(--t-ui);
   }
+  /* The links are the features' own names, so they wear the names' hull
+     lettering (Feature.astro), the same as the wordmark beside them, in the
+     quiet ink until pointed at; then the names' cyan. */
   .nav__links a {
     color: var(--spray);
+    font-weight: 400;
+    font-stretch: 125%;
+    letter-spacing: 0.08em;
     text-decoration: none;
     padding-block: 12px;
+    transition: color 160ms;
   }
   .nav__links a:hover {
-    color: #fff;
+    color: var(--beacon);
   }
   .nav__cta {
     min-height: 40px;
@@ -64,9 +73,12 @@ const links = [
       grid-area: 1 / 1;
       justify-self: start;
     }
+    /* The text line is narrowest just past 1100px: the names close up
+       there, so the last one stays well clear of the button. */
     .nav__links {
       grid-area: 1 / 2;
       justify-self: start;
+      gap: clamp(18px, 4vw - 26px, 32px);
     }
     .nav__cta {
       grid-area: 1 / 2;

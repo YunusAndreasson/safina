@@ -51,7 +51,7 @@ const [avif, fallback] = await Promise.all([
           </div>
         ) : (
           <>
-            <p class="lede">Binaries for macOS and Linux come with the first release, in&nbsp;sha&nbsp;Allah. Until then, build&nbsp;from&nbsp;source:</p>
+            <p class="lede">Binaries for macOS and Linux come with the first release, <i>in&nbsp;sha&nbsp;Allah</i>. Until then, build&nbsp;from&nbsp;source:</p>
             <div class="command">
               <pre class="command__code" id="cmd" data-text={release.fromSource}><code>{steps.map(({ head, tail }) => <span class="command__line">{head}{tail && <><wbr />{tail}</>}</span>)}</code></pre>
               <button class="command__copy" type="button" data-copy="cmd">

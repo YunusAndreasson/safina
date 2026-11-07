@@ -14,9 +14,11 @@
 
     /* Dark ocean. The page is the abyss, the storm and every fade dissolve
        into it, and raised surfaces sit a shelf or two above it. Text is the
-       spray off the water. The one signal is the beacon: the cyan of
-       safina's own title bar (internal/tui/components/topbar.go), kept for
-       what acts or marks where you are. */
+       spray off the water. The signal is the beacon: the cyan of safina's
+       own title bar (internal/tui/components/topbar.go), kept for what acts
+       or marks where you are. Its one counterpart is the danger red of
+       Barbarossa mode, kept for the keys that write, as in the app
+       (theme.Danger). */
     --abyss: #060d1a;
     --deep: #0b1729;
     --shelf: #13243b;
@@ -26,6 +28,7 @@
     --beacon: var(--tn-cyan);
     --beacon-hi: oklch(from var(--beacon) calc(l + 0.06) calc(c * 0.85) h);
     --beacon-ink: #04121f;
+    --danger: var(--tn-red);
     /* Tints are derived from the palette (relative color syntax), never
        re-typed as raw channels. */
     --hairline: rgb(from var(--spray) r g b / 13%);
@@ -41,6 +44,7 @@
     --tn-blue: #7aa2f7;
     --tn-cyan: #7dcfff;
     --tn-green: #9ece6a;
+    --tn-red: #f7768e;
     --tn-edge: rgb(from var(--tn-fg) r g b / 16%);
     --tn-glow: rgb(from var(--tn-blue) r g b / 32%);
 
@@ -184,6 +188,24 @@
     font-optical-sizing: auto;
     -webkit-font-smoothing: antialiased;
     overflow-x: clip;
+  }
+
+  /* Two kinds of term in running text, both in the brightest ink so they
+     read as names, neither changing the type around them. A name safina
+     gives its own behaviour (Barbarossa mode) is <b>, at the UI weight, like
+     a label. An Arabic word (amanah, isnad) is <i>, HTML's element for a
+     term from another language, kept upright: Mona Sans's italic is too far
+     from its roman. No lang attribute: the words are transliterated, and an
+     Arabic voice would misread the Latin letters. */
+  b,
+  i {
+    color: var(--foam);
+  }
+  b {
+    font-weight: var(--w-ui);
+  }
+  i {
+    font-style: normal;
   }
 
   /* The title voice (see the type tokens). Titles hang 0.05em into the
