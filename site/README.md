@@ -72,6 +72,8 @@ token from the dashboard (My Profile, API Tokens) made from the "Edit
 Cloudflare Workers" template, limited to this account and the safina.run
 zone. Locally,
 `pnpm ship` uses `wrangler login` instead; CI is the normal way to deploy.
+Without both secrets, as in a fork, the deploy job is skipped with a
+notice rather than failed.
 
 ## Releases
 

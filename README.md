@@ -1,6 +1,47 @@
 # Safina
 
-A lightweight terminal-based Kubernetes navigation tool — like `k9s` but simpler.
+**The Kubernetes TUI for teams that ship.**
+
+[![verify](https://github.com/YunusAndreasson/safina/actions/workflows/lint.yml/badge.svg)](https://github.com/YunusAndreasson/safina/actions/workflows/lint.yml)
+[![release](https://img.shields.io/github/v/release/YunusAndreasson/safina)](https://github.com/YunusAndreasson/safina/releases/latest)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
+Safina is fast, keyboard-driven and written for terminal hackers. It's a
+single Go binary on lazy client-go informers, with session history in SQLite
+and an MCP server for your agent. Safina (سفينة) is Arabic for ship; the tour
+is at [safina.run](https://safina.run).
+
+![safina listing every workload in the cluster with its kind, readiness and CPU and memory trend lines; ledger-api and search-indexer show none ready, in red. The cursor rests on the ledger-db StatefulSet, two rows below ledger-api and healthy at 1 of 1.](site/src/assets/shots/workloads.png)
+
+## Install
+
+On Linux (x86-64 or ARM64, glibc 2.34 or newer):
+
+```bash
+curl -fsSL https://safina.run/install.sh | sh
+```
+
+The script ([`site/public/install.sh`](site/public/install.sh)) downloads the
+latest release's archive, checks it against the release's `checksums.txt`,
+and puts `safina` in `~/.local/bin`. `SAFINA_INSTALL_DIR` and
+`SAFINA_VERSION` change where and which. The archives are also on the
+[releases page](https://github.com/YunusAndreasson/safina/releases).
+
+From source (Go 1.27 and Python 3; the Makefile fetches a pinned Zig to
+build libghostty):
+
+```bash
+make build
+make install  # copies to $GOPATH/bin
+```
+
+Or:
+
+```bash
+make native
+PKG_CONFIG_PATH="$PWD/.build/libghostty/native/lib/pkgconfig" go build -o bin/safina ./cmd/safina
+cp bin/safina /usr/local/bin/
+```
 
 ## Features
 
@@ -16,7 +57,7 @@ A lightweight terminal-based Kubernetes navigation tool — like `k9s` but simpl
 - Persistent errors and notification history (`Ctrl+N`); dismiss the banner with `Ctrl+D`
 - Compact resource search (`:`); `Ctrl+S` explicitly loads the selected namespace’s supported resource kinds
 - Auto-refresh pod/deployment lists every 5 seconds
-- Remembers last used cluster and namespace
+- Asks which cluster on every launch, so a muscle-memory keypress never lands on the wrong one
 - Help screen with all keybindings
 
 Search starts with already-loaded resources. Inside a namespace, `Ctrl+S` expands it to workloads, their pods, ConfigMaps, Secrets, Services, Ingresses, and PVCs. Partial failures are labeled. `Tab` in the palette shows resource actions. In logs, `c` switches targets and `p` opens previous-container logs when available.
@@ -71,36 +112,6 @@ Safina uses your terminal’s font and size. Use a monospace font with regular
 and bold faces; no Nerd Font is required. True color gives the clearest
 separation between resource types, selection, and health. If names or hints
 feel cramped, increase the terminal font size before changing fonts.
-
-## Installation
-
-On Linux (x86-64 or ARM64, glibc 2.34 or newer):
-
-```bash
-curl -fsSL https://safina.run/install.sh | sh
-```
-
-The script ([`site/public/install.sh`](site/public/install.sh)) downloads the
-latest release's archive, checks it against the release's `checksums.txt`,
-and puts `safina` in `~/.local/bin`. `SAFINA_INSTALL_DIR` and
-`SAFINA_VERSION` change where and which. The archives are also on the
-[releases page](https://github.com/YunusAndreasson/safina/releases).
-
-From source (Go 1.27 and Python 3; the Makefile fetches a pinned Zig to
-build libghostty):
-
-```bash
-make build
-make install  # copies to $GOPATH/bin
-```
-
-Or:
-
-```bash
-make native
-PKG_CONFIG_PATH="$PWD/.build/libghostty/native/lib/pkgconfig" go build -o bin/safina ./cmd/safina
-cp bin/safina /usr/local/bin/
-```
 
 ## Usage
 
@@ -246,22 +257,29 @@ cluster change is waiting for confirmation, even while another tab is active.
 
 ```
 safina/
-├── cmd/safina/main.go           # Entry point (cobra CLI)
+├── cmd/
+│   ├── safina/               # Entry point (cobra CLI), including `safina mcp`
+│   └── safina-bench/         # Benchmark driver for the dedicated bench cluster
 ├── internal/
-│   ├── config/
-│   │   ├── config.go            # App config persistence (~/.safina/config.yaml)
-│   │   └── kubeconfig.go        # Kubeconfig resolution and context listing
-│   ├── k8s/
-│   │   ├── client.go            # Client manager per context
-│   │   ├── pods.go              # Pod listing, deletion, log streaming
-│   │   └── deployments.go       # Deployment listing, scaling, rollback
-│   └── tui/
-│       ├── model.go             # Bubble Tea root model
-│       ├── update.go            # Message handling and state transitions
-│       ├── view.go              # UI rendering
-│       ├── theme/               # Lip Gloss styles and color scheme
-│       └── keys/                # Keybinding definitions
-├── go.mod
+│   ├── tui/                  # Bubble Tea root model, update and view
+│   │   ├── sections/         # Panes: tree, inspector, logs, chat, Logbook, metrics…
+│   │   ├── components/       # Shared widgets: top bar, sparklines, charts, modals
+│   │   ├── keys/             # Keybinding definitions
+│   │   └── theme/            # Lip Gloss styles and colours
+│   ├── k8s/                  # Clients, lazy informers, reads and guarded writes
+│   ├── config/               # App config (~/.safina/config.yaml) and kubeconfig
+│   ├── history/              # The Logbook: a local, versioned SQLite journal
+│   ├── metrics/              # Bounded, session-local resource observations
+│   ├── claude/               # Chat, through the user's own `claude` CLI
+│   ├── investigation/        # The versioned, transport-independent proposal core
+│   ├── broker/               # Local investigation state, independent of the TUI
+│   ├── mcpserver/            # Investigation capabilities over MCP
+│   ├── terminal/             # libghostty's terminal state, adapted to Bubble Tea
+│   └── …                     # debug and error logs, local state, version
+├── scripts/                  # libghostty bootstrap (pinned Zig and source), bench setup
+├── bench/                    # Benchmark fixtures and baseline
+├── plugins/safina/           # Claude Code plugin for investigations
+├── site/                     # safina.run (Astro), see site/README.md
 ├── Makefile
 └── README.md
 ```
@@ -272,7 +290,7 @@ safina/
 - For source builds: Python 3.12+, a C compiler, and pkg-config; CGO must be enabled.
   `make` downloads checksum-verified Zig and Ghostty sources into `.build/libghostty`
   and builds the static terminal library. The first build can take several minutes.
-  The bootstrap supports Linux/macOS on x86-64/ARM64; Linux x86-64 is locally verified.
+  The bootstrap supports Linux/macOS on x86-64/ARM64; CI builds Linux on both.
   Installed binaries do not require Zig or a separate libghostty shared library.
 - `make lint` / `make fmt` download and run golangci-lint 2.15.0
 - Access to a Kubernetes cluster (via kubeconfig)
@@ -331,7 +349,7 @@ tests. Both run in the existing test and race gates without a cluster or new too
 
 ## License
 
-MIT
+[MIT](LICENSE)
 
 ## Terminal library evaluation
 
