@@ -5,9 +5,8 @@
 </p>
 
 <p align="center">
-  Fast, keyboard-driven and written for terminal hackers.<br>
-  A single Go binary on lazy client-go informers, with session history in SQLite<br>
-  and an MCP server for your agent.
+  A single Go binary on lazy client-go informers,<br>
+  with session history in SQLite and an MCP server for your agent.
 </p>
 
 <p align="center">
