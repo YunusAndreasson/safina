@@ -6,6 +6,7 @@ Linux and macOS, x86-64 and ARM64. Nothing is installed globally.
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import platform
 import subprocess
@@ -43,6 +44,11 @@ for name, url, expected_hash, directory in [
             source.extractall(cache, filter="data")
 zig = cache / zig_directory / "zig"
 prefix = cache / "native"
+# Ghostty's build asks git for its own version. The source tree is a tarball
+# with no .git, so without a ceiling git climbs into the repository holding
+# the cache, and on one of safina's release tags ghostty takes that tag for
+# its own and refuses to build ("tagged releases must be in vX.Y.Z format").
+env = dict(os.environ, GIT_CEILING_DIRECTORIES=str(cache))
 subprocess.run([str(zig), "build", *versions["native_flags"], "--prefix", str(prefix)],
-               cwd=cache / ("ghostty-" + versions["ghostty_commit"]), check=True)
+               cwd=cache / ("ghostty-" + versions["ghostty_commit"]), env=env, check=True)
 print("PKG_CONFIG_PATH=" + str(prefix / "lib" / "pkgconfig"))
