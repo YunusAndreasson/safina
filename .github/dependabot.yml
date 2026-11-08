@@ -21,6 +21,11 @@ updates:
     directory: /site
     schedule:
       interval: weekly
+    ignore:
+      # typescript-eslint doesn't support TypeScript 7 (the native compiler)
+      # yet: typescript-eslint/typescript-eslint#10940. Lift this once it does.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
     groups:
       site:
         patterns: ["*"]
