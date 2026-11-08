@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/YunusAndreasson/safina/security/advisories/new
+    about: Privately, please, never in a public issue (SECURITY.md).
+  - name: Read the manual
+    url: https://github.com/YunusAndreasson/safina/tree/main/docs
+    about: Keys, the Logbook, chat, and building from source.

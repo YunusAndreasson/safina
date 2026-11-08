@@ -1,0 +1,21 @@
+name: Feature request
+description: Something safina should do, or do differently.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you were trying to do, and where safina got in the way. A real situation helps more than a feature name.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you'd like
+      description: How you picture it working, keys included if you have an idea.
+  - type: textarea
+    id: today
+    attributes:
+      label: What you do today
+      description: The workaround, if there is one (kubectl, k9s, a script…).
