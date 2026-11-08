@@ -2,8 +2,9 @@
 # version tag is pushed (`git tag v0.1.0 && git push origin v0.1.0`). Run it
 # by hand from the Actions tab to build and test without publishing.
 #
-# Each binary is built natively, on Ubuntu 22.04 for x86-64 and ARM64, so it
-# needs glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36 and later).
+# Each binary is built natively, on Ubuntu 22.04 for x86-64 and ARM64, and
+# must need nothing newer than glibc 2.34 (Ubuntu 22.04, Debian 12, RHEL 9,
+# Fedora 35 and later), which install.sh checks for.
 # libghostty is linked in statically; the archive names are the ones
 # site/src/data/release.ts and site/public/install.sh download.
 name: release
@@ -55,7 +56,7 @@ jobs:
           fi
           floor=$(objdump -T out/safina | grep -o 'GLIBC_[0-9.]*' | sort -V -u | tail -1)
           echo "needs $floor"
-          [ "$(printf '%s\n' "$floor" GLIBC_2.35 | sort -V | tail -1)" = GLIBC_2.35 ] || { echo "::error::needs $floor, newer than 2.35"; exit 1; }
+          [ "$(printf '%s\n' "$floor" GLIBC_2.34 | sort -V | tail -1)" = GLIBC_2.34 ] || { echo "::error::needs $floor, newer than 2.34"; exit 1; }
       - name: Package
         run: |
           cp LICENSE README.md out/

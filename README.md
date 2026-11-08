@@ -74,7 +74,7 @@ feel cramped, increase the terminal font size before changing fonts.
 
 ## Installation
 
-On Linux (x86-64 or ARM64, glibc 2.35 or newer):
+On Linux (x86-64 or ARM64, glibc 2.34 or newer):
 
 ```bash
 curl -fsSL https://safina.run/install.sh | sh
