@@ -1,4 +1,4 @@
-module github.com/yunus/safina
+module github.com/YunusAndreasson/safina
 
 go 1.27.3
 

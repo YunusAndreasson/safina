@@ -7,9 +7,9 @@ import (
 
 	"k8s.io/apimachinery/pkg/types"
 
+	"github.com/YunusAndreasson/safina/internal/history"
+	"github.com/YunusAndreasson/safina/internal/k8s"
 	"github.com/stretchr/testify/require"
-	"github.com/yunus/safina/internal/history"
-	"github.com/yunus/safina/internal/k8s"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"

@@ -4,7 +4,7 @@ import (
 	"cmp"
 	"slices"
 
-	"github.com/yunus/safina/internal/k8s"
+	"github.com/YunusAndreasson/safina/internal/k8s"
 )
 
 // PaletteEntry is one row in the command-palette result list. A flat,

@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/yunus/safina/internal/k8s"
+	"github.com/YunusAndreasson/safina/internal/k8s"
 )
 
 // rowByLabel returns the first row matching label across all sections, or

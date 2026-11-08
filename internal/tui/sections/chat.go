@@ -15,10 +15,10 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/yunus/safina/internal/claude"
-	"github.com/yunus/safina/internal/tui/components"
-	"github.com/yunus/safina/internal/tui/theme"
-	"github.com/yunus/safina/internal/tui/tuictx"
+	"github.com/YunusAndreasson/safina/internal/claude"
+	"github.com/YunusAndreasson/safina/internal/tui/components"
+	"github.com/YunusAndreasson/safina/internal/tui/theme"
+	"github.com/YunusAndreasson/safina/internal/tui/tuictx"
 )
 
 // Chat is the right-panel conversational assistant. It is always rendered;

@@ -9,8 +9,8 @@ import (
 	"github.com/NimbleMarkets/ntcharts/v2/canvas"
 	"github.com/NimbleMarkets/ntcharts/v2/canvas/graph"
 	"github.com/NimbleMarkets/ntcharts/v2/linechart"
-	"github.com/yunus/safina/internal/metrics"
-	"github.com/yunus/safina/internal/tui/theme"
+	"github.com/YunusAndreasson/safina/internal/metrics"
+	"github.com/YunusAndreasson/safina/internal/tui/theme"
 )
 
 func MetricValue(value int64, memory bool) string {

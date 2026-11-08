@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YunusAndreasson/safina/internal/broker/api"
+	"github.com/YunusAndreasson/safina/internal/history"
+	inv "github.com/YunusAndreasson/safina/internal/investigation"
+	"github.com/YunusAndreasson/safina/internal/investigation/store"
 	"github.com/stretchr/testify/require"
-	"github.com/yunus/safina/internal/broker/api"
-	"github.com/yunus/safina/internal/history"
-	inv "github.com/yunus/safina/internal/investigation"
-	"github.com/yunus/safina/internal/investigation/store"
 )
 
 func TestScopedEvidenceAndHistoryBounds(t *testing.T) {

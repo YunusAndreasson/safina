@@ -7,7 +7,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/yunus/safina/internal/tui/theme"
+	"github.com/YunusAndreasson/safina/internal/tui/theme"
 )
 
 // ClusterHealth is the topbar's tiny dashboard module — the on-caller's

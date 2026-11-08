@@ -9,10 +9,10 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/yunus/safina/internal/k8s"
-	"github.com/yunus/safina/internal/tui/components"
-	"github.com/yunus/safina/internal/tui/theme"
-	"github.com/yunus/safina/internal/tui/tuictx"
+	"github.com/YunusAndreasson/safina/internal/k8s"
+	"github.com/YunusAndreasson/safina/internal/tui/components"
+	"github.com/YunusAndreasson/safina/internal/tui/theme"
+	"github.com/YunusAndreasson/safina/internal/tui/tuictx"
 )
 
 // Connected is the right-stack tile that shows what the focused resource is

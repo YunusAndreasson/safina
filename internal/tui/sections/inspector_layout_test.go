@@ -5,9 +5,9 @@ import (
 	"testing"
 
 	"charm.land/lipgloss/v2"
+	"github.com/YunusAndreasson/safina/internal/k8s"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
-	"github.com/yunus/safina/internal/k8s"
 )
 
 func TestInspectorLayoutUsesSpareRowsForEventMessages(t *testing.T) {

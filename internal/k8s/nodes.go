@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yunus/safina/internal/history"
+	"github.com/YunusAndreasson/safina/internal/history"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"

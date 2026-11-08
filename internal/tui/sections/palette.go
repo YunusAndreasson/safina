@@ -11,9 +11,9 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/sahilm/fuzzy"
 
-	"github.com/yunus/safina/internal/k8s"
-	"github.com/yunus/safina/internal/tui/components"
-	"github.com/yunus/safina/internal/tui/tuictx"
+	"github.com/YunusAndreasson/safina/internal/k8s"
+	"github.com/YunusAndreasson/safina/internal/tui/components"
+	"github.com/YunusAndreasson/safina/internal/tui/tuictx"
 )
 
 // Palette is the `:` Vim-style command palette. It scores everything the

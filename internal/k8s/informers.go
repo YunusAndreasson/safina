@@ -15,7 +15,7 @@ import (
 	networkingv1listers "k8s.io/client-go/listers/networking/v1"
 	toolscache "k8s.io/client-go/tools/cache"
 
-	"github.com/yunus/safina/internal/debug"
+	"github.com/YunusAndreasson/safina/internal/debug"
 )
 
 // lastAppliedAnnotation is stripped from every cached object — it duplicates

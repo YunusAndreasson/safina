@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/yunus/safina/internal/tui/theme"
+	"github.com/YunusAndreasson/safina/internal/tui/theme"
 )
 
 // stripANSI returns s with all CSI sequences removed so tests can assert

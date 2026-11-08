@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/YunusAndreasson/safina/internal/tui/theme"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
-	"github.com/yunus/safina/internal/tui/theme"
 )
 
 func TestYAMLHighlightPreservesSource(t *testing.T) {

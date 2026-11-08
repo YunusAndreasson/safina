@@ -9,10 +9,10 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/sahilm/fuzzy"
 
-	"github.com/yunus/safina/internal/config"
-	"github.com/yunus/safina/internal/tui/components"
-	"github.com/yunus/safina/internal/tui/theme"
-	"github.com/yunus/safina/internal/tui/tuictx"
+	"github.com/YunusAndreasson/safina/internal/config"
+	"github.com/YunusAndreasson/safina/internal/tui/components"
+	"github.com/YunusAndreasson/safina/internal/tui/theme"
+	"github.com/YunusAndreasson/safina/internal/tui/tuictx"
 )
 
 // ClusterSwitcher is the Ctrl+K overlay listing kube contexts. Per the

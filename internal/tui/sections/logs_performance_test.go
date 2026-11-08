@@ -7,8 +7,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/yunus/safina/internal/tui/theme"
-	"github.com/yunus/safina/internal/tui/tuictx"
+	"github.com/YunusAndreasson/safina/internal/tui/theme"
+	"github.com/YunusAndreasson/safina/internal/tui/tuictx"
 )
 
 // BenchmarkLogsStreaming includes the cost of successive stream arrivals,

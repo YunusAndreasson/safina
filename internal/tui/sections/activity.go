@@ -10,10 +10,10 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/yunus/safina/internal/debug"
-	"github.com/yunus/safina/internal/k8s"
-	"github.com/yunus/safina/internal/tui/components"
-	"github.com/yunus/safina/internal/tui/tuictx"
+	"github.com/YunusAndreasson/safina/internal/debug"
+	"github.com/YunusAndreasson/safina/internal/k8s"
+	"github.com/YunusAndreasson/safina/internal/tui/components"
+	"github.com/YunusAndreasson/safina/internal/tui/tuictx"
 )
 
 // Activity is the live "what just happened?" tile at the middle of the

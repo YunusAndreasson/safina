@@ -8,8 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/yunus/safina/internal/k8s"
-	"github.com/yunus/safina/internal/tui/theme"
+	"github.com/YunusAndreasson/safina/internal/k8s"
+	"github.com/YunusAndreasson/safina/internal/tui/theme"
 )
 
 func TestTruncMid(t *testing.T) {

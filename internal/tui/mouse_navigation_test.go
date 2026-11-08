@@ -4,9 +4,9 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/YunusAndreasson/safina/internal/config"
+	"github.com/YunusAndreasson/safina/internal/tui/sections"
 	"github.com/stretchr/testify/require"
-	"github.com/yunus/safina/internal/config"
-	"github.com/yunus/safina/internal/tui/sections"
 )
 
 func clickWorkspaceTab(t *testing.T, m *Model, tab sections.WorkspaceTab) {

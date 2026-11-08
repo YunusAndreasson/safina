@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	inv "github.com/yunus/safina/internal/investigation"
+	inv "github.com/YunusAndreasson/safina/internal/investigation"
 )
 
 const Version = 1

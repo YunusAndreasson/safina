@@ -9,11 +9,11 @@ import (
 
 	"charm.land/bubbles/v2/list"
 	tea "charm.land/bubbletea/v2"
+	"github.com/YunusAndreasson/safina/internal/history"
+	"github.com/YunusAndreasson/safina/internal/k8s"
+	"github.com/YunusAndreasson/safina/internal/tui/components"
+	"github.com/YunusAndreasson/safina/internal/tui/sections"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/yunus/safina/internal/history"
-	"github.com/yunus/safina/internal/k8s"
-	"github.com/yunus/safina/internal/tui/components"
-	"github.com/yunus/safina/internal/tui/sections"
 )
 
 type historyLoadedMsg struct {

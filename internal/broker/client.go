@@ -15,9 +15,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/yunus/safina/internal/broker/api"
-	inv "github.com/yunus/safina/internal/investigation"
-	"github.com/yunus/safina/internal/localstate"
+	"github.com/YunusAndreasson/safina/internal/broker/api"
+	inv "github.com/YunusAndreasson/safina/internal/investigation"
+	"github.com/YunusAndreasson/safina/internal/localstate"
 	"golang.org/x/sys/unix"
 )
 

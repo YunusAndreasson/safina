@@ -5,11 +5,11 @@ import (
 	"image/color"
 	"strings"
 
+	"github.com/YunusAndreasson/safina/internal/tui/theme"
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/formatters"
 	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/yunus/safina/internal/tui/theme"
 )
 
 // HighlightYAML delegates parsing and terminal formatting to Chroma. The only

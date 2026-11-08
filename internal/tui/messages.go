@@ -3,7 +3,7 @@ package tui
 import (
 	"time"
 
-	"github.com/yunus/safina/internal/k8s"
+	"github.com/YunusAndreasson/safina/internal/k8s"
 )
 
 // clusterHealthMsg carries the periodic cluster-health snapshot for the

@@ -3,8 +3,8 @@ package tui
 import (
 	"testing"
 
+	"github.com/YunusAndreasson/safina/internal/k8s"
 	"github.com/stretchr/testify/require"
-	"github.com/yunus/safina/internal/k8s"
 )
 
 func TestTreeFilterGetsLiteralYWhileReadingAnotherView(t *testing.T) {

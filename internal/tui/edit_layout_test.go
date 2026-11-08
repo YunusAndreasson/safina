@@ -8,8 +8,8 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/stretchr/testify/require"
 
-	"github.com/yunus/safina/internal/config"
-	"github.com/yunus/safina/internal/k8s"
+	"github.com/YunusAndreasson/safina/internal/config"
+	"github.com/YunusAndreasson/safina/internal/k8s"
 )
 
 func TestEditDiffFitsAndScrolls(t *testing.T) {

@@ -6,14 +6,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YunusAndreasson/safina/internal/tui/theme"
+	"github.com/YunusAndreasson/safina/internal/tui/tuictx"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/yunus/safina/internal/tui/theme"
-	"github.com/yunus/safina/internal/tui/tuictx"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/yunus/safina/internal/k8s"
+	"github.com/YunusAndreasson/safina/internal/k8s"
 )
 
 func TestActivity_StartsEmpty(t *testing.T) {

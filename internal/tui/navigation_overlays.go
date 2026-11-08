@@ -2,7 +2,7 @@ package tui
 
 import (
 	tea "charm.land/bubbletea/v2"
-	"github.com/yunus/safina/internal/tui/sections"
+	"github.com/YunusAndreasson/safina/internal/tui/sections"
 )
 
 // Navigation overlays borrow input without replacing the active workspace or

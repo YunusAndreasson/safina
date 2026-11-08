@@ -23,7 +23,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yunus/safina/internal/errlog"
+	"github.com/YunusAndreasson/safina/internal/errlog"
 )
 
 var (

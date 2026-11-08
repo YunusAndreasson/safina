@@ -1,8 +1,8 @@
 package sections
 
 import (
-	"github.com/yunus/safina/internal/history"
-	"github.com/yunus/safina/internal/k8s"
+	"github.com/YunusAndreasson/safina/internal/history"
+	"github.com/YunusAndreasson/safina/internal/k8s"
 )
 
 // Message types emitted across the sections package. The Cmd builders that

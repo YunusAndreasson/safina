@@ -25,8 +25,8 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/yunus/safina/internal/debug"
-	"github.com/yunus/safina/internal/k8s/bench"
+	"github.com/YunusAndreasson/safina/internal/debug"
+	"github.com/YunusAndreasson/safina/internal/k8s/bench"
 )
 
 func main() {

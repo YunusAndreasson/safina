@@ -1,6 +1,6 @@
 package sections
 
-import "github.com/yunus/safina/internal/k8s"
+import "github.com/YunusAndreasson/safina/internal/k8s"
 
 // Namespace levels consistently show resource types; filters narrow that list.
 func (t *Tree) appFolderRows() bool {

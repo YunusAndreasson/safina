@@ -6,10 +6,10 @@ import (
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/lipgloss/v2"
 
-	"github.com/yunus/safina/internal/config"
-	"github.com/yunus/safina/internal/k8s"
-	"github.com/yunus/safina/internal/tui/keys"
-	"github.com/yunus/safina/internal/tui/theme"
+	"github.com/YunusAndreasson/safina/internal/config"
+	"github.com/YunusAndreasson/safina/internal/k8s"
+	"github.com/YunusAndreasson/safina/internal/tui/keys"
+	"github.com/YunusAndreasson/safina/internal/tui/theme"
 )
 
 // Ctx is the program context threaded through every section.

@@ -5,11 +5,11 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/YunusAndreasson/safina/internal/broker"
+	"github.com/YunusAndreasson/safina/internal/config"
+	"github.com/YunusAndreasson/safina/internal/mcpserver"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"
-	"github.com/yunus/safina/internal/broker"
-	"github.com/yunus/safina/internal/config"
-	"github.com/yunus/safina/internal/mcpserver"
 )
 
 func mcpCommand() *cobra.Command {

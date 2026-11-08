@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YunusAndreasson/safina/internal/history"
+	inv "github.com/YunusAndreasson/safina/internal/investigation"
 	"github.com/stretchr/testify/require"
-	"github.com/yunus/safina/internal/history"
-	inv "github.com/yunus/safina/internal/investigation"
 )
 
 func fixture(t *testing.T) (*Store, string, inv.Investigation, inv.Alternative) {

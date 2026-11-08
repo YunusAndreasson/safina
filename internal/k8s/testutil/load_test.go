@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 
-	"github.com/yunus/safina/internal/k8s/testutil"
+	"github.com/YunusAndreasson/safina/internal/k8s/testutil"
 )
 
 func TestLoadPod_RoundTripsAllFields(t *testing.T) {

@@ -6,13 +6,13 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+	"github.com/YunusAndreasson/safina/internal/history"
+	"github.com/YunusAndreasson/safina/internal/k8s"
+	"github.com/YunusAndreasson/safina/internal/metrics"
+	"github.com/YunusAndreasson/safina/internal/tui/theme"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/yunus/safina/internal/history"
-	"github.com/yunus/safina/internal/k8s"
-	"github.com/yunus/safina/internal/metrics"
-	"github.com/yunus/safina/internal/tui/theme"
 )
 
 func metricsFixture() (Metrics, time.Time) {

@@ -11,7 +11,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
-	"github.com/yunus/safina/internal/debug"
+	"github.com/YunusAndreasson/safina/internal/debug"
 )
 
 // Config controls one harness run. Construct it in the CLI and hand it to

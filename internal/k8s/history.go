@@ -12,7 +12,7 @@ import (
 
 	"sigs.k8s.io/yaml"
 
-	"github.com/yunus/safina/internal/history"
+	"github.com/YunusAndreasson/safina/internal/history"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 

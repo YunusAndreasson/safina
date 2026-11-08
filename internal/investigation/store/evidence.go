@@ -5,7 +5,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	inv "github.com/yunus/safina/internal/investigation"
+	inv "github.com/YunusAndreasson/safina/internal/investigation"
 )
 
 // Capture persists only bounded, already selected data, and redacts again before

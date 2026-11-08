@@ -3,7 +3,7 @@ package sections
 import (
 	"sort"
 
-	"github.com/yunus/safina/internal/tui/components"
+	"github.com/YunusAndreasson/safina/internal/tui/components"
 )
 
 // filterTreeRows sorts lightweight indices, then copies only matching rows.

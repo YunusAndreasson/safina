@@ -10,11 +10,11 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/yunus/safina/internal/k8s"
-	"github.com/yunus/safina/internal/tui/components"
-	"github.com/yunus/safina/internal/tui/keys"
-	"github.com/yunus/safina/internal/tui/sections"
-	"github.com/yunus/safina/internal/tui/theme"
+	"github.com/YunusAndreasson/safina/internal/k8s"
+	"github.com/YunusAndreasson/safina/internal/tui/components"
+	"github.com/YunusAndreasson/safina/internal/tui/keys"
+	"github.com/YunusAndreasson/safina/internal/tui/sections"
+	"github.com/YunusAndreasson/safina/internal/tui/theme"
 )
 
 // View returns the rendered frame plus the declarative terminal-state fields

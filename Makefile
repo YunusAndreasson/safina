@@ -14,7 +14,7 @@ GO_BIN_DIR = $(shell go env GOPATH | cut -d ':' -f 1)/bin
 endif
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-LDFLAGS = -X github.com/yunus/safina/internal/version.Version=$(VERSION)
+LDFLAGS = -X github.com/YunusAndreasson/safina/internal/version.Version=$(VERSION)
 
 BENCH_BINARY = $(BUILD_DIR)/safina-bench
 BENCH_CONTEXT ?= safina-bench

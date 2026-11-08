@@ -13,13 +13,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yunus/safina/internal/broker/api"
+	"github.com/YunusAndreasson/safina/internal/broker/api"
 
+	"github.com/YunusAndreasson/safina/internal/broker/operator"
+	"github.com/YunusAndreasson/safina/internal/history"
+	inv "github.com/YunusAndreasson/safina/internal/investigation"
+	"github.com/YunusAndreasson/safina/internal/investigation/store"
 	"github.com/stretchr/testify/require"
-	"github.com/yunus/safina/internal/broker/operator"
-	"github.com/yunus/safina/internal/history"
-	inv "github.com/yunus/safina/internal/investigation"
-	"github.com/yunus/safina/internal/investigation/store"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"

@@ -5,8 +5,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/yunus/safina/internal/debug"
-	"github.com/yunus/safina/internal/k8s"
+	"github.com/YunusAndreasson/safina/internal/debug"
+	"github.com/YunusAndreasson/safina/internal/k8s"
 )
 
 // ConnectedMsg is the result envelope for a Connected-tile fetch. Kind /

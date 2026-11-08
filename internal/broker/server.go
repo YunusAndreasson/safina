@@ -15,11 +15,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yunus/safina/internal/broker/api"
-	"github.com/yunus/safina/internal/history"
-	inv "github.com/yunus/safina/internal/investigation"
-	"github.com/yunus/safina/internal/investigation/store"
-	"github.com/yunus/safina/internal/localstate"
+	"github.com/YunusAndreasson/safina/internal/broker/api"
+	"github.com/YunusAndreasson/safina/internal/history"
+	inv "github.com/YunusAndreasson/safina/internal/investigation"
+	"github.com/YunusAndreasson/safina/internal/investigation/store"
+	"github.com/YunusAndreasson/safina/internal/localstate"
 )
 
 const (

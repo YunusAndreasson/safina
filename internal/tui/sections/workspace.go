@@ -5,9 +5,9 @@ import (
 
 	"charm.land/lipgloss/v2"
 
-	"github.com/yunus/safina/internal/tui/components"
-	"github.com/yunus/safina/internal/tui/theme"
-	"github.com/yunus/safina/internal/tui/tuictx"
+	"github.com/YunusAndreasson/safina/internal/tui/components"
+	"github.com/YunusAndreasson/safina/internal/tui/theme"
+	"github.com/YunusAndreasson/safina/internal/tui/tuictx"
 )
 
 // WorkspaceTab enumerates the right-pane tabs. Inspector is the default

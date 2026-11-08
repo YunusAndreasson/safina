@@ -5,11 +5,11 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/YunusAndreasson/safina/internal/config"
+	"github.com/YunusAndreasson/safina/internal/k8s"
+	"github.com/YunusAndreasson/safina/internal/tui/sections"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
-	"github.com/yunus/safina/internal/config"
-	"github.com/yunus/safina/internal/k8s"
-	"github.com/yunus/safina/internal/tui/sections"
 )
 
 func TestShellFailureRemainsVisibleUntilDismissed(t *testing.T) {

@@ -5,8 +5,8 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/YunusAndreasson/safina/internal/claude"
 	"github.com/stretchr/testify/require"
-	"github.com/yunus/safina/internal/claude"
 )
 
 func TestChatScrollbackBoundsLongConversationsAndKeepsCurrentExchange(t *testing.T) {

@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YunusAndreasson/safina/internal/k8s"
 	"github.com/stretchr/testify/require"
-	"github.com/yunus/safina/internal/k8s"
 )
 
 // Explicitly enabled: a long-session heap check without network calls or writes

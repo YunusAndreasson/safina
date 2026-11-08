@@ -3,7 +3,7 @@ package components
 import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
-	"github.com/yunus/safina/internal/tui/theme"
+	"github.com/YunusAndreasson/safina/internal/tui/theme"
 )
 
 // SearchInput shares Bubbles' editing, Unicode handling, and horizontal

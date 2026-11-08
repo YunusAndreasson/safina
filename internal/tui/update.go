@@ -12,17 +12,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yunus/safina/internal/tui/components"
+	"github.com/YunusAndreasson/safina/internal/tui/components"
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/yunus/safina/internal/config"
-	"github.com/yunus/safina/internal/debug"
-	"github.com/yunus/safina/internal/history"
-	"github.com/yunus/safina/internal/k8s"
-	"github.com/yunus/safina/internal/tui/sections"
+	"github.com/YunusAndreasson/safina/internal/config"
+	"github.com/YunusAndreasson/safina/internal/debug"
+	"github.com/YunusAndreasson/safina/internal/history"
+	"github.com/YunusAndreasson/safina/internal/k8s"
+	"github.com/YunusAndreasson/safina/internal/tui/sections"
 )
 
 // isCtxDone reports whether err is the kind of cancellation we expect during

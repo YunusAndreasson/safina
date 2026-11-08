@@ -5,9 +5,9 @@ import (
 	"net/url"
 	"os"
 
-	"github.com/yunus/safina/internal/config"
-	"github.com/yunus/safina/internal/history"
-	inv "github.com/yunus/safina/internal/investigation"
+	"github.com/YunusAndreasson/safina/internal/config"
+	"github.com/YunusAndreasson/safina/internal/history"
+	inv "github.com/YunusAndreasson/safina/internal/investigation"
 )
 
 // Read configuration only: no auth plugins, API calls, or mutation clients.

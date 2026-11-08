@@ -1,6 +1,6 @@
 package sections
 
-import "github.com/yunus/safina/internal/k8s"
+import "github.com/YunusAndreasson/safina/internal/k8s"
 
 // ChatSuggestionsForRef returns 0 to 3 starter prompts keyed off the current
 // selection's (kind, health). Hick's Law: hard-cap the list. We only suggest

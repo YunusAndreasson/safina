@@ -7,8 +7,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/yunus/safina/internal/debug"
-	"github.com/yunus/safina/internal/k8s"
+	"github.com/YunusAndreasson/safina/internal/debug"
+	"github.com/YunusAndreasson/safina/internal/k8s"
 )
 
 // Cmd builders that fetch from / mutate the cluster and emit the message

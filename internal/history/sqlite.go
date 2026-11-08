@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yunus/safina/internal/localstate"
+	"github.com/YunusAndreasson/safina/internal/localstate"
 	"golang.org/x/sys/unix"
 	_ "modernc.org/sqlite"
 )

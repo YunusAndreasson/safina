@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
+	inv "github.com/YunusAndreasson/safina/internal/investigation"
 	"github.com/stretchr/testify/require"
-	inv "github.com/yunus/safina/internal/investigation"
 )
 
 func TestRetryRejectsUnencodableRequestWithoutReceipt(t *testing.T) {

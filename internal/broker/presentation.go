@@ -1,6 +1,6 @@
 package broker
 
-import inv "github.com/yunus/safina/internal/investigation"
+import inv "github.com/YunusAndreasson/safina/internal/investigation"
 
 // Reapply the current policy to old journal data. Redaction can expand a
 // truncated token, so enforce the byte bound after filtering on every return.

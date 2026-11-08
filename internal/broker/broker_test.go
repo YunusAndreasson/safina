@@ -18,11 +18,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YunusAndreasson/safina/internal/broker/api"
+	"github.com/YunusAndreasson/safina/internal/history"
+	inv "github.com/YunusAndreasson/safina/internal/investigation"
+	"github.com/YunusAndreasson/safina/internal/localstate"
 	"github.com/stretchr/testify/require"
-	"github.com/yunus/safina/internal/broker/api"
-	"github.com/yunus/safina/internal/history"
-	inv "github.com/yunus/safina/internal/investigation"
-	"github.com/yunus/safina/internal/localstate"
 )
 
 // The actual on-demand launcher executes the current binary with `serve`.

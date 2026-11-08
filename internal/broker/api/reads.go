@@ -5,8 +5,8 @@ import (
 
 	"k8s.io/apimachinery/pkg/types"
 
-	"github.com/yunus/safina/internal/history"
-	inv "github.com/yunus/safina/internal/investigation"
+	"github.com/YunusAndreasson/safina/internal/history"
+	inv "github.com/YunusAndreasson/safina/internal/investigation"
 )
 
 type (

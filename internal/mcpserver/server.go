@@ -4,8 +4,8 @@ package mcpserver
 import (
 	"context"
 
+	"github.com/YunusAndreasson/safina/internal/broker/api"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/yunus/safina/internal/broker/api"
 )
 
 func New(client api.InvestigationClient) *mcp.Server {

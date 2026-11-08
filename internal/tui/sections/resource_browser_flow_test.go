@@ -6,10 +6,10 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/YunusAndreasson/safina/internal/config"
+	"github.com/YunusAndreasson/safina/internal/k8s"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
-	"github.com/yunus/safina/internal/config"
-	"github.com/yunus/safina/internal/k8s"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"

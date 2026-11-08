@@ -2,7 +2,7 @@ package tui
 
 import (
 	tea "charm.land/bubbletea/v2"
-	"github.com/yunus/safina/internal/tui/sections"
+	"github.com/YunusAndreasson/safina/internal/tui/sections"
 )
 
 // A pointer click activates a view, rather than typing its keyboard shortcut

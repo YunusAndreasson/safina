@@ -6,11 +6,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yunus/safina/internal/metrics"
+	"github.com/YunusAndreasson/safina/internal/metrics"
 
 	"charm.land/lipgloss/v2"
 
-	"github.com/yunus/safina/internal/tui/theme"
+	"github.com/YunusAndreasson/safina/internal/tui/theme"
 )
 
 // MetricBuffer is a cached compact view of a shared observation series.

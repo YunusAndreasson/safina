@@ -5,9 +5,9 @@ import (
 	"testing"
 
 	"charm.land/lipgloss/v2"
+	"github.com/YunusAndreasson/safina/internal/tui/theme"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
-	"github.com/yunus/safina/internal/tui/theme"
 )
 
 func TestTopbarKeepsClusterVisibleBeforeHealthAndClock(t *testing.T) {

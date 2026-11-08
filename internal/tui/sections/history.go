@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/yunus/safina/internal/history"
-	"github.com/yunus/safina/internal/k8s"
+	"github.com/YunusAndreasson/safina/internal/history"
+	"github.com/YunusAndreasson/safina/internal/k8s"
 )
 
 func recordCommand(ctx context.Context, mgr *k8s.Manager, target history.Target, action string, params map[string]string, factory func(context.Context) tea.Cmd) tea.Cmd {

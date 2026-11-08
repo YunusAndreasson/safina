@@ -10,9 +10,9 @@ import (
 
 	"k8s.io/apimachinery/pkg/types"
 
+	"github.com/YunusAndreasson/safina/internal/metrics"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/yunus/safina/internal/metrics"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"

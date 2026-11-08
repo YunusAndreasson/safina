@@ -4,8 +4,8 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	"github.com/YunusAndreasson/safina/internal/tui/theme"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/yunus/safina/internal/tui/theme"
 )
 
 // EmptyArt is an original nautical textmode vignette, drawn with the sail's

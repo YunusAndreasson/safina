@@ -21,8 +21,8 @@ import (
 	"k8s.io/client-go/tools/portforward"
 	"k8s.io/client-go/transport/spdy"
 
-	"github.com/yunus/safina/internal/debug"
-	"github.com/yunus/safina/internal/history"
+	"github.com/YunusAndreasson/safina/internal/debug"
+	"github.com/YunusAndreasson/safina/internal/history"
 )
 
 // PortForwardTargetKind names the two things you can forward to.

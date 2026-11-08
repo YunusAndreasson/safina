@@ -9,9 +9,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/yunus/safina/internal/broker/api"
-	"github.com/yunus/safina/internal/broker/operator"
-	inv "github.com/yunus/safina/internal/investigation"
+	"github.com/YunusAndreasson/safina/internal/broker/api"
+	"github.com/YunusAndreasson/safina/internal/broker/operator"
+	inv "github.com/YunusAndreasson/safina/internal/investigation"
 	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"

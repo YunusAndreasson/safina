@@ -2,7 +2,7 @@
 // client and MCP adapter must never expose these methods as tools.
 package operator
 
-import inv "github.com/yunus/safina/internal/investigation"
+import inv "github.com/YunusAndreasson/safina/internal/investigation"
 
 type Request struct {
 	Action        *inv.Action `json:"action,omitempty"`

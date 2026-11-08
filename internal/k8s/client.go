@@ -19,9 +19,9 @@ import (
 
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
-	"github.com/yunus/safina/internal/debug"
-	"github.com/yunus/safina/internal/history"
-	"github.com/yunus/safina/internal/version"
+	"github.com/YunusAndreasson/safina/internal/debug"
+	"github.com/YunusAndreasson/safina/internal/history"
+	"github.com/YunusAndreasson/safina/internal/version"
 )
 
 type Client struct {

@@ -8,12 +8,12 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/YunusAndreasson/safina/internal/config"
+	"github.com/YunusAndreasson/safina/internal/history"
+	"github.com/YunusAndreasson/safina/internal/k8s"
+	"github.com/YunusAndreasson/safina/internal/metrics"
+	"github.com/YunusAndreasson/safina/internal/tui/sections"
 	"github.com/stretchr/testify/require"
-	"github.com/yunus/safina/internal/config"
-	"github.com/yunus/safina/internal/history"
-	"github.com/yunus/safina/internal/k8s"
-	"github.com/yunus/safina/internal/metrics"
-	"github.com/yunus/safina/internal/tui/sections"
 )
 
 func TestMetricsWorkspaceNavigation(t *testing.T) {

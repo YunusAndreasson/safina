@@ -7,8 +7,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/yunus/safina/internal/debug"
-	"github.com/yunus/safina/internal/k8s"
+	"github.com/YunusAndreasson/safina/internal/debug"
+	"github.com/YunusAndreasson/safina/internal/k8s"
 )
 
 // LoadTreeChildren fetches the children for a tree focus path. Dispatches

@@ -10,7 +10,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/yunus/safina/internal/k8s/testutil"
+	"github.com/YunusAndreasson/safina/internal/k8s/testutil"
 )
 
 // All these tests pin filter behavior for the drain path. Subtle bugs here

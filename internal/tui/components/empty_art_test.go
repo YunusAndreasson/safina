@@ -8,9 +8,9 @@ import (
 
 	"charm.land/bubbles/v2/viewport"
 	"charm.land/lipgloss/v2"
+	"github.com/YunusAndreasson/safina/internal/tui/theme"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
-	"github.com/yunus/safina/internal/tui/theme"
 )
 
 func TestIllustratedEmptyFitsAndKeepsMessagesBeforeArt(t *testing.T) {

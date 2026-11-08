@@ -7,7 +7,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	"github.com/yunus/safina/internal/history"
+	"github.com/YunusAndreasson/safina/internal/history"
 	"sigs.k8s.io/yaml"
 )
 

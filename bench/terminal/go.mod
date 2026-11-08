@@ -1,4 +1,4 @@
-module github.com/yunus/safina/bench/terminal
+module github.com/YunusAndreasson/safina/bench/terminal
 
 go 1.27.3
 

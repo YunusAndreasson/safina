@@ -3,9 +3,9 @@ package broker
 import (
 	"context"
 
-	"github.com/yunus/safina/internal/broker/api"
-	"github.com/yunus/safina/internal/broker/operator"
-	inv "github.com/yunus/safina/internal/investigation"
+	"github.com/YunusAndreasson/safina/internal/broker/api"
+	"github.com/YunusAndreasson/safina/internal/broker/operator"
+	inv "github.com/YunusAndreasson/safina/internal/investigation"
 )
 
 // OperatorClient is deliberately separate from Client/InvestigationClient.

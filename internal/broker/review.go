@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yunus/safina/internal/broker/operator"
-	"github.com/yunus/safina/internal/config"
-	inv "github.com/yunus/safina/internal/investigation"
+	"github.com/YunusAndreasson/safina/internal/broker/operator"
+	"github.com/YunusAndreasson/safina/internal/config"
+	inv "github.com/YunusAndreasson/safina/internal/investigation"
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"

@@ -10,11 +10,11 @@ import (
 
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
+	"github.com/YunusAndreasson/safina/internal/broker"
+	"github.com/YunusAndreasson/safina/internal/broker/operator"
+	inv "github.com/YunusAndreasson/safina/internal/investigation"
+	"github.com/YunusAndreasson/safina/internal/tui/components"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/yunus/safina/internal/broker"
-	"github.com/yunus/safina/internal/broker/operator"
-	inv "github.com/yunus/safina/internal/investigation"
-	"github.com/yunus/safina/internal/tui/components"
 )
 
 type operatorAPI interface {

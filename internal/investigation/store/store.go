@@ -20,9 +20,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yunus/safina/internal/history"
-	inv "github.com/yunus/safina/internal/investigation"
-	"github.com/yunus/safina/internal/localstate"
+	"github.com/YunusAndreasson/safina/internal/history"
+	inv "github.com/YunusAndreasson/safina/internal/investigation"
+	"github.com/YunusAndreasson/safina/internal/localstate"
 	"golang.org/x/sys/unix"
 )
 

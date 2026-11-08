@@ -5,8 +5,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/YunusAndreasson/safina/internal/tui/components"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/yunus/safina/internal/tui/components"
 )
 
 // Shift only reveals hints. It never arms commands or changes their bindings.

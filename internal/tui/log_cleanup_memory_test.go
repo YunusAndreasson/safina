@@ -7,14 +7,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yunus/safina/internal/config"
-	"github.com/yunus/safina/internal/history"
+	"github.com/YunusAndreasson/safina/internal/config"
+	"github.com/YunusAndreasson/safina/internal/history"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
+	"github.com/YunusAndreasson/safina/internal/k8s"
+	"github.com/YunusAndreasson/safina/internal/tui/sections"
 	"github.com/stretchr/testify/require"
-	"github.com/yunus/safina/internal/k8s"
-	"github.com/yunus/safina/internal/tui/sections"
 	"go.uber.org/goleak"
 )
 

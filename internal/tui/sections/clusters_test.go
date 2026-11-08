@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/yunus/safina/internal/config"
+	"github.com/YunusAndreasson/safina/internal/config"
 )
 
 func clusterItems(names ...string) []config.ContextInfo {

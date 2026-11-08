@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"time"
 
-	inv "github.com/yunus/safina/internal/investigation"
+	inv "github.com/YunusAndreasson/safina/internal/investigation"
 )
 
 func pending(current *inv.Investigation, id string, revision int) (*inv.Proposal, error) {

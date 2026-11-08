@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/YunusAndreasson/safina/internal/history"
 	"github.com/stretchr/testify/require"
-	"github.com/yunus/safina/internal/history"
 )
 
 func TestHistoryCLIWorksWithoutKubeconfig(t *testing.T) {

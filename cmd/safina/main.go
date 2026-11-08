@@ -10,14 +10,14 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
 
-	"github.com/yunus/safina/internal/broker"
-	"github.com/yunus/safina/internal/config"
-	"github.com/yunus/safina/internal/debug"
-	"github.com/yunus/safina/internal/errlog"
-	"github.com/yunus/safina/internal/history"
-	"github.com/yunus/safina/internal/k8s"
-	"github.com/yunus/safina/internal/tui"
-	"github.com/yunus/safina/internal/version"
+	"github.com/YunusAndreasson/safina/internal/broker"
+	"github.com/YunusAndreasson/safina/internal/config"
+	"github.com/YunusAndreasson/safina/internal/debug"
+	"github.com/YunusAndreasson/safina/internal/errlog"
+	"github.com/YunusAndreasson/safina/internal/history"
+	"github.com/YunusAndreasson/safina/internal/k8s"
+	"github.com/YunusAndreasson/safina/internal/tui"
+	"github.com/YunusAndreasson/safina/internal/version"
 )
 
 var (

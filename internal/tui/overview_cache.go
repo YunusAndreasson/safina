@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yunus/safina/internal/k8s"
-	"github.com/yunus/safina/internal/localstate"
-	"github.com/yunus/safina/internal/tui/sections"
+	"github.com/YunusAndreasson/safina/internal/k8s"
+	"github.com/YunusAndreasson/safina/internal/localstate"
+	"github.com/YunusAndreasson/safina/internal/tui/sections"
 )
 
 const (

@@ -7,9 +7,9 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/YunusAndreasson/safina/internal/tui/theme"
+	"github.com/YunusAndreasson/safina/internal/tui/tuictx"
 	"github.com/stretchr/testify/require"
-	"github.com/yunus/safina/internal/tui/theme"
-	"github.com/yunus/safina/internal/tui/tuictx"
 )
 
 func retentionLogs() Logs {
