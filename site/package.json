@@ -11,7 +11,7 @@
     "demo:up": "scripts/demo-cluster.sh",
     "demo:stop": "scripts/demo-cluster.sh stop",
     "capture": "scripts/capture.sh",
-    "lint": "eslint . --max-warnings 0",
+    "lint": "astro sync && eslint . --max-warnings 0",
     "verify": "pnpm lint && pnpm build",
     "ship": "node scripts/ship.mjs",
     "ship:dry": "node scripts/ship.mjs --dry-run"
