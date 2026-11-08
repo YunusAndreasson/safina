@@ -9,7 +9,3 @@
 # them (about 500 KB to 38 KB); as the default octet-stream it wouldn't.
 /_astro/*.cast
   Content-Type: text/plain; charset=utf-8
-
-# The workers.dev preview stays out of search until the site has its domain.
-https://:worker.:account.workers.dev/*
-  X-Robots-Tag: noindex

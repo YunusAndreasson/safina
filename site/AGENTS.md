@@ -1,4 +1,4 @@
-# Directing safina.dev
+# Directing safina.run
 
 For agents changing the site. The root `AGENTS.md` (the tagline) and this
 folder's `README.md` (commands, voice, layout, palette) still bind; this file
@@ -184,6 +184,10 @@ layout signatures or assets.
    reordering a section, or after re-shooting screens.
 7. **Keep the docs true**: the README when a rule changes, this file when the
    direction, the numbers or the continuity change.
+8. **Pushing is publishing**: a push to `main` that touches `site/` goes live
+   on safina.run (README §Deploy), so push only when the user asks. Never
+   run `wrangler deploy` or `wrangler rollback` yourself: `pnpm ship` is the
+   one way, and it guards the Worker name and the domain.
 
 IMPORTANT: never fabricate anything a visitor could take as fact (screens,
 numbers, quotes, logos, stars), and never report a check you didn't run.

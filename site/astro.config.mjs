@@ -3,7 +3,7 @@ import { defineConfig, fontProviders } from "astro/config";
 
 // Static, zero-framework site. Dark only. Targets current evergreen browsers.
 export default defineConfig({
-  site: "https://safina.dev", // placeholder until a domain is chosen
+  site: "https://safina.run",
   output: "static",
   devToolbar: { enabled: false },
   trailingSlash: "never",

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// `pnpm ship`: puts dist/ live on the Cloudflare Worker named in
-// wrangler.jsonc, checks that the edge serves exactly this build, and rolls
-// back to the previous version if it doesn't. CI runs it on every push to
+// `pnpm ship`: puts dist/ live on safina.run, the Cloudflare Worker named in
+// wrangler.jsonc, checks that the domain serves exactly this build, and
+// rolls back to the previous version if it doesn't. CI runs it on every push to
 // main (.github/workflows/deploy-site.yml), after `pnpm verify` has built
 // dist/. Locally it uses wrangler's login; in CI, CLOUDFLARE_API_TOKEN and
 // CLOUDFLARE_ACCOUNT_ID.
@@ -21,9 +21,13 @@ import ts from "typescript";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DIST = path.join(ROOT, "dist");
 const WRANGLER = path.join(ROOT, "node_modules/.bin/wrangler");
-// A constant, never an argument: the one Worker this site may replace.
+// Constants, never arguments: the one Worker this site may replace, and the
+// one domain it serves.
 const WORKER = "safina-site";
-const PREVIEW = new RegExp(`^https://${WORKER}\\.[a-z0-9-]+\\.workers\\.dev$`);
+const DOMAIN = "safina.run";
+const LIVE = `https://${DOMAIN}`;
+// How wrangler lists the custom domain among a deploy's targets.
+const LIVE_TARGET = /^(https:\/\/)?safina\.run(\/?\*?| \(custom domain\))$/;
 
 const args = process.argv.slice(2);
 const dryRun = args.includes("--dry-run");
@@ -47,13 +51,17 @@ function guard() {
   if (error || !config) fail("wrangler.jsonc doesn't parse.");
   if (config.name !== WORKER) fail(`wrangler.jsonc names "${config.name}". Only ${WORKER} may ship from here.`);
   if (config.main) fail("wrangler.jsonc sets `main`. The site is static files only; a Worker script needs a decision first.");
-  if (config.route || config.routes) fail("wrangler.jsonc has a route, but no domain is chosen yet. Update this guard, the checks and README §Deploy together at launch.");
-  if (config.workers_dev !== true) fail("wrangler.jsonc turns workers.dev off, the only place the site is served.");
+  // A deploy without the route would detach the live domain; any other route would claim one.
+  const routes = config.routes ?? [];
+  const only = routes.length === 1 && routes[0]?.pattern === DOMAIN && routes[0]?.custom_domain === true && Object.keys(routes[0]).length === 2;
+  if (config.route || !only) fail(`wrangler.jsonc must route exactly ${DOMAIN}, as a custom domain, and nothing else.`);
+  // The live domain is the only copy, so nothing else can be indexed or drift.
+  if (config.workers_dev !== false || config.preview_urls !== false) fail("wrangler.jsonc must keep workers.dev and preview URLs off.");
   if (config.assets?.directory !== "./dist") fail(`wrangler.jsonc serves "${config.assets?.directory}", not ./dist.`);
   for (const name of ["index.html", "404.html", "_headers"]) {
     if (!fs.existsSync(path.join(DIST, name))) fail(`dist/${name} is missing. Run \`pnpm verify\` first, which builds dist/.`);
   }
-  log("guard", `wrangler.jsonc names ${WORKER}, static files only, workers.dev and no route; dist/ is built`);
+  log("guard", `wrangler.jsonc names ${WORKER}, static files only, on ${DOMAIN} alone; dist/ is built`);
 }
 
 /** One file of each kind the checks below need, from this build. */
@@ -68,7 +76,7 @@ function samples() {
 const read = (route) => fs.readFileSync(path.join(DIST, route));
 
 /** The served site against dist/. Returns problems (a failed deploy) and notes (worth knowing, not worth a rollback). */
-async function check(origin, { remote, noindex }) {
+async function check(origin, { remote }) {
   const problems = [];
   const notes = [];
   const { js, cast } = samples();
@@ -84,7 +92,7 @@ async function check(origin, { remote, noindex }) {
   const home = await get("/");
   expect(home.res.status === 200, `/ answers ${home.res.status}`);
   expect(sha(home.body) === sha(read("index.html")), "/ is not this build's index.html");
-  expect(robots(home.res) === noindex, noindex ? "/ has no X-Robots-Tag: noindex on workers.dev" : "/ carries noindex off workers.dev");
+  expect(!robots(home.res), "/ carries X-Robots-Tag: noindex, which keeps the live site out of search");
 
   const missing = await get("/no-such-page");
   expect(missing.res.status === 404, `/no-such-page answers ${missing.res.status}, not 404`);
@@ -111,12 +119,12 @@ async function check(origin, { remote, noindex }) {
 }
 
 /** A new version can take a few seconds to reach every location, so the checks retry until `wait` runs out. */
-async function smoke(origin, { remote, wait, noindex }) {
+async function smoke(origin, { remote, wait }) {
   const deadline = Date.now() + wait;
   for (;;) {
     let result;
     try {
-      result = await check(origin, { remote, noindex });
+      result = await check(origin, { remote });
     } catch (error) {
       result = { problems: [`request failed: ${error.message}`], notes: [] };
     }
@@ -145,9 +153,8 @@ async function dry() {
 
   const port = await freePort();
   // The asset server matches _headers' host rules against this, so the local
-  // run is checked as the workers.dev preview is served.
-  const host = `${WORKER}.preview.workers.dev`;
-  const dev = spawn(WRANGLER, ["dev", "--ip", "127.0.0.1", "--port", String(port), "--local-upstream", host, "--show-interactive-dev-session=false", "--log-level", "warn"], { cwd: ROOT, stdio: ["ignore", "inherit", "inherit"] });
+  // run is checked as the live domain is served.
+  const dev = spawn(WRANGLER, ["dev", "--ip", "127.0.0.1", "--port", String(port), "--local-upstream", DOMAIN, "--show-interactive-dev-session=false", "--log-level", "warn"], { cwd: ROOT, stdio: ["ignore", "inherit", "inherit"] });
   const origin = `http://127.0.0.1:${port}`;
   try {
     const deadline = Date.now() + 60_000;
@@ -161,9 +168,9 @@ async function dry() {
         await sleep(500);
       }
     }
-    const { problems } = await smoke(origin, { remote: false, wait: 0, noindex: true });
+    const { problems } = await smoke(origin, { remote: false, wait: 0 });
     if (problems.length > 0) fail(`The local asset server doesn't serve the build right:\n  ${problems.join("\n  ")}`);
-    log("smoke", `${origin} (as ${host}) serves this build: pages, 404, caching, recordings as text, noindex`);
+    log("smoke", `${origin} (as ${DOMAIN}) serves this build: pages, 404, caching, recordings as text, indexable`);
   } finally {
     dev.kill("SIGTERM");
   }
@@ -208,14 +215,17 @@ async function live() {
   if (!deployed) fail("wrangler deploy reported no deployment.");
   if (deployed.worker_name !== WORKER) fail(`wrangler deployed "${deployed.worker_name}", not ${WORKER}.`);
   const targets = deployed.targets ?? [];
-  const url = targets.find((t) => PREVIEW.test(t));
-  log("upload", `version ${deployed.version_id}, ${message}`);
+  log("upload", `version ${deployed.version_id}, ${message}; targets ${targets.join(", ") || "none"}`);
 
-  const result = url ? await smoke(url, { remote: true, wait: 90_000, noindex: PREVIEW.test(url) }) : { problems: [`no workers.dev URL among the targets: ${targets.join(", ") || "none"}`], notes: [] };
+  // A just-attached domain needs its DNS record and certificate, which can
+  // take minutes; after that a version spreads in seconds.
+  const wait = previous ? 180_000 : 900_000;
+  const onlyLive = targets.length > 0 && targets.every((t) => LIVE_TARGET.test(t));
+  const result = onlyLive ? await smoke(LIVE, { remote: true, wait }) : { problems: [`the deploy's targets aren't ${DOMAIN} alone: ${targets.join(", ") || "none"}`], notes: [] };
   if (result.problems.length > 0) {
     const lines = [`The new version fails at the edge:\n  ${result.problems.join("\n  ")}`];
     if (!previous) {
-      lines.push("There's no earlier version to roll back to, so it stays up. It's the noindexed preview; the next good run replaces it.");
+      lines.push(`There's no earlier version to roll back to, so it stays up. Fix the cause and ship again, or take ${DOMAIN} off the Worker in the dashboard.`);
     } else if (wrangler(["rollback", previous, "--name", WORKER, "--yes", "--message", `ship: smoke failed on ${deployed.version_id}`]).status === 0) {
       lines.push(`Rolled ${WORKER} back to ${previous}.`);
     } else {
@@ -224,11 +234,11 @@ async function live() {
     fail(lines.join("\n"));
   }
   for (const note of result.notes) log("note", note);
-  log("smoke", `${url} serves this build: pages, 404, caching, recordings as text, noindex`);
+  log("smoke", `${LIVE} serves this build: pages, 404, caching, recordings as text, indexable`);
 
-  if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, `url=${url}\nversion=${deployed.version_id}\n`);
+  if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, `url=${LIVE}\nversion=${deployed.version_id}\n`);
   if (process.env.GITHUB_STEP_SUMMARY) {
-    fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `### Site deployed\n\n${url}\n\nVersion \`${deployed.version_id}\`, from ${message}.${previous ? ` Replaced \`${previous}\`.` : ""}\n`);
+    fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `### Site deployed\n\n${LIVE}\n\nVersion \`${deployed.version_id}\`, from ${message}.${previous ? ` Replaced \`${previous}\`.` : ""}\n`);
   }
 }
 

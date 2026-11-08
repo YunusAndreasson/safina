@@ -1,4 +1,4 @@
-# safina.dev
+# safina.run
 
 The marketing site. Astro 7, static output, no UI framework, dark only (a dark ocean palette, see below).
 
@@ -32,41 +32,45 @@ slow. `build` pre-encodes everything and caches it in `node_modules/.astro`.
 
 ## Deploy
 
-The site is static files on a Cloudflare Worker, `safina-site`
-(`wrangler.jsonc`: no Worker code, Cloudflare's asset server answers every
-request). Every push to `main` that touches `site/` deploys it
+The site is https://safina.run: static files on a Cloudflare Worker,
+`safina-site` (`wrangler.jsonc`: no Worker code, Cloudflare's asset server
+answers every request), with the domain attached as its one custom domain,
+the way openarabic.io is served. Every push to `main` that touches `site/` deploys it
 (`.github/workflows/deploy-site.yml`), and the Actions tab can run that
 workflow by hand. The job runs `pnpm verify`, then `pnpm ship`
 (`scripts/ship.mjs`):
 
-1. **Guard**: `wrangler.jsonc` names `safina-site`, has no `main` and no
-   route, and `dist/` is built. Any other Worker name is refused, so a
-   copied config can't overwrite another Worker on the account.
+1. **Guard**: `wrangler.jsonc` names `safina-site`, has no `main`, routes
+   safina.run alone as a custom domain with workers.dev and preview URLs
+   off, and `dist/` is built. Any other Worker name is refused, so a copied
+   config can't overwrite another Worker on the account, and a missing
+   route is refused, so a deploy can't detach the domain.
 2. **Upload** with `wrangler deploy`, the commit in the version's message.
-3. **Smoke** at the edge, retried for 90 s while the version spreads: `/` and
-   the 404 page are this build's bytes, `_headers` isn't served, hashed
-   `/_astro/*` files are cached as immutable and nothing else is, the
-   recordings come as `text/plain` (so the edge compresses them, about
-   500 KB to 38 KB), and the preview carries `X-Robots-Tag: noindex`.
+3. **Smoke** on https://safina.run, retried for 3 minutes while the
+   version spreads (15 on the Worker's first deploy, while the domain gets
+   its DNS record and certificate): `/` and the 404 page are this build's
+   bytes, `_headers` isn't served, hashed `/_astro/*` files are cached as
+   immutable and nothing else is, the recordings come as `text/plain` (so
+   the edge compresses them, about 500 KB to 38 KB), and nothing says
+   `noindex`.
 4. **Roll back** to the version that was live before if the smoke fails.
 
 `pnpm ship:dry` runs the same guard and checks with no upload: wrangler
 validates the files, then serves `dist/` through Cloudflare's asset server
-on this machine, as the preview host, and the checks run against it. The
+on this machine, as safina.run, and the checks run against it. The
 `verify` workflow runs it on every pull request. Headers live in
 `public/_headers`; change a rule and its check together.
 
-**No domain yet.** safina.dev is parked at Afternic (Nov 2026), so the site
-lives at `safina-site.<account>.workers.dev`, noindexed by `_headers`, and
-`site` in `astro.config.mjs` still says safina.dev for canonical and social
-URLs. At launch: add the domain to `wrangler.jsonc` as a custom domain, set
-`site`, and change the guard and the noindex check in `ship.mjs` in the same
-commit.
+**The domain.** safina.run was bought through Cloudflare Registrar on
+2026-11-08, so its zone lives in the same Cloudflare account; `site` in
+`astro.config.mjs` gives canonical and social URLs. Moving to another domain
+changes `wrangler.jsonc`, `site` and `DOMAIN` in `ship.mjs` in one commit.
 
 **Setup, once.** Two repository secrets under Settings, Secrets and
 variables, Actions: `CLOUDFLARE_ACCOUNT_ID`, and `CLOUDFLARE_API_TOKEN`, a
 token from the dashboard (My Profile, API Tokens) made from the "Edit
-Cloudflare Workers" template and limited to this account. Locally,
+Cloudflare Workers" template, limited to this account and the safina.run
+zone. Locally,
 `pnpm ship` uses `wrangler login` instead; CI is the normal way to deploy.
 
 ## Launch switch

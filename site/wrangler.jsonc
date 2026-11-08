@@ -9,7 +9,7 @@
   "compatibility_date": "2026-10-23",
 
   // Static files only: no `main`, so no Worker code runs and every request is
-  // the asset server's. public/_headers sets caching and the preview's noindex.
+  // the asset server's. public/_headers sets caching and content types.
   "assets": {
     "directory": "./dist",
     "not_found_handling": "404-page",
@@ -17,10 +17,12 @@
     "html_handling": "drop-trailing-slash"
   },
 
-  // Preview only, until a domain is bought: safina.dev is parked at Afternic
-  // (Nov 2026). The site lives at safina-site.<account>.workers.dev, noindexed.
-  // At launch, add the domain here as a custom domain and update ship.mjs's
-  // guard and README §Deploy in the same change.
-  "workers_dev": true,
+  // safina.run, bought through Cloudflare Registrar on 2026-11-08, is the
+  // site's one address. Keep this route: a deploy without it could detach
+  // the domain. Add no other route or domain; ship.mjs refuses both.
+  "routes": [{ "pattern": "safina.run", "custom_domain": true }],
+  // No second copy on workers.dev or preview URLs: every deploy is checked
+  // on the live domain.
+  "workers_dev": false,
   "preview_urls": false
 }
