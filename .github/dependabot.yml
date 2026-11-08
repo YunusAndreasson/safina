@@ -1,0 +1,33 @@
+# Weekly, grouped so a week's updates arrive as a few pull requests. Each one
+# runs the verify workflow; merge it when it's green.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      # The bindings must match the C library pinned in
+      # scripts/libghostty.json; move both together, by hand.
+      - dependency-name: go.mitchellh.com/libghostty
+    groups:
+      kubernetes:
+        patterns: ["k8s.io/*", "sigs.k8s.io/*"]
+      charm:
+        patterns: ["charm.land/*", "github.com/charmbracelet/*"]
+      go:
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directory: /site
+    schedule:
+      interval: weekly
+    groups:
+      site:
+        patterns: ["*"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
