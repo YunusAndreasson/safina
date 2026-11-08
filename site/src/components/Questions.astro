@@ -1,0 +1,129 @@
+---
+// What an engineer asks before installing a tool that touches production,
+// answered the way a colleague would: plainly, with the limits included.
+// Every answer is checked against the code; change one only with it.
+
+// The real `history` block of ~/.safina/config.yaml, with its defaults
+// (internal/history/store.go): config shown as it is, which an engineer
+// trusts more than a sentence about it. Kept to 42 columns so it fits a phone.
+const config = `history:
+  actionDays: 90    # writes
+  evidenceDays: 14  # logs and events read
+  redactPatterns:   # on top of the built-ins
+    - 'customer-[0-9]+'
+  enabled: true     # false turns it off`;
+const lines = config.split("\n").map((line) => {
+  const at = line.indexOf("#");
+  return at < 0 ? { code: line, note: "" } : { code: line.slice(0, at), note: line.slice(at) };
+});
+---
+
+<section class="questions" id="questions" aria-labelledby="questions-title">
+  <div class="wrap split">
+    <hgroup class="split__title">
+      <p class="section-name">FAQ</p>
+      <h2 id="questions-title" class="h2-ref">Fair questions</h2>
+    </hgroup>
+    <div class="questions__list">
+      <div class="question">
+        <h3>What does the model see?</h3>
+        <div class="answer">
+          Chat sends names, status and numbers for what you’ve selected and your recent Logbook entries for it,
+          plus logs when you attach them. Through safina’s MCP server, an agent reads logs on its own, up to 200 lines at a time.
+          Neither ever sees a Secret’s data. Apart from the model, safina talks only to your&nbsp;clusters.
+        </div>
+      </div>
+      <div class="question">
+        <h3>Can the model change my cluster?</h3>
+        <div class="answer">
+          Not through safina. Chat gives it text to read, not keys, and over MCP it can only propose a change,
+          which waits until you approve it. If you’ve already let your agent run kubectl without asking, safina
+          can’t take that&nbsp;back.
+        </div>
+      </div>
+      <div class="question">
+        <h3>What does it leave on my machine?</h3>
+        <div class="answer">
+          Everything it keeps is under <code>~/.safina</code>, and the Logbook keeps it as long as its config says:
+          <pre class="config"><code>{lines.map((l, i) => <>{l.code}{l.note && <span class="config__note">{l.note}</span>}{i < lines.length - 1 && "\n"}</>)}</code></pre>
+          An agent’s MCP sessions and proposals stay until you delete them. The <code>claude</code> CLI keeps chat conversations
+          under <code>~/.claude</code>, like its other&nbsp;sessions.
+        </div>
+      </div>
+      <div class="question">
+        <h3>What does it cost?</h3>
+        <div class="answer">
+          Nothing. It’s MIT-licensed. Chat runs on your own&nbsp;subscription.
+        </div>
+      </div>
+      <div class="question">
+        <h3>What does onboarding the team take?</h3>
+        <div class="answer">
+          A binary on each laptop. Nobody needs an account, and everyone works through their own kubeconfig.
+          Logbooks stay personal; export one for the team’s&nbsp;postmortem.
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .questions {
+    padding-top: var(--s5);
+    background: var(--abyss);
+  }
+  .questions .split {
+    row-gap: var(--s3);
+  }
+  .questions h2 {
+    max-width: 17ch;
+  }
+  /* One a row on the text line, ruled like the Also on board list: the
+     answers run to a few sentences, so they take the full measure. */
+  .questions__list {
+    display: grid;
+    gap: var(--s2);
+
+    @media (width <= 1100px) {
+      max-width: var(--measure);
+    }
+  }
+  .question {
+    min-width: 0;
+    padding-top: var(--s1);
+    border-top: 1px solid var(--hairline);
+  }
+  /* Each question is a heading in the title voice, an item's rank
+     (--t-h3), so a scan down the list reads the questions alone; the
+     answer is in the body ink. */
+  .answer {
+    margin-top: 0.5em;
+    color: var(--spray);
+    text-wrap: pretty;
+  }
+  /* Config as the terminal shows it, on the terminal's own ground like the
+     install command; comments in the quiet ink (5.5:1 on that ground). */
+  .config {
+    margin: var(--s1) 0;
+    /* The install command's inset, so the page's two code blocks start
+       their text on one line. */
+    padding: 14px 22px;
+    overflow-x: auto;
+    border-radius: var(--radius-frame);
+    background: var(--tn-bg);
+    box-shadow: 0 0 0 1px rgb(from var(--tn-fg) r g b / 11%);
+    font-family: var(--mono);
+    /* 42 columns plus padding fit a 390px phone's column at 3.25vw. */
+    font-size: min(0.8125rem, 3.25vw);
+    line-height: 1.7;
+    color: var(--tn-fg);
+    white-space: pre;
+    scrollbar-width: thin;
+  }
+  .config code {
+    font-size: inherit;
+  }
+  .config__note {
+    color: var(--fog);
+  }
+</style>

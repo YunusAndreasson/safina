@@ -60,7 +60,10 @@ const changes = [
 
 <style>
   /* On the page grid: "Write" starts on the text line, right under the
-     section's text. Below 1100px there is no text line, so it halves. */
+     section's text. Below 1100px there is no text line: like every other
+     list on the page (Also on board, the comparison, Fair questions) it
+     holds to the measure, Read above Write, so neither group starts or ends
+     on a line nothing else uses. */
   .keylist {
     container: keylist / inline-size;
     display: grid;
@@ -69,7 +72,8 @@ const changes = [
   }
   @media (width <= 1100px) {
     .keylist {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-columns: minmax(0, 1fr);
+      max-width: var(--measure);
     }
   }
   h3 {
@@ -114,12 +118,9 @@ const changes = [
       linear-gradient(var(--shelf), var(--deep));
     box-shadow: 0 1px 0 0 rgb(from var(--danger) r g b / 30%) inset;
   }
-  /* One column of groups: each list fills the width, three keys a row
+  /* One column of groups: each list fills the measure, three keys a row
      where they fit, two on a phone. */
-  @media (width <= 760px) {
-    .keylist {
-      grid-template-columns: minmax(0, 1fr);
-    }
+  @media (width <= 1100px) {
     dl {
       grid-template-columns: repeat(auto-fill, minmax(min(100%, 9.5rem), 1fr));
     }

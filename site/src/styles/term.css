@@ -1,0 +1,64 @@
+/* The recordings' face: the one the stills are rendered in (snap.mjs), cut
+   down to what the casts use (scripts/termfont.sh). Loaded with the player
+   only, never on first load. */
+@font-face {
+  font-family: "Safina Term";
+  src: url("../assets/fonts/term-regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "Safina Term";
+  src: url("../assets/fonts/term-bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: block;
+}
+@font-face {
+  font-family: "Safina Term";
+  src: url("../assets/fonts/term-italic.woff2") format("woff2");
+  font-weight: 400;
+  font-style: italic;
+  font-display: block;
+}
+@font-face {
+  font-family: "Safina Term";
+  src: url("../assets/fonts/term-bolditalic.woff2") format("woff2");
+  font-weight: 700;
+  font-style: italic;
+  font-display: block;
+}
+
+/* The player sits exactly over its still, scaled from the still's own
+   geometry, and takes no pointer events: the frame scrolls as before. */
+.cast {
+  position: absolute;
+  z-index: 0;
+  overflow: hidden;
+  background: #1a1b26;
+  pointer-events: none;
+  opacity: 0;
+}
+.cast.is-on {
+  opacity: 1;
+}
+.cast__window {
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow: hidden;
+  transform-origin: 0 0;
+}
+.cast__clip {
+  position: absolute;
+  overflow: hidden;
+}
+.cast__term {
+  position: absolute;
+  transform-origin: 0 0;
+}
+.cast .xterm .xterm-viewport {
+  overflow: hidden !important;
+  background: #1a1b26 !important;
+}

@@ -1,24 +1,26 @@
 ---
 import Frame from "./Frame.astro";
 import KeyGlyph from "./KeyGlyph.astro";
-import { tour } from "../data/tour";
+import { tour as stops, type Stop } from "../data/tour";
+
+const tour: readonly [Stop, ...Stop[]] = stops;
 import { runs, unrunt } from "../lib/typeset";
 
 // The tour window is the product itself, so on wide screens it breaks out
 // of the 1240px text column to as much as 1400px (24px from the edges), where
-// a 140-column screen reads at about 16px. From 1400px wide only, where the
+// a 160-column screen reads at about 14.5px. From 1400px wide only, where the
 // break-out is a clear 56px or more a side.
 const sizes = "(width >= 1448px) 1400px, (width >= 1400px) calc(100vw - 48px), (width >= 1368px) 1240px, calc(100vw - 2 * clamp(16px, 4.2vw, 64px))";
 ---
 
 <section id="tour" class="tour" aria-labelledby="tour-title" data-tour>
-  <h2 id="tour-title" class="visually-hidden">A tour of safina, one key at a time</h2>
+  <h2 id="tour-title" class="visually-hidden">Deep dive</h2>
 
   <div class="tour__screen wrap">
     {
       tour.map((s, i) => (
         <div class="tour__panel" role="tabpanel" id={`panel-${s.id}`} aria-labelledby={`tab-${s.id}`} hidden={i !== 0}>
-          <Frame src={s.shot} crop={s.crop} alt={s.alt} eager={i === 0} sizes={sizes} />
+          <Frame src={s.shot} crop={s.crop} alt={s.alt} eager={i === 0} sizes={sizes} {...(s.cast ? { cast: { src: s.cast, still: s.still } } : {})} />
         </div>
       ))
     }
@@ -26,7 +28,7 @@ const sizes = "(width >= 1448px) 1400px, (width >= 1400px) calc(100vw - 48px), (
 
   <div class="tour__controls wrap">
     <div class="tour__bar">
-      <div class="tour__keys" role="tablist" aria-label="Keys to try">
+      <div class="tour__keys tray" role="tablist" aria-label="Keys to try">
         {
           tour.map((s, i) => (
             <button
@@ -49,14 +51,18 @@ const sizes = "(width >= 1448px) 1400px, (width >= 1400px) calc(100vw - 48px), (
           ))
         }
       </div>
-      <p class="tour__hint">
-        <span class="hint--keys">Press a key on your keyboard, or click one.</span>
-        <span class="hint--touch">Tap a key to see that screen.</span>
-      </p>
+      <div class="tour__aside">
+        <p class="tour__hint">
+          <span class="section-name tour__name" aria-hidden="true">Deep dive</span>
+          <span class="hint--keys">Press a key, or click one.</span>
+          <span class="hint--touch">Tap a key to see that screen.</span>
+          <button class="tour__auto" type="button" data-autoplay hidden>Pause</button>
+        </p>
+        <p class="tour__caption" data-caption-out aria-live="polite">
+          {runs(unrunt(tour[0].caption)).map((r) => (r.term ? <i>{r.text}</i> : r.text))}
+        </p>
+      </div>
     </div>
-    <p class="tour__caption" data-caption-out aria-live="polite">
-      {runs(unrunt(tour[0].caption)).map((r) => (r.term ? <i>{r.text}</i> : r.text))}
-    </p>
   </div>
 </section>
 
@@ -86,6 +92,12 @@ const sizes = "(width >= 1448px) 1400px, (width >= 1400px) calc(100vw - 48px), (
   .tour__controls {
     position: relative;
     padding-top: var(--s2);
+
+    /* One row under the window: tighter, so the caption's second line
+       still lands on a 1440x900 screen. */
+    @media (width >= 1360px) {
+      padding-top: var(--s1);
+    }
   }
   /* Everything under the window sits on black, so the controls never
      share the screen with the photograph behind them. */
@@ -97,24 +109,26 @@ const sizes = "(width >= 1448px) 1400px, (width >= 1400px) calc(100vw - 48px), (
     background: linear-gradient(180deg, rgb(from var(--abyss) r g b / 0%), var(--abyss) 52px);
   }
 
+  /* The keys, then what to do with them, then what the chosen one does:
+     one reading order at every width. Where the screen is wide enough for
+     the longest caption to take two lines beside the tray, all three sit in
+     one row, so the window, its keys and its caption share a 1440x900
+     screen. Narrower, they stack, the hint right under the tray it
+     explains. */
   .tour__bar {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px 32px;
-  }
-  /* One control, like a segmented switch: the keys share a single tray. */
-  .tour__keys {
-    display: flex;
-    gap: 2px;
-    padding: 4px;
-    border-radius: 16px;
-    border: 1px solid var(--hairline);
-    background: rgb(from var(--spray) r g b / 2.5%);
+    display: grid;
+    gap: 14px;
 
-    /* Stacked, the tray takes the shared measure, so it ends on the same
-       right edge as the text and the install steps. */
+    @media (width >= 1360px) {
+      grid-template-columns: auto minmax(0, 1fr);
+      align-items: center;
+      column-gap: var(--s3);
+    }
+  }
+  /* The keys share one tray (global.css). Stacked, it takes the shared
+     measure, so it ends on the same right edge as the text and the install
+     steps. */
+  .tour__keys {
     @media (740px <= width <= 1100px) {
       width: var(--measure);
     }
@@ -184,6 +198,33 @@ const sizes = "(width >= 1448px) 1400px, (width >= 1400px) calc(100vw - 48px), (
     font-size: var(--t-small);
     color: var(--fog);
   }
+  /* While the deep dive plays itself (src/scripts/tour.ts), the switch that
+     stops it: a quiet text button after the hint, with a full-height hit
+     area, so the reel is never the only way to read the screens. */
+  .tour__auto {
+    margin: -12px 0 -12px 1.2ch;
+    padding: 12px 4px;
+    border: 0;
+    background: none;
+    color: var(--spray);
+    font-size: var(--t-small);
+    font-weight: var(--w-ui);
+    text-decoration: underline;
+    text-decoration-color: var(--hairline-strong);
+    text-underline-offset: 0.22em;
+    cursor: pointer;
+    transition: text-decoration-color 160ms;
+
+    &:hover {
+      text-decoration-color: currentColor;
+    }
+  }
+  /* The part's name, as the nav says it, run in ahead of the hint: the
+     section names' hull lettering at the keys' size. */
+  .tour__name {
+    margin-right: 1.2ch;
+    font-size: var(--t-ui);
+  }
   .hint--touch {
     display: none;
   }
@@ -205,17 +246,32 @@ const sizes = "(width >= 1448px) 1400px, (width >= 1400px) calc(100vw - 48px), (
     color: var(--spray);
     view-transition-name: tour-caption;
     view-transition-class: tour-swap;
+
+    /* Beside the tray: reading size, two lines held open so the row never
+       jumps between a short caption and a long one. */
+    @media (width >= 1360px) {
+      max-width: none;
+      min-height: 2.8em;
+      margin-top: 2px;
+      font-size: var(--t-body);
+      line-height: 1.4;
+    }
   }
 
-  /* Narrow screens: the five keys fill the column as one row, label under
+  /* Narrow screens: the six keys fill the column as one row, label under
      the key, ending with the window above. Up to 740px: below that a
      one-line tray either overflows its column or stops just short of the
-     window's edge, a near miss. */
+     window's edge, a near miss. On phones, two even rows of three, so no
+     key is left alone on a row and each stays a thumb's width. */
   @media (width < 740px) {
     .tour__keys {
       display: grid;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
+      grid-template-columns: repeat(6, minmax(0, 1fr));
       width: 100%;
+
+      @media (width < 480px) {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
     }
     .tour__key {
       flex-direction: column;

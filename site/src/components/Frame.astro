@@ -1,10 +1,11 @@
 ---
 import type { ImageMetadata } from "astro";
 import { getImage } from "astro:assets";
+import crops from "../data/crops.json";
 
 // A real safina window. Full screenshot on wider screens; on phones an
 // art-directed crop of the region that matters, so text stays readable
-// instead of shrinking a 140-column terminal to 360px.
+// instead of shrinking a 160-column terminal to 360px.
 interface Props {
   src: ImageMetadata;
   crop?: ImageMetadata;
@@ -14,6 +15,16 @@ interface Props {
   /** On phones, keep this many terminal columns readable by letting the
    *  figure scroll sideways instead of shrinking it. */
   panCols?: number;
+  /** On phones, open the sideways scroll at this column of the crop, where
+   *  the frame's payoff is (the reader can still scroll back). */
+  panStart?: number;
+  /** A recording of this still's moment (src/assets/casts, imported with
+   *  ?url) that plays over it. `still` names its crop boxes in crops.json;
+   *  `strip` when src is the wide strip (<name>-f). With `key`, a button
+   *  under the frame and that key play it (`label` says what the key does,
+   *  in the app's words); without, the tour plays it. `end`: "still" when
+   *  it ends on this still, "hold" when it ends somewhere new and stays. */
+  cast?: { src: string; still: keyof typeof crops; strip?: boolean; key?: string; label?: string; end?: "still" | "hold" };
 }
 
 const {
@@ -22,10 +33,12 @@ const {
   alt,
   eager = false,
   panCols,
+  panStart,
+  cast,
   sizes = "(width >= 1368px) 1240px, calc(100vw - 2 * clamp(16px, 4.2vw, 64px))",
 } = Astro.props;
 
-// Displayed at most 1400 CSS px wide (the tour), so the full 2888 source
+// Displayed at most 1400 CSS px wide (the tour), so a 2800px source
 // covers 2x screens; narrower figures stop at their own width.
 const cap = (ws: number[], max: number) => [...new Set(ws.map((w) => Math.min(w, max)))];
 const widths = cap([1240, 1860, 2480, 2888], src.width);
@@ -38,10 +51,26 @@ const [avif, fallback, cropAvif] = await Promise.all([
   crop ? getImage({ src: crop, format: "avif", widths: cropWidths, quality: 64 }) : null,
 ]);
 const phone = "(width <= 640px)";
+const boxes = cast ? (crops[cast.still] as { m?: number[]; f?: number[] }) : undefined;
 ---
 
-<div class:list={["frame", panCols && "frame--pan"]} style={panCols ? `--pan-cols: ${String(panCols)}` : undefined}>
-  <div class="frame__scroller" tabindex={panCols ? 0 : undefined} role={panCols ? "region" : undefined} aria-label={panCols ? "Screenshot, scrolls sideways" : undefined}>
+<div class="shot">
+<div
+  class:list={["frame", panCols && "frame--pan"]}
+  style={panCols ? `--pan-cols: ${String(panCols)}` : undefined}
+  data-cast={cast?.src}
+  data-cast-key={cast?.key}
+  data-cast-end={cast?.end}
+  data-box-m={crop && boxes?.m ? boxes.m.join(",") : undefined}
+  data-box-f={cast?.strip && boxes?.f ? boxes.f.join(",") : undefined}
+>
+  <div
+    class="frame__scroller"
+    tabindex={panCols ? 0 : undefined}
+    role={panCols ? "region" : undefined}
+    aria-label={panCols ? "Screenshot, scrolls sideways" : undefined}
+    data-pan-start={panCols && panStart ? String(panStart) : undefined}
+  >
   <picture>
     {cropAvif && crop && <source media={phone} type="image/avif" srcset={cropAvif.srcSet.attribute} sizes="100vw" width={crop.width} height={crop.height} />}
     <source type="image/avif" srcset={avif.srcSet.attribute} sizes={sizes} />
@@ -56,9 +85,26 @@ const phone = "(width <= 640px)";
   </picture>
   </div>
 </div>
+{
+  cast?.key && (
+    <p class="cast-play tray" hidden>
+      <button type="button" aria-keyshortcuts={cast.key} aria-label={`Play the recording: ${cast.key}, ${cast.label ?? ""}`}>
+        <kbd class="cap" aria-hidden="true">{cast.key}</kbd>
+        <span aria-hidden="true">{cast.label}</span>
+      </button>
+    </p>
+  )
+}
 {panCols && <p class="pan-hint" aria-hidden="true">Scroll sideways to read the whole screen.</p>}
+</div>
+
+{panStart && <script src="../scripts/pan.ts"></script>}
+{cast?.key && <script src="../scripts/scenes.ts"></script>}
 
 <style>
+  .shot {
+    position: relative;
+  }
   .frame {
     position: relative;
     border-radius: var(--radius-frame);
@@ -90,6 +136,58 @@ const phone = "(width <= 640px)";
   .frame img {
     width: 100%;
     height: auto;
+  }
+  /* The recording's player lies over the image, inside this box. */
+  .frame__scroller {
+    position: relative;
+  }
+  /* The key that plays the frame's recording: one key in the tour's tray
+     (global.css), so it reads as the same control as the tour's six. */
+  .cast-play {
+    margin-top: 12px;
+  }
+  .cast-play button {
+    display: inline-flex;
+    align-items: center;
+    gap: 11px;
+    min-height: 48px;
+    padding: 5px 16px 5px 5px;
+    border: 0;
+    border-radius: 12px;
+    background: transparent;
+    color: var(--fog);
+    font-size: var(--t-ui);
+    cursor: pointer;
+    transition:
+      color 160ms,
+      background-color 160ms;
+  }
+  .cast-play .cap {
+    min-width: 2.3em;
+    height: 2.3em;
+    font-size: var(--t-ui);
+    transition:
+      color 160ms,
+      border-color 160ms,
+      translate 90ms;
+  }
+  .cast-play button:hover {
+    color: var(--spray);
+    background: rgb(from var(--spray) r g b / 4%);
+  }
+  .cast-play button.is-playing .cap {
+    color: var(--beacon);
+    border-color: rgb(from var(--beacon) r g b / 55%);
+  }
+  .cast-play button:active .cap,
+  .cast-play button.is-pressed .cap {
+    animation: cast-keypress 180ms var(--ease-out);
+  }
+  @keyframes cast-keypress {
+    40% {
+      translate: 0 2px;
+      border-bottom-width: 1px;
+    }
   }
   .pan-hint {
     display: none;

@@ -279,21 +279,28 @@ spec:
             requests: { cpu: 5m, memory: 8Mi }
             limits: { cpu: 50m, memory: 32Mi }
           command: ["sh", "-c"]
-          # Points at a service that does not exist, so it crash-loops with a
-          # believable Go panic. The fix shown on the site is a one-line env edit.
+          # DATABASE_URL points at a service that does not exist, so it
+          # crash-loops with a believable Go panic. The script really looks the
+          # host up, so the one-line env edit shown on the site really fixes it.
           args:
             - |
+              host=${DATABASE_URL#*@}; host=${host%%:*}
               echo '{"level":"info","msg":"starting ledger-api","version":"2.14.0","commit":"9f3c2e1"}'
               sleep 0.3
               echo '{"level":"info","msg":"config loaded","env":"production","pool_size":20}'
               sleep 0.4
               echo '{"level":"info","msg":"applying migrations","pending":0,"total":41}'
               sleep 0.3
+              if nslookup "$host.svc.cluster.local" >/dev/null 2>&1; then
+                echo '{"level":"info","msg":"database connected","host":"'"$host"'","pool_size":20}'
+                echo '{"level":"info","msg":"listening","addr":":8080"}'
+                while :; do sleep 3600; done
+              fi
               for a in 1 2 3; do
                 echo '{"level":"warn","msg":"database not reachable, retrying","attempt":'$a',"backoff_ms":'$(( a * 500 ))'}'
                 sleep 1
               done
-              echo '{"level":"error","msg":"dial tcp: lookup ledger-db-primary.ledger on 10.96.0.10:53: no such host"}'
+              echo '{"level":"error","msg":"dial tcp: lookup '"$host"' on 10.96.0.10:53: no such host"}'
               sleep 0.2
               echo "panic: ledger: database unreachable after 3 attempts"
               echo ""

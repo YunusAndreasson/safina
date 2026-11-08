@@ -54,9 +54,13 @@
        classic 14 / 16·18 / 21 / 24 / 36·48 / 72… progression, made fluid.
 
        Three voices, no more:
-       - Titles (h1–h3): expanded and light, in foam. Weight rises as size
-         falls (260 at the hero's 68px, 370 at a section's 48px), so the
-         strokes read equally heavy from the top of the page down.
+       - Titles (h1–h3): expanded and light, in foam. Four ranks, and the
+         rank is the size: the hero (--t-mark, 68px), a story beat (--t-h2,
+         48: Chat, Barbarossa mode, Logbook, Get safina), a reference
+         section (--t-h2-ref, 36: Also on board, Safina and k9s, Fair
+         questions) and an item inside one (--t-h3, 22: a question). Weight
+         rises as size falls (260, 370, 420, 460), so the strokes read
+         equally heavy from the top of the page down.
        - Reading: body, ledes and captions at normal width, weight 400.
        - Acting and labelling: buttons, keys, labels, run-in heads, all at
          one UI weight. */
@@ -72,17 +76,22 @@
     --t-ui: 0.9375rem;
     --t-body: clamp(1rem, 0.94rem + 0.28vw, 1.125rem);
     --t-lead: clamp(1.125rem, 1rem + 0.55vw, 1.375rem);
-    --t-h3: clamp(1.3125rem, 1.15rem + 0.7vw, 1.625rem);
+    --t-h3: clamp(1.1875rem, 1.05rem + 0.45vw, 1.375rem);
+    --t-h2-ref: clamp(1.625rem, 1.2rem + 1.4vw, 2.25rem);
     --t-h2: clamp(1.875rem, 1.3rem + 2.4vw, 3rem);
-    /* The hero headline: two lines from tablet width up, three on phones.
+    /* The hero headline: two lines on every screen, broken after "TUI".
        It also answers to height, so it never meets the nav on a short
        window. */
     --t-mark: clamp(2.25rem, min(0.5rem + 3.5vw, 7.6svh), 4.25rem);
     --head-lines: 2;
-    --t-pitch: clamp(1.125rem, 0.98rem + 0.62vw, 1.5rem);
+    /* The hero's subtitle: a clear step under the headline (68 to 21 at
+       desktop), so it reads as the line under the title, not a second one. */
+    --t-pitch: clamp(1.0625rem, 0.95rem + 0.4vw, 1.3125rem);
 
     --gutter: clamp(16px, 4.2vw, 64px);
     --wrap: 1240px;
+    /* The fixed bar's height: anchors land and sticky titles stop under it. */
+    --nav-h: 68px;
 
     /* The page grid. Every section hangs off the same two verticals: the
        title line (the column's left edge) and the text line, where a 5:6
@@ -108,9 +117,10 @@
     --s5: clamp(72px, 11.3svh, 102px);
     /* How much of the product window shows on the first screen: whatever
        height the nav and the hero copy leave over. The copy is the headline
-       (1.02 of --t-mark a line) plus about 170px of pitch and buttons,
-       sitting clamp(24px, 6svh, 72px) above the window; 116px covers the nav
-       and the space under it. */
+       (1.02 of --t-mark a line) plus about 170px of pitch (it once held
+       buttons too; their room now goes to the storm above the headline, not
+       to the window, so the ship keeps its frame), sitting clamp(24px, 6svh,
+       72px) above the window; 116px covers the nav and the space under it. */
     --peek: clamp(
       88px,
       100svh - 285px - var(--head-lines) * 1.02 * var(--t-mark) - clamp(24px, 6svh, 72px),
@@ -126,9 +136,21 @@
   }
   @media (width <= 640px) {
     :root {
-      --t-mark: 2.375rem;
-      --head-lines: 3;
+      /* Two lines, as on every other screen: "The Kubernetes TUI" is 9.3
+         of its own size wide, so 9.2vw keeps it inside the column with room
+         for Gecko's slightly wider setting, down to a 320px phone. */
+      --t-mark: clamp(1.75rem, 9.2vw, 2.375rem);
+      --head-lines: 2;
       --radius-frame: 10px;
+      /* Phones leave the top of the frame to the storm: the ship and its
+         lamp sit above the headline, so the window peeks about 30svh. */
+      --peek: clamp(88px, 30svh, 100svh - 285px - var(--head-lines) * 1.02 * var(--t-mark) - clamp(24px, 6svh, 72px));
+    }
+  }
+  /* Portrait tablets: the same storm-first frame, the ship over the copy. */
+  @media (aspect-ratio <= 4/5) and (width > 640px) {
+    :root {
+      --peek: clamp(88px, 36svh, 100svh - 285px - var(--head-lines) * 1.02 * var(--t-mark) - clamp(24px, 6svh, 72px));
     }
   }
   /* Short phones: the pitch wraps to five lines, so the window peeks less. */
@@ -157,7 +179,7 @@
   html {
     -webkit-text-size-adjust: none;
     text-size-adjust: none;
-    scroll-padding-top: 88px;
+    scroll-padding-top: calc(var(--nav-h) + 20px);
     scrollbar-color: var(--shelf) var(--abyss);
 
     @media (prefers-reduced-motion: no-preference) {
@@ -299,6 +321,17 @@
       grid-template-columns: minmax(0, 1fr);
     }
   }
+  /* A reference section's title column (Also on board, Safina and k9s,
+     Fair questions) travels with its list: side by side it holds under the
+     bar while the text line scrolls, so a long list never leaves its title a
+     screen behind. Only position changes: the column keeps its alignment,
+     so title and text still start level. */
+  .split__title {
+    @media (width > 1100px) {
+      position: sticky;
+      top: calc(var(--nav-h) + var(--s3));
+    }
+  }
 }
 
 /* ─── shared components ───────────────────────────────────────────────────── */
@@ -306,13 +339,74 @@
   /* The name, set like the name on a hull: widest, light, tracked open, in
      the cyan of the app's own title bar. Nav and footer differ only in size. */
   .wordmark {
-    font-size: var(--wordmark-size, 1.125rem);
+    font-size: var(--wordmark-size, 1.25rem);
     font-weight: 300;
     font-stretch: 125%;
     letter-spacing: 0.08em;
     line-height: 1;
     color: var(--beacon);
     text-decoration: none;
+  }
+  /* The mark is a sail (src/assets/sail.svg, traced from the refinement
+     sheet's #1), cut out of the wordmark's own cyan. Sized against the top
+     bars of Linear, Railway, Supabase, Tailscale, Fly.io and Headlamp
+     (Nov 2026), whose symbols stand 1.31 to 1.67 times their word's tallest
+     letter: 1.05em is 1.41 times the f, so it reads as a symbol, not one
+     more letter, and against these light letters it carries about the
+     word's own weight. Like theirs it's centred on the word, reaching about
+     as far below the baseline as over the f; the arc of its foot, the
+     waterline, rides on the baseline. The gap is 0.38 of its height, their
+     median. The mark is the lockup's edge and stands on the title line: a
+     solid shape is what the eye aligns, so hung in the margin it would
+     start a second left edge (hanging is for light marks, like quotes and
+     the titles' 0.05em). */
+  .wordmark::before {
+    content: "";
+    display: inline-block;
+    height: 1.05em;
+    aspect-ratio: 101.9 / 100;
+    margin-right: 0.34em;
+    vertical-align: -0.15em;
+    background: currentColor;
+    mask: url("../assets/sail.svg") no-repeat 0 0 / 100% 100%;
+  }
+
+  /* A section's name over its title, a sister ship of the wordmark: the same
+     hull lettering (widest, light, tracked open) in the same cyan, the
+     colour of the app's own title bar. A feature's name is what safina
+     calls it (Chat, Logbook); elsewhere it's the nav's own word for the
+     part (Compare, FAQ), so the bar and the page agree. */
+  .section-name {
+    margin-bottom: var(--s1);
+    font-size: var(--t-body);
+    font-weight: 400;
+    font-stretch: 125%;
+    letter-spacing: 0.08em;
+    line-height: 1.2;
+    color: var(--beacon);
+  }
+
+  /* A reference section's title, one rank under a story beat's (see the
+     type tokens). */
+  .h2-ref {
+    font-size: var(--t-h2-ref);
+    font-weight: 420;
+  }
+
+  /* One control, like a segmented switch: the keys that play something
+     share a tray, the tour's six and each feature's one. */
+  .tray {
+    display: flex;
+    width: fit-content;
+    gap: 2px;
+    padding: 4px;
+    border-radius: 16px;
+    border: 1px solid var(--hairline);
+    background: rgb(from var(--spray) r g b / 2.5%);
+
+    &[hidden] {
+      display: none;
+    }
   }
 
   /* A small heading over a group: UI weight, quiet colour. */

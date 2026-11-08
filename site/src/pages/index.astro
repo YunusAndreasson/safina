@@ -7,9 +7,15 @@ import Tour from "../components/Tour.astro";
 import Feature from "../components/Feature.astro";
 import Frame from "../components/Frame.astro";
 import KeyList from "../components/KeyList.astro";
+import Interlude from "../components/Interlude.astro";
 import Aboard from "../components/Aboard.astro";
+import Compare from "../components/Compare.astro";
+import Questions from "../components/Questions.astro";
 import Install from "../components/Install.astro";
 import Footer from "../components/Footer.astro";
+import chatCast from "../assets/casts/chat.cast?url";
+import fixCast from "../assets/casts/fix.cast?url";
+import historyCast from "../assets/casts/history.cast?url";
 
 const files = import.meta.glob<{ default: ImageMetadata }>("../assets/shots/*.png", { eager: true });
 const shot = (name: string) => {
@@ -20,87 +26,97 @@ const shot = (name: string) => {
 ---
 
 <Base
-  title="Safina: the Kubernetes terminal UI for teams that ship"
-  description="The Kubernetes terminal UI for teams that ship, built for the people on call. Find what is broken, see why, fix it without leaving the keyboard, and keep the record for the morning."
+  title="Safina: the Kubernetes TUI for teams that ship"
+  description="A terminal UI for Kubernetes, for teams that ship. It jumps to what’s broken and shows you why, chat starts from what you’re looking at, and nothing writes without asking."
 >
   <Nav />
   <main id="main">
     <Opening />
     <Tour />
 
-    <Feature id="claude" name="Ask Claude" heading="It already knows what you’re looking at.">
-      <p>
-        Press <kbd class="cap">i</kbd> and ask what’s wrong. Claude already has the cluster, namespace and resource
-        you have selected and what you have already tried on it, and <kbd class="cap">c</kbd> in the Logbook hands
-        it the logs you read. Nothing to paste, nothing to explain&nbsp;twice.
-      </p>
-      <p>
-        Its counsel comes as keys: it tells you which safina keys to press next but can’t press them, and anything
-        that writes still asks you first. The <i>amanah</i>, the trust of the cluster, stays&nbsp;with&nbsp;you.
-      </p>
-      <p class="quiet">Uses the <code>claude</code> CLI you are signed in to. No API&nbsp;key&nbsp;needed.</p>
-      <Frame
-        slot="figure"
-        src={shot("chat")}
-        crop={shot("chat-m")}
-        panCols={86}
-        alt="The chat tab beside the workloads list. With the ledger-api logs attached from the Logbook, Claude explains that the pod panics on startup because the name ledger-db-primary does not resolve, warns not to press R because a restart would crash the same way, and lists the keys to check next: / to filter for ledger-db, e for events, d to find where the host is set, U to roll back."
-      />
-    </Feature>
+    {/* Features, as the nav names it: the named features, Chat to Also on board. */}
+    <div id="features">
+      <Feature id="chat" name="Chat" heading="It already knows what you’re looking at.">
+        <p>
+          Press <kbd class="cap">i</kbd> and ask what’s wrong. The model gets the cluster, namespace and resource you’re
+          on and, from the Logbook, what you’ve already tried there, so you don’t paste stack traces into a
+          browser tab. Open a logs entry in the Logbook and <kbd class="cap">c</kbd> hands it the lines
+          you&nbsp;read.
+        </p>
+        <p>
+          It answers with keys to press, like <kbd class="cap">e</kbd> for events or <kbd class="cap">U</kbd> to roll
+          back, and it can’t press them itself. The cluster stays your <i>amanah</i>, your trust and
+          your&nbsp;call.
+        </p>
+        <Frame
+          slot="figure"
+          src={shot("chat")}
+          crop={shot("chat-m")}
+          cast={{ src: chatCast, still: "chat", key: "c", label: "attach to chat", end: "still" }}
+          panCols={99}
+          alt="The chat panel beside the workloads list, answering from the crash logs attached from the Logbook: ledger-api starts v2.14.0 at 11:15:50, can’t reach the database on three retries, fails the lookup of ledger-db-primary with no such host, and panics. The cause: the cluster’s DNS has no record for ledger-db-primary, so no Service has that name or the config names the wrong one, and pressing R won’t help. Next: press d to find where the host is set, filter the Services for ledger-db to find the real name, and press E to change it."
+        />
+      </Feature>
 
-    <Feature id="safety" name="Barbarossa mode" heading="Lowercase reads. Uppercase writes.">
-      <p>
-        Every key that changes the cluster is a capital letter, so a slip of the finger can only read. Hold Shift
-        and you are in <b>Barbarossa mode</b>, after the red-&#8288;bearded Ottoman admiral: the keys that write are red,
-        and so is every confirmation. Scaling asks for a count, restarts and rollbacks ask for a yes, edits show
-        the diff&nbsp;first.
-      </p>
-      <p>
-        Then <b>Rollout watch</b> takes over. A scale or restart isn’t done when the API accepts it, so safina
-        follows it until the pods are ready, and tells you if they never&nbsp;get&nbsp;there.
-      </p>
-      <p class="quiet">
-        <b>No autopilot</b>, either: safina never sets a course for you. Every session starts on the clusters in
-        your kubeconfig, and you pick&nbsp;one.
-      </p>
-      <Frame
-        slot="figure"
-        src={shot("diff-f")}
-        crop={shot("diff-m")}
-        panCols={78}
-        alt="An edit to the ledger-api Deployment waiting for confirmation in a red frame: a one-line diff changes DATABASE_URL from ledger-db-primary to ledger-db, with a red y to apply and n to cancel."
-      />
-      <div slot="after" class="keys">
-        <KeyList />
-      </div>
-    </Feature>
+      <Feature id="safety" name="Barbarossa mode" heading="Lowercase reads. Uppercase writes.">
+        <p>
+          A slipped finger can only ever read. The keys that write are <b>Barbarossa&nbsp;mode</b>, named for the
+          red-&#8288;bearded Ottoman admiral. They all need Shift, and they’re red, like every confirmation. Scaling
+          asks how many, an edit shows you the diff before it’s applied, and everything else asks for a&nbsp;yes.
+        </p>
+        <p>
+          Then <b>Rollout watch</b> takes over. A scale, restart or edit isn’t done just because the API accepted it, so
+          safina follows it until the pods are ready. If they still aren’t after five minutes, it&nbsp;tells&nbsp;you.
+        </p>
+        <p class="quiet">
+          <b>No autopilot</b> means safina never picks a cluster for you, not even&nbsp;yesterday’s.
+        </p>
+        <Frame
+          slot="figure"
+          src={shot("diff-f")}
+          crop={shot("diff-m")}
+          cast={{ src: fixCast, still: "diff", strip: true, key: "y", label: "apply", end: "hold" }}
+          panCols={80}
+          panStart={15}
+          alt="An edit to the ledger-api Deployment waiting for confirmation in a red frame: a one-line diff changes DATABASE_URL from ledger-db-primary to ledger-db, with a red y to apply and n to cancel."
+        />
+        <div slot="after" class="keys">
+          <KeyList />
+        </div>
+      </Feature>
 
-    <Feature id="logbook" name="Logbook" heading="Still there in the morning.">
-      <p>
-        Kubernetes keeps events for an hour, and a replaced pod takes its logs with it. The <b>Logbook</b> keeps
-        what you looked at: the logs and events you read, every write with the state before and after it, and when
-        each&nbsp;happened.
-      </p>
-      <p>
-        Open it from <kbd class="cap">:</kbd>. When the storm has passed, export the night as a timeline with a
-        postmortem template, no cluster needed, and read it back in calm water, or hand it to Claude to
-        piece&nbsp;together. Every entry keeps its <i>isnad</i>, its chain: which cluster, which session, when it
-        happened and when you&nbsp;saw&nbsp;it.
-      </p>
-      <p class="quiet">
-        Kept on your machine, readable only by you, with secrets redacted. It records what you did and saw in
-        safina; it is not an audit of the&nbsp;cluster.
-      </p>
-      <Frame
-        slot="figure"
-        src={shot("history")}
-        crop={shot("history-m")}
-        panCols={80}
-        alt="The Logbook for payments-api, newest first: a restart and, before it, a scale to 3 replicas, each step timestamped from requested, through the before snapshot, the API accepting it and the after snapshot, to progress and completed at 3 of 3 ready."
-      />
-    </Feature>
+      <Feature id="logbook" name="Logbook" heading="Still there in the morning.">
+        <p>
+          Kubernetes keeps events for an hour by default, and a replaced pod takes its logs with it. The <b>Logbook</b> keeps
+          what you saw: the logs and events you read, and every write with the state before and
+          after&nbsp;it.
+        </p>
+        <p>
+          Afterwards, export the night, from the <i>bismillah</i> before your first look
+          to the <i>alhamdulillah</i> when the pods are ready, as a timeline with a postmortem template. That works without cluster access, which helps when the cluster was the problem. Every
+          entry keeps its <i>isnad</i>, the
+          chain it came through: which cluster, which session, when it happened and when you&nbsp;saw&nbsp;it.
+        </p>
+        <p class="quiet">
+          It lives on your machine, readable only by you, with secrets redacted. It records what you did and saw in
+          safina, so it isn’t an audit log of the&nbsp;cluster.
+        </p>
+        <Frame
+          slot="figure"
+          src={shot("history")}
+          crop={shot("history-m")}
+          cast={{ src: historyCast, still: "history", key: ":", label: "logbook", end: "still" }}
+          panCols={80}
+          panStart={26}
+          alt="The Logbook for ledger-api, newest first: the DATABASE_URL edit, timestamped from requested, through the before snapshot, the changed fields, the API accepting it and the after snapshot, to progress at 0 and then 1 of 2 ready, and completed at 2 of 2 ready eight seconds after it was requested."
+        />
+      </Feature>
 
-    <Aboard />
+      <Interlude />
+      <Aboard />
+    </div>
+    <Compare />
+    <Questions />
     <Install />
   </main>
   <Footer />

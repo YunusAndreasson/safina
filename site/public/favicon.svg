@@ -1,8 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <rect width="64" height="64" rx="14" fill="#060d1a"/>
-  <path d="M12 38h40l-5.5 10.5a3 3 0 0 1-2.66 1.6H20.16a3 3 0 0 1-2.66-1.6Z" fill="#c3d1df"/>
-  <rect x="20" y="29" width="7" height="7" rx="1" fill="#8494a8"/>
-  <rect x="28.5" y="29" width="7" height="7" rx="1" fill="#8494a8"/>
-  <rect x="37" y="21" width="7" height="15" rx="1" fill="#c3d1df"/>
-  <circle cx="40.5" cy="15" r="3.2" fill="#7dcfff"/>
+  <!-- src/assets/sail.svg, centred on its centre of mass, not its box -->
+  <path fill="#7dcfff" transform="translate(6.42 5.73) scale(0.46)" d="M101.9 97C71.3 81.6 29.4 81.3 0 100C19.7 74.7 46.6 31.3 24.3 0C66.7 12.3 100.3 52.4 101.9 97Z"/>
 </svg>

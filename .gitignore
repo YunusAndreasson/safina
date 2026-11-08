@@ -33,3 +33,4 @@ debug.log
 /site/dist/
 /site/.astro/
 /site/.demo/
+/site/.frames/

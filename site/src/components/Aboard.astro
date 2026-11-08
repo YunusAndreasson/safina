@@ -5,39 +5,39 @@ const items: { name: string; keys: string[]; text: string }[] = [
   {
     name: "Shell anywhere",
     keys: ["s"],
-    text: "A shell in any container. When the image has none, safina brings its own in a debug container.",
+    text: "A shell in any container. If the image doesn’t have one, safina asks before adding a debug container that does.",
   },
   {
     name: "Forward list",
     keys: ["Ctrl", "F"],
-    text: "Every port-forward in one place, so none is left running in a tab you forgot.",
+    text: "All your port-forwards in one list, so none of them keeps running in a terminal tab you forgot about.",
   },
   {
     name: "Quick switch",
     keys: ["Ctrl", "K"],
-    text: "Change cluster mid-incident, without restarting safina.",
+    text: "Switch clusters without quitting safina. It leaves kubectl’s current context alone, so your other terminals stay where you left them.",
   },
   {
     name: "Jump search",
     keys: [":"],
-    text: "Type a name to jump to anything you have loaded. Tab shows what you can do to it.",
+    text: "Type part of a name to jump to anything safina has loaded, or to a view like the Logbook.",
   },
   {
     name: "Copy over SSH",
     keys: ["y"],
-    text: "The selection, the YAML or the logs land on your own clipboard, even from a remote box.",
+    text: "The selection, the YAML or the logs go to your own clipboard, even when safina runs on a box you SSHed into.",
   },
   {
     name: "Beacon",
     keys: [],
-    text: "On terminals that show it, safina’s tab tells you when Claude is answering or a write is waiting for your yes.",
+    text: "If your terminal shows tab status, safina’s tab tells you when the model is answering or a write is waiting for your yes, so you can work in another tab.",
   },
 ];
 ---
 
 <section class="aboard" id="aboard" aria-labelledby="aboard-title">
   <div class="wrap split">
-    <h2 id="aboard-title">Also on board</h2>
+    <h2 id="aboard-title" class="h2-ref split__title">Also on board</h2>
     <dl class="aboard__list">
       {
         items.map((it) => (
@@ -64,6 +64,11 @@ const items: { name: string; keys: string[]; text: string }[] = [
   .aboard {
     padding-top: var(--s5);
     background: var(--abyss);
+  }
+  /* After the interlude, the photograph's fade carries part of the break,
+     as it does above it: s4 on both sides. */
+  :global(.interlude) + .aboard {
+    padding-top: var(--s4);
   }
   .aboard .split {
     row-gap: var(--s3);

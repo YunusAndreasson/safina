@@ -16,7 +16,7 @@ const { id, name, heading } = Astro.props;
   <div class="wrap">
     <div class="feature__head split">
       <hgroup>
-        <p class="feature__name">{name}</p>
+        <p class="section-name">{name}</p>
         <h2 id={`${id}-title`}>{heading}</h2>
       </hgroup>
       <div class="feature__text">
@@ -45,18 +45,6 @@ const { id, name, heading } = Astro.props;
   }
   .feature__head h2 {
     max-width: 17ch;
-  }
-  /* The feature's own name, a sister ship of the wordmark: the same hull
-     lettering (widest, light, tracked open) in the same cyan, the colour
-     of the app's own title bar. */
-  .feature__name {
-    margin-bottom: var(--s1);
-    font-size: var(--t-body);
-    font-weight: 400;
-    font-stretch: 125%;
-    letter-spacing: 0.08em;
-    line-height: 1.2;
-    color: var(--beacon);
   }
   /* Side by side, the text column itself is the measure, so the text runs
      to the same right edge as the figure below. Stacked, the column is the

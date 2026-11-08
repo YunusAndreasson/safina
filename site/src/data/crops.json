@@ -1,0 +1,31 @@
+{
+  "//": "Phone crops (m) and feature strips (f) of each still, in terminal cells: [col, row, cols, rows]. scripts/crops.sh cuts the images from these boxes, and the player lines a recording up with the same boxes, so change them here only.",
+  "workloads": {
+    "m": [0, 1, 49, 18]
+  },
+  "failing": {
+    "m": [60, 1, 61, 18]
+  },
+  "logs": {
+    "m": [71, 6, 55, 15]
+  },
+  "events": {
+    "m": [61, 4, 60, 7]
+  },
+  "hot": {
+    "m": [63, 4, 79, 14]
+  },
+  "chat": {
+    "m": [61, 4, 99, 24]
+  },
+  "diff": {
+    "m": [26, 3, 80, 23],
+    "f": [0, 1, 160, 27]
+  },
+  "history": {
+    "m": [26, 3, 80, 26]
+  },
+  "metrics": {
+    "m": [61, 4, 74, 13]
+  }
+}

@@ -15,6 +15,10 @@ export interface ReleaseAsset {
 
 export const release = {
   available: false,
+  /** The tag of the newest release without its "v" (say "0.1.0"), shown
+   *  beside the downloads so a visitor can check what they get. Leave empty
+   *  to show only the license, platforms and release notes. */
+  version: "",
   repo: "https://github.com/YunusAndreasson/safina",
   fromSource: "git clone https://github.com/YunusAndreasson/safina && cd safina && make install",
   assets: [

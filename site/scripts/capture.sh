@@ -12,7 +12,17 @@
 #   capture.sh keys <k>...      send keys (tmux send-keys syntax)
 #   capture.sh text             print the current screen as plain text
 #   capture.sh shot <name>      render src/assets/shots/<name>.png
+#   capture.sh size <cols> <rows>  resize the terminal (safina repaints)
+#   capture.sh mark <label>     while recording, drop a named marker into the cast
+#   capture.sh rec start <name> record the pane to .demo/casts/<name>.cast (asciicast v2,
+#                               resizes included); a nudge makes safina repaint, so the
+#                               cast opens on a whole frame. Record the whole shoot, then
+#                               cut the beats with castcut.mjs
+#   capture.sh rec stop         stop recording
 #   capture.sh stop             stop safina and restore the safina config
+#
+# Chat runs through a `claude` that has no tools of its own (`--tools ""`),
+# so the model sees only what safina sends it, as the site says.
 #
 # Needs: the demo cluster (demo-cluster.sh), tmux, chromium, node, go.
 
@@ -22,8 +32,12 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 STATE="$HERE/../.demo"
 SOCK=safina-capture
-COLS="${COLS:-140}"
-ROWS="${ROWS:-40}"
+# 160x37: the narrowest terminal where every demo workload's name is whole
+# (at 140 the list truncated twenty of them; a laptop's full-screen
+# terminal is wider still), in the window shape where the tour window and
+# its keys share one 1440x900 screen.
+COLS="${COLS:-160}"
+ROWS="${ROWS:-37}"
 KCFG="${DEMO_KUBECONFIG:-$STATE/kubeconfig}"
 
 tm() { tmux -L "$SOCK" -f /dev/null "$@"; }
@@ -55,10 +69,19 @@ start)
 		(cd "$ROOT" && go build -o "$STATE/safina" ./cmd/safina)
 	fi
 
+	# The demo chat: the real CLI with every built-in tool switched off.
+	real_claude="$(command -v claude || true)"
+	mkdir -p "$STATE/bin" "$STATE/cwd"
+	if [[ -n "$real_claude" ]]; then
+		printf '#!/usr/bin/env bash\nexec %q --tools "" "$@"\n' "$real_claude" >"$STATE/bin/claude"
+		chmod +x "$STATE/bin/claude"
+	fi
+
 	tm kill-server 2>/dev/null || true
 	# TMUX unset + truecolor TERM so safina's colour detection picks 24-bit.
-	tm new-session -d -s demo -x "$COLS" -y "$ROWS" \
-		-e KUBECONFIG="$KCFG" -e EDITOR="$HERE/edit-fix.sh" -e VISUAL="$HERE/edit-fix.sh" \
+	# TZ=UTC so the topbar clock agrees with the Logbook, which prints UTC.
+	tm new-session -d -s demo -x "$COLS" -y "$ROWS" -c "$STATE/cwd" \
+		-e PATH="$STATE/bin:$PATH" -e KUBECONFIG="$KCFG" -e EDITOR="$HERE/edit-fix.sh" -e VISUAL="$HERE/edit-fix.sh" -e TZ=UTC \
 		"env -u TMUX TERM=xterm-256color COLORTERM=truecolor $STATE/safina --kubeconfig $KCFG"
 	tm set -g status off
 	tm set -g window-size manual
@@ -72,7 +95,14 @@ start)
 
 keys)
 	shift
+	# While recording, each key press lands in the cast as a marker.
+	[[ -f "$STATE/casts/.marks" ]] && echo "key $*" >>"$STATE/casts/.marks"
 	tm send-keys -t demo "$@"
+	;;
+
+mark)
+	shift
+	[[ -f "$STATE/casts/.marks" ]] && echo "$*" >>"$STATE/casts/.marks"
 	;;
 
 text)
@@ -81,6 +111,41 @@ text)
 
 shot)
 	node "$HERE/snap.mjs" "${2:?shot name}"
+	;;
+
+size)
+	# A recording learns the new grid first, then safina repaints into it.
+	[[ -f "$STATE/casts/.marks" ]] && echo "size ${2:?cols}x${3:?rows}" >>"$STATE/casts/.marks" && sleep 0.05
+	tm resize-window -t demo -x "$2" -y "${3:?rows}"
+	;;
+
+rec)
+	case "${2:-}" in
+	start)
+		name="${3:?cast name}"
+		mkdir -p "$STATE/casts"
+		read -r w h < <(tm display -p -t demo '#{pane_width} #{pane_height}')
+		tm pipe-pane -t demo # close any earlier pipe
+		: >"$STATE/casts/.marks"
+		tm pipe-pane -O -t demo "exec node '$HERE/castrec.mjs' '$STATE/casts/$name.cast' $w $h '$STATE/casts/.marks'"
+		sleep 0.3
+		# One row taller and back: safina repaints the whole screen on a
+		# resize, so the recording opens on a complete frame.
+		"$0" size "$w" "$((h + 1))"
+		sleep 0.4
+		"$0" size "$w" "$h"
+		echo "recording to $STATE/casts/$name.cast (${w}x${h})"
+		;;
+	stop)
+		tm pipe-pane -t demo
+		rm -f "$STATE/casts/.marks"
+		echo "recording stopped"
+		;;
+	*)
+		echo "usage: capture.sh rec start <name> | rec stop" >&2
+		exit 2
+		;;
+	esac
 	;;
 
 stop)

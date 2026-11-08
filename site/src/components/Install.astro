@@ -39,6 +39,12 @@ const [avif, fallback] = await Promise.all([
         release.available ? (
           <div class="downloads" data-downloads>
             <p class="lede">One binary. Download it, put it on your PATH,&nbsp;run&nbsp;<code>safina</code>.</p>
+            <p class="release-tag">
+              {release.version && <span>v{release.version}</span>}
+              <span>MIT</span>
+              <span>macOS · Linux</span>
+              <a href={`${release.repo}/releases/latest`}>release notes</a>
+            </p>
             <ul class="downloads__list" role="list">
               {release.assets.map((a) => (
                 <li>
@@ -62,16 +68,16 @@ const [avif, fallback] = await Promise.all([
                 <span data-copy-label>Copy</span>
               </button>
             </div>
-            <p class="quiet">Needs Go 1.27 or newer, and access to the repository while it is private.</p>
+            <p class="quiet">You’ll need Go 1.27 or newer, and access to the repo while it’s private.</p>
           </>
         )
       }
-      <ul class="facts" role="list">
-        <li><strong>Runs on your machine.</strong> A single binary that uses your&nbsp;existing&nbsp;kubeconfig.</li>
-        <li><strong>Nothing to install in the cluster.</strong> No agent, operator or CRDs. Your RBAC applies&nbsp;as&nbsp;is.</li>
-        <li><strong>Chat is optional.</strong> It needs the <code>claude</code> CLI. Everything else works&nbsp;without&nbsp;it.</li>
-      </ul>
     </div>
+    <ul class="facts" role="list">
+      <li><strong>Runs on your machine.</strong> It reads the kubeconfig you already have, auth plugins included, and never writes&nbsp;to&nbsp;it.</li>
+      <li><strong>Nothing to install in the cluster.</strong> No in-cluster agent, operator or CRDs. Safina can only do what your RBAC lets&nbsp;you&nbsp;do.</li>
+      <li><strong>Chat is optional.</strong> It runs through the <code>claude</code> CLI you already have, so there’s no API key to&nbsp;set&nbsp;up.</li>
+    </ul>
   </div>
   <p class="visually-hidden" aria-live="polite" data-copy-status></p>
 </section>
@@ -88,21 +94,30 @@ const [avif, fallback] = await Promise.all([
     width: 100%;
     overflow: hidden;
   }
+  /* The photograph's subject is low in its frame: the ship, its amber mast
+     lamp and the dawn line sit in the bottom third. The crop holds them
+     (bottom-anchored; on phones shifted right so the bridge and lamp stay
+     in), and the fades stay light enough that the ship reads as the same
+     one the page opened on. */
   .band img {
     position: absolute;
     inset: 0;
     width: 100%;
     height: 100%;
     object-fit: cover;
-    object-position: 60% 62%;
+    object-position: 60% 100%;
+
+    @media (width <= 640px) {
+      object-position: 84% 100%;
+    }
   }
   .band::after {
     content: "";
     position: absolute;
     inset: 0;
     background:
-      linear-gradient(180deg, var(--abyss) 0%, rgb(from var(--abyss) r g b / 0%) 26%),
-      linear-gradient(0deg, var(--abyss) 0%, rgb(from var(--abyss) r g b / 60%) 30%, rgb(from var(--abyss) r g b / 0%) 60%);
+      linear-gradient(180deg, var(--abyss) 0%, rgb(from var(--abyss) r g b / 0%) 30%),
+      linear-gradient(0deg, var(--abyss) 0%, rgb(from var(--abyss) r g b / 55%) 16%, rgb(from var(--abyss) r g b / 0%) 38%);
   }
 
   /* The band's own fade carries the rest of the section break. */
@@ -110,13 +125,29 @@ const [avif, fallback] = await Promise.all([
     margin-top: var(--s4);
   }
   /* The same anatomy as every feature: the title on the title line, its
-     content on the text line, their capitals level. */
+     content on the text line, their capitals level. It rises out of the
+     photograph's sea, just under the ship's waterline, never over the ship.
+     Side by side, the facts sit under the title, like the footer's name and
+     licence below them, so the closing weighs the same on both sides. */
   .install__body {
     position: relative;
     z-index: 1;
     row-gap: var(--s2);
-    margin-top: calc(-1 * clamp(96px, 13vw, 200px));
+    margin-top: calc(-1 * clamp(48px, 5vw, 96px));
     padding-bottom: var(--s5);
+
+    @media (width > 1100px) {
+      grid-template-rows: auto 1fr;
+
+      & > .install__main {
+        grid-column: 2;
+        grid-row: 1 / span 2;
+      }
+      & > .facts {
+        grid-column: 1;
+        grid-row: 2;
+      }
+    }
   }
   /* Stacked, the steps keep the measure they have on the text line. */
   .install__main {
@@ -209,13 +240,22 @@ const [avif, fallback] = await Promise.all([
     padding: 0;
   }
 
+  /* s4 from what's above them: the grid's row gap (s2) plus s3. The title
+     column's quiet second voice, a size under the reading text, so the
+     command beside them leads. */
   .facts {
     display: grid;
     gap: var(--s2);
-    margin-top: var(--s4);
+    margin-top: var(--s3);
     padding: 0;
     list-style: none;
+    font-size: var(--t-ui);
+    line-height: 1.55;
     color: var(--fog);
+
+    @media (width <= 1100px) {
+      max-width: var(--measure);
+    }
   }
   /* Run-in heads: the UI weight, in the title colour. */
   .facts strong {
@@ -239,5 +279,19 @@ const [avif, fallback] = await Promise.all([
       left: 12px;
       right: auto;
     }
+  }
+  /* What the download is, in the terminal's face, the way a release page
+     labels one: version, license, platforms, and the notes to check. */
+  .release-tag {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4em 1.4ch;
+    margin-top: var(--s1);
+    font-family: var(--mono);
+    font-size: var(--t-small);
+    color: var(--fog);
+  }
+  .release-tag a {
+    color: var(--spray);
   }
 </style>

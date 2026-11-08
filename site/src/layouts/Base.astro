@@ -11,11 +11,22 @@ const { title, description } = Astro.props;
 const canonical = new URL(Astro.url.pathname, Astro.site);
 const og = new URL("/og.jpg", Astro.site);
 const ogAlt =
-  "Safina, with its Arabic name سفينة, over a container ship in a night storm: for teams that ship. A keyboard-first Kubernetes terminal for the people on call.";
+  "Safina’s sail and name, with its Arabic name سفينة, over a container ship in a night storm: for teams that ship. A keyboard-first Kubernetes terminal for whoever’s on call.";
 ---
 
 <!doctype html>
-<!-- بِسْمِ اللَّهِ مَجْرَاهَا وَمُرْسَاهَا -->
+<!-- بِسْمِ اللَّهِ مَجْرَاهَا وَمُرْسَاهَا
+
+                                      .
+                                      |
+         ___ ___ ___ ___ ___ ___     _|_
+        |___|___|___|___|___|___|   |o o|
+        |___|___|___|___|___|___|___|o o|__
+  ______|___________________________|_____|
+  \    s a f i n a                        /
+   \_____________________________________/
+ ~~~~ ~~~~~~~~ ~~~~~ ~~~~~~~~~~ ~~~~~~ ~~~~~~
+-->
 <html lang="en">
   <head>
     <meta charset="utf-8" />

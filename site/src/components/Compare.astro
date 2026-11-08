@@ -1,0 +1,192 @@
+---
+// Safina next to k9s: a check or a dash, nothing to read. Every k9s mark is
+// checked against the k9s README, k9scli.io and its latest release (v0.51.0,
+// June 2026); every safina mark against this repo. Recheck both when either
+// changes, and keep k9s's wins in: the dashes on safina's side are what make
+// its checks believable.
+//   Confirmation on every write: k9s's Ctrl-K kill has no confirmation dialog.
+//   All resource types by default: safina shows six groups; others
+//   are added. Labels stay short and precise, two to five words. Each row
+//   uses the field's own terms (kubectl's "rollout status" and "resource types"; "AI assistant" as Headlamp and Lens tables say;
+//   k9s's "read-only mode", "plugins", "skins"), never a safina feature name.
+// "some" is a half answer: k9s asks before a delete but not a kill; safina
+// shows six resource groups and you add the rest.
+type Mark = boolean | "some";
+const rows: { label: string; safina: Mark; k9s: Mark }[] = [
+  { label: "Write actions need Shift", safina: true, k9s: false },
+  { label: "Confirmation on every write", safina: true, k9s: "some" },
+  { label: "Rollout status after scale, restart or edit", safina: true, k9s: false },
+  { label: "Cluster picker at launch", safina: true, k9s: false },
+  { label: "AI assistant", safina: true, k9s: false },
+  { label: "Incident timeline export", safina: true, k9s: false },
+  { label: "All resource types by default", safina: "some", k9s: true },
+  { label: "Read-only mode", safina: false, k9s: true },
+  { label: "Plugins and skins", safina: false, k9s: true },
+  { label: "Windows support", safina: false, k9s: true },
+  { label: "Package manager install", safina: false, k9s: true },
+];
+---
+
+<section class="compare" id="compare" aria-labelledby="compare-title">
+  <div class="wrap split">
+    <div class="compare__head split__title">
+      <hgroup>
+        <p class="section-name">Compare</p>
+        <h2 id="compare-title" class="h2-ref">Safina and k9s</h2>
+      </hgroup>
+      <p class="compare__lede">Both read the same kubeconfig, so you can run them side&nbsp;by&nbsp;side.</p>
+    </div>
+    <div class="compare__body">
+      <table class="compare__table">
+        <thead>
+          <tr>
+            <td></td>
+            <th scope="col" class="compare__name compare__name--safina">safina</th>
+            <th scope="col" class="compare__name">k9s</th>
+          </tr>
+        </thead>
+        <tbody>
+          {
+            rows.map((r) => (
+              <tr>
+                <th scope="row">{r.label}</th>
+                {[r.safina, r.k9s].map((has, i) => (
+                  <td class:list={["compare__mark", { "compare__mark--safina": i === 0 }]}>
+                    {has === "some" ? (
+                      <span class="some">Some</span>
+                    ) : has ? (
+                      <svg class="check" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+                        <path d="M3.2 8.6 6.5 11.8 12.8 4.6" />
+                      </svg>
+                    ) : (
+                      <span class="dash" aria-hidden="true" />
+                    )}
+                    {has !== "some" && <span class="visually-hidden">{has ? "Yes" : "No"}</span>}
+                  </td>
+                ))}
+              </tr>
+            ))
+          }
+        </tbody>
+      </table>
+      <p class="compare__note">k9s as of v0.51.0, June&nbsp;2026.</p>
+    </div>
+  </div>
+</section>
+
+<style>
+  .compare {
+    padding-top: var(--s5);
+    background: var(--abyss);
+  }
+  .compare .split {
+    row-gap: var(--s3);
+  }
+  .compare h2 {
+    max-width: 17ch;
+  }
+  .compare__body {
+    @media (width <= 1100px) {
+      max-width: var(--measure);
+    }
+  }
+  /* The title and the one sentence that frames the table, as one block on
+     the title line: the table alone takes the text line, starting level
+     with the title. */
+  .compare__lede {
+    max-width: 28ch;
+    margin-top: var(--s2);
+    color: var(--spray);
+    text-wrap: balance;
+
+    @media (width <= 1100px) {
+      max-width: var(--measure);
+    }
+  }
+
+  /* Names left, two narrow columns of marks. */
+  .compare__table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  th,
+  td {
+    padding: 0;
+    font-weight: inherit;
+    text-align: start;
+  }
+  tbody th {
+    padding-block: 11px;
+    padding-inline-end: 16px;
+    color: var(--spray);
+    text-wrap: balance;
+  }
+  tbody tr {
+    border-top: 1px solid var(--hairline);
+  }
+  .compare__name,
+  .compare__mark {
+    width: 6.5rem;
+    text-align: center;
+    vertical-align: middle;
+
+    @media (width <= 640px) {
+      width: 4.75rem;
+    }
+  }
+  /* The names in the feature names' hull lettering; safina's in cyan. */
+  .compare__name {
+    padding-block: 12px 10px;
+    font-size: var(--t-ui);
+    font-weight: 400;
+    font-stretch: 125%;
+    letter-spacing: 0.08em;
+    color: var(--fog);
+  }
+  /* safina's column: one faint band of the beacon, top to bottom. */
+  .compare__name--safina,
+  .compare__mark--safina {
+    background: rgb(from var(--beacon) r g b / 6%);
+  }
+  .compare__name--safina {
+    border-radius: 12px 12px 0 0;
+    color: var(--beacon);
+  }
+  tbody tr:last-child .compare__mark--safina {
+    border-radius: 0 0 12px 12px;
+  }
+
+  .check {
+    display: block;
+    margin-inline: auto;
+    fill: none;
+    stroke: var(--foam);
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .compare__mark--safina .check {
+    stroke: var(--beacon);
+  }
+  .dash {
+    display: block;
+    width: 10px;
+    height: 1.5px;
+    margin-inline: auto;
+    border-radius: 1px;
+    background: rgb(from var(--fog) r g b / 55%);
+  }
+
+  /* A half answer, in words, quieter than a check. */
+  .some {
+    font-size: var(--t-micro);
+    letter-spacing: 0.02em;
+    color: var(--fog);
+  }
+
+  .compare__note {
+    margin-top: var(--s1);
+    font-size: var(--t-small);
+    color: var(--fog);
+  }
+</style>

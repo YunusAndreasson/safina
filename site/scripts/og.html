@@ -50,6 +50,20 @@
     line-height: 0.9;
     margin-left: -6px;
   }
+  /* The wordmark's sail (src/assets/sail.svg), stacked over the name as on
+     the refinement sheet: beside it, it would push the Arabic onto the
+     ship. It takes the empty sky the photograph leaves for the title. Sized
+     to the site's lockup weight (the sail carries about the word's own
+     ink), and it stands on the copy's line while the S hangs its 6px. */
+  .mark::before {
+    content: "";
+    display: block;
+    height: 0.92em;
+    aspect-ratio: 101.9 / 100;
+    margin: 0 0 0.22em 6px;
+    background: currentColor;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 101.9 100'%3E%3Cpath d='M101.9 97C71.3 81.6 29.4 81.3 0 100C19.7 74.7 46.6 31.3 24.3 0C66.7 12.3 100.3 52.4 101.9 97Z'/%3E%3C/svg%3E") no-repeat 0 0 / 100% 100%;
+  }
   .ar {
     font-family: Kufi;
     font-size: 40px;
@@ -73,6 +87,6 @@
   <div class="copy">
     <div class="mark">Safina<span class="ar" lang="ar" dir="rtl">سفينة</span></div>
     <div class="tag">For teams that ship.</div>
-    <div class="sub">A keyboard-first Kubernetes terminal for the people on call.</div>
+    <div class="sub">A keyboard-first Kubernetes terminal for whoever’s on call.</div>
   </div>
 </div>

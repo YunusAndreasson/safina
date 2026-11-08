@@ -1,0 +1,62 @@
+---
+import { getImage } from "astro:assets";
+import passing from "../assets/img/storm-passing.jpg";
+
+// The act break between the watch and first light: the fix has landed, the
+// storm has passed, and it's still night. No words: a held shot, the camera
+// halfway between the storm's close-up and first light's wide.
+const widths = [960, 1280, 1672];
+const [avif, fallback] = await Promise.all([
+  getImage({ src: passing, format: "avif", widths, quality: 58 }),
+  getImage({ src: passing, format: "webp", width: 1672, quality: 74 }),
+]);
+---
+
+<div class="interlude">
+  <picture>
+    <source type="image/avif" srcset={avif.srcSet.attribute} sizes="100vw" />
+    <img
+      src={fallback.src}
+      width={passing.width}
+      height={passing.height}
+      alt="The same ship later that night, riding a heavy swell after the storm, its amber lamp still lit under breaking cloud."
+      loading="lazy"
+      decoding="async"
+    />
+  </picture>
+</div>
+
+<style>
+  /* Bleeds like the other two photographs, and fades into the black above
+     and below, so it reads as a cut between acts, not a picture on the page. */
+  .interlude {
+    position: relative;
+    aspect-ratio: 3;
+    min-height: 320px;
+    max-height: 60svh;
+    width: 100%;
+    margin-top: var(--s4);
+    overflow: hidden;
+    background: var(--abyss);
+
+    @media (width <= 640px) {
+      aspect-ratio: 4 / 3;
+    }
+  }
+  .interlude img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: 50% 50%;
+  }
+  .interlude::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background:
+      linear-gradient(180deg, var(--abyss) 0%, rgb(from var(--abyss) r g b / 0%) 26%),
+      linear-gradient(0deg, var(--abyss) 0%, rgb(from var(--abyss) r g b / 0%) 26%);
+  }
+</style>

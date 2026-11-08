@@ -1,15 +1,19 @@
 ---
-// The features by their own names, exactly as each section heads itself
-// (the tour has the hero's own button).
+// The page's parts in the words every product site uses (Jakob's law), in
+// page order, each lit while you're in it (src/scripts/nav.ts). The page
+// shows the same word for each: the hero's "Deep dive" button, Features
+// for the named features from Chat to Also on board, and the eyebrows over
+// Compare's and FAQ's titles. The button lights up at Get safina.
 const links = [
-  { href: "#claude", label: "Ask Claude" },
-  { href: "#safety", label: "Barbarossa mode" },
-  { href: "#logbook", label: "Logbook" },
+  { href: "#tour", label: "Deep dive" },
+  { href: "#features", label: "Features" },
+  { href: "#compare", label: "Compare" },
+  { href: "#questions", label: "FAQ" },
 ];
 ---
 
 <header class="nav">
-  <nav class="nav__inner wrap" aria-label="Primary">
+  <nav class="nav__inner wrap" aria-label="Primary" data-spy>
     <a class="wordmark" href="#top" aria-label="Safina, back to top">safina</a>
     <ul class="nav__links" role="list">
       {links.map((l) => <li><a href={l.href}>{l.label}</a></li>)}
@@ -17,6 +21,8 @@ const links = [
     <a class="btn btn--beacon nav__cta" href="#install">Get safina</a>
   </nav>
 </header>
+
+<script src="../scripts/nav.ts"></script>
 
 <style>
   .nav {
@@ -29,7 +35,7 @@ const links = [
     display: flex;
     align-items: center;
     gap: clamp(16px, 3vw, 40px);
-    height: 68px;
+    height: var(--nav-h);
   }
   .nav__links {
     display: flex;
@@ -38,9 +44,10 @@ const links = [
     list-style: none;
     font-size: var(--t-ui);
   }
-  /* The links are the features' own names, so they wear the names' hull
-     lettering (Feature.astro), the same as the wordmark beside them, in the
-     quiet ink until pointed at; then the names' cyan. */
+  /* The links wear the section names' hull lettering (.section-name), the
+     same as the wordmark beside them, in the quiet ink. Pointed at, they
+     brighten; the part you're in takes the names' cyan, the colour that
+     marks where you are. */
   .nav__links a {
     color: var(--spray);
     font-weight: 400;
@@ -48,10 +55,24 @@ const links = [
     letter-spacing: 0.08em;
     text-decoration: none;
     padding-block: 12px;
-    transition: color 160ms;
+    transition: color 200ms var(--ease-out);
   }
   .nav__links a:hover {
+    color: var(--foam);
+  }
+  .nav__links a[aria-current] {
     color: var(--beacon);
+  }
+  /* The button stays put from the first frame, as the primary action in the
+     best product bars does: the hero repeats it a size larger, which ranks
+     them without moving either. At Get safina the button is where you are:
+     it holds its lit, hovered state. */
+  .nav__cta[aria-current] {
+    --lift: 0.035;
+    box-shadow:
+      0 1px 0 0 rgb(from var(--foam) r g b / 70%) inset,
+      0 -1px 0 0 rgb(from var(--beacon-ink) r g b / 18%) inset,
+      0 10px 28px -14px rgb(from var(--beacon) r g b / 70%);
   }
   .nav__cta {
     min-height: 40px;
