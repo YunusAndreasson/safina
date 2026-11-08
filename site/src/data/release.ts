@@ -1,10 +1,13 @@
-// The one switch to flip at launch. While `available` is false the install
-// section says binaries are on the way and shows the from-source path; once
-// it is true it offers downloads, preselecting the visitor's platform.
+// The install section's facts. While `available` is false it says binaries
+// are on the way and shows only the from-source path; once it is true it
+// leads with the one-line install, lists the archives (the visitor's
+// platform first) and keeps from-source for everything else.
 //
-// Asset names follow GoReleaser's default archive template. GitHub serves
+// The archives are what .github/workflows/release.yml publishes for a `v*`
+// tag, and public/install.sh downloads the same names. GitHub serves
 // `/releases/latest/download/<name>` for the newest release, so these links
-// keep working across versions without editing this file.
+// keep working across versions without editing this file; bump `version` with
+// each release so the page names what it serves.
 
 export interface ReleaseAsset {
   os: "macos" | "linux";
@@ -14,16 +17,16 @@ export interface ReleaseAsset {
 }
 
 export const release = {
-  available: false,
+  available: true,
   /** The tag of the newest release without its "v" (say "0.1.0"), shown
    *  beside the downloads so a visitor can check what they get. Leave empty
    *  to show only the license, platforms and release notes. */
-  version: "",
+  version: "0.1.0",
   repo: "https://github.com/YunusAndreasson/safina",
+  /** Linux only, for now: install.sh refuses anything else with the from-source line. */
+  install: "curl -fsSL https://safina.run/install.sh | sh",
   fromSource: "git clone https://github.com/YunusAndreasson/safina && cd safina && make install",
   assets: [
-    { os: "macos", arch: "arm64", label: "macOS, Apple silicon", file: "safina_darwin_arm64.tar.gz" },
-    { os: "macos", arch: "amd64", label: "macOS, Intel", file: "safina_darwin_amd64.tar.gz" },
     { os: "linux", arch: "amd64", label: "Linux, x86-64", file: "safina_linux_amd64.tar.gz" },
     { os: "linux", arch: "arm64", label: "Linux, ARM64", file: "safina_linux_arm64.tar.gz" },
   ] satisfies ReleaseAsset[],

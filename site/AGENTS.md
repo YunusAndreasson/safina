@@ -150,9 +150,9 @@ layout signatures or assets.
 | What the best of them do | Here |
 | --- | --- |
 | Say what it is, for whom, with the real product on the first screen at 1440×900 and 390×844 | Yes: tagline, lede, the window's peek (`--peek`). Keep it. |
-| One obvious next step | Get safina, the bar's one filled button, in place from the first frame (the hero has none; the nav's words follow Jakob's law, README §Voice). At launch, a one-line install for the visitor's platform (`src/data/release.ts`) and a package manager, which also flips a k9s row in Compare |
+| One obvious next step | Get safina, the bar's one filled button, in place from the first frame (the hero has none; the nav's words follow Jakob's law, README §Voice). Since v0.1.0 a one-line install on Linux (`public/install.sh`, README §Releases). Still to come: macOS binaries, and a package manager, which also flips a k9s row in Compare |
 | Let you try the product | The Deep dive, the keyboard tour |
-| Proof that checks out | Today Compare and Fair questions, both checked against code. At launch the public repo, release notes and version. Never invented quotes, logos, user counts, stars or benchmarks |
+| Proof that checks out | Today Compare and Fair questions, both checked against code. The public repo, release notes and version (v0.1.0, Nov 2026). Never invented quotes, logos, user counts, stars or benchmarks |
 | Load fast | Readable with no JavaScript, CLS 0, first load about 431 KB on desktop and 203 KB on a phone (Nov 2026, Chromium). The recordings' player (about 114 KB of script, 80 KB of font and 38 KB of casts, gzipped) loads only once the visitor scrolls in or reaches for a key; the deep dive's reel starts only once its keys are on screen. Growth needs a reason the user agreed to |
 | Accessible | WCAG 2.2 AA: contrast, focus, keyboard, alt text that says what each screen shows |
 | Look current | Dated notes (k9s "as of v0.51.0") get rechecked; a changelog once there are releases |

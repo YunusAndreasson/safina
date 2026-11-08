@@ -73,11 +73,21 @@ Cloudflare Workers" template, limited to this account and the safina.run
 zone. Locally,
 `pnpm ship` uses `wrangler login` instead; CI is the normal way to deploy.
 
-## Launch switch
+## Releases
 
-`src/data/release.ts`: set `available: true` once binaries are published on
-GitHub Releases. The install section then offers downloads (the visitor's
-platform first) instead of the build-from-source line.
+A `v*` tag pushed to GitHub builds the Linux binaries (x86-64 and ARM64, on
+Ubuntu 22.04, needing glibc 2.34 or newer) and publishes them with a
+`checksums.txt` (`.github/workflows/release.yml`; run it by hand to build
+without publishing). `public/install.sh`, served at
+https://safina.run/install.sh, installs the latest one: it refuses macOS,
+musl and old glibc with the from-source line, verifies the archive's
+SHA-256 and writes only `~/.local/bin/safina`. The archive names are shared
+by the workflow, the script and `src/data/release.ts`; change them together.
+
+`src/data/release.ts` drives the install section: `available` (true since
+v0.1.0) leads with the one-line install and the archives, the visitor's
+platform first; bump `version` with each release. Tag first, then deploy the
+site, so the page never offers a release that doesn't exist yet.
 
 ## Screenshots and recordings
 

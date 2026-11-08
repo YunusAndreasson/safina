@@ -58,7 +58,7 @@ function guard() {
   // The live domain is the only copy, so nothing else can be indexed or drift.
   if (config.workers_dev !== false || config.preview_urls !== false) fail("wrangler.jsonc must keep workers.dev and preview URLs off.");
   if (config.assets?.directory !== "./dist") fail(`wrangler.jsonc serves "${config.assets?.directory}", not ./dist.`);
-  for (const name of ["index.html", "404.html", "_headers"]) {
+  for (const name of ["index.html", "404.html", "_headers", "install.sh"]) {
     if (!fs.existsSync(path.join(DIST, name))) fail(`dist/${name} is missing. Run \`pnpm verify\` first, which builds dist/.`);
   }
   log("guard", `wrangler.jsonc names ${WORKER}, static files only, on ${DOMAIN} alone; dist/ is built`);
@@ -110,6 +110,11 @@ async function check(origin, { remote }) {
   expect(recording.res.status === 200 && sha(recording.body) === sha(read(cast)), `${cast} is not this build's file`);
   expect(type.startsWith("text/plain"), `${cast} is served as "${type}", not text/plain`);
   if (remote && !recording.res.headers.get("content-encoding")) notes.push(`${cast} arrived uncompressed`);
+
+  const installer = await get("/install.sh");
+  const installerType = installer.res.headers.get("content-type") ?? "";
+  expect(installer.res.status === 200 && sha(installer.body) === sha(read("install.sh")), "/install.sh is not this build's install script");
+  expect(installerType.startsWith("text/plain"), `/install.sh is served as "${installerType}", not text/plain`);
 
   const card = await get("/og.jpg");
   expect(card.res.status === 200, `/og.jpg answers ${card.res.status}`);
@@ -170,7 +175,7 @@ async function dry() {
     }
     const { problems } = await smoke(origin, { remote: false, wait: 0 });
     if (problems.length > 0) fail(`The local asset server doesn't serve the build right:\n  ${problems.join("\n  ")}`);
-    log("smoke", `${origin} (as ${DOMAIN}) serves this build: pages, 404, caching, recordings as text, indexable`);
+    log("smoke", `${origin} (as ${DOMAIN}) serves this build: pages, 404, caching, recordings and install script as text, indexable`);
   } finally {
     dev.kill("SIGTERM");
   }
@@ -234,7 +239,7 @@ async function live() {
     fail(lines.join("\n"));
   }
   for (const note of result.notes) log("note", note);
-  log("smoke", `${LIVE} serves this build: pages, 404, caching, recordings as text, indexable`);
+  log("smoke", `${LIVE} serves this build: pages, 404, caching, recordings and install script as text, indexable`);
 
   if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, `url=${LIVE}\nversion=${deployed.version_id}\n`);
   if (process.env.GITHUB_STEP_SUMMARY) {

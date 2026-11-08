@@ -9,3 +9,8 @@
 # them (about 500 KB to 38 KB); as the default octet-stream it wouldn't.
 /_astro/*.cast
   Content-Type: text/plain; charset=utf-8
+
+# The install script, so a browser shows it as the text it is instead of
+# downloading it. Anyone can read what `| sh` would run.
+/install.sh
+  Content-Type: text/plain; charset=utf-8
