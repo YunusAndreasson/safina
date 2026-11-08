@@ -36,9 +36,9 @@
     "eslint-plugin-astro": "3.2.1",
     "eslint-plugin-jsx-a11y-x": "0.2.0",
     "globals": "17.14.0",
-    "typescript": "^6.0.3",
+    "typescript": "^7.0.2",
     "typescript-eslint": "8.72.1",
-    "wrangler": "4.156.0"
+    "wrangler": "4.158.0"
   },
   "packageManager": "pnpm@11.28.4"
 }
