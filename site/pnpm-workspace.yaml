@@ -2,6 +2,11 @@
 # crashes its WASM type-checker. Keep the pair on matching versions.
 overrides:
   "@emnapi/runtime": 1.11.3
+# GHSA-g3hv-75wg-m249 (a denial of service via globparts amplification) is fixed
+# only in minimatch 11. ESLint's packages, the only users here, still ask for
+# ^10; they call nothing that 11 removed (makeRe, regexp, AST, matchOne).
+# Drop this once @eslint/config-array allows 11.
+  minimatch: 11.0.3
 
 # wrangler (the deploy, `pnpm ship`) brings esbuild and workerd, which ship
 # their native binaries through install scripts.
