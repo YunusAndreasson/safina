@@ -74,6 +74,21 @@ feel cramped, increase the terminal font size before changing fonts.
 
 ## Installation
 
+On Linux (x86-64 or ARM64, glibc 2.35 or newer):
+
+```bash
+curl -fsSL https://safina.run/install.sh | sh
+```
+
+The script ([`site/public/install.sh`](site/public/install.sh)) downloads the
+latest release's archive, checks it against the release's `checksums.txt`,
+and puts `safina` in `~/.local/bin`. `SAFINA_INSTALL_DIR` and
+`SAFINA_VERSION` change where and which. The archives are also on the
+[releases page](https://github.com/YunusAndreasson/safina/releases).
+
+From source (Go 1.27 and Python 3; the Makefile fetches a pinned Zig to
+build libghostty):
+
 ```bash
 make build
 make install  # copies to $GOPATH/bin

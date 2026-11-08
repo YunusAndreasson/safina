@@ -1,0 +1,87 @@
+# Builds the Linux binaries and publishes them as a GitHub release when a
+# version tag is pushed (`git tag v0.1.0 && git push origin v0.1.0`). Run it
+# by hand from the Actions tab to build and test without publishing.
+#
+# Each binary is built natively, on Ubuntu 22.04 for x86-64 and ARM64, so it
+# needs glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36 and later).
+# libghostty is linked in statically; the archive names are the ones
+# site/src/data/release.ts and site/public/install.sh download.
+name: release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Build libghostty
+        run: make native
+      - name: Build safina
+        env:
+          REF: ${{ github.ref_name }}
+        run: |
+          case "$REF" in v[0-9]*) version="$REF" ;; *) version="v0.0.0-$(git rev-parse --short=12 HEAD)" ;; esac
+          PKG_CONFIG_PATH="$PWD/.build/libghostty/native/lib/pkgconfig" CGO_ENABLED=1 \
+            go build -trimpath -ldflags "-s -w -X github.com/yunus/safina/internal/version.Version=$version" \
+            -o out/safina ./cmd/safina
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      # The binary must run, report the tag, and need nothing newer than the
+      # glibc the install script promises.
+      - name: Check the binary
+        run: |
+          ./out/safina --version | tee /dev/stderr | grep -qx "safina version $VERSION"
+          ldd out/safina
+          if ldd out/safina | grep -v -E 'linux-vdso|ld-linux|libc\.so|libresolv\.so|libm\.so|libpthread\.so|libdl\.so' | grep -q '=>'; then
+            echo "::error::safina links a shared library beyond glibc"; exit 1
+          fi
+          floor=$(objdump -T out/safina | grep -o 'GLIBC_[0-9.]*' | sort -V -u | tail -1)
+          echo "needs $floor"
+          [ "$(printf '%s\n' "$floor" GLIBC_2.35 | sort -V | tail -1)" = GLIBC_2.35 ] || { echo "::error::needs $floor, newer than 2.35"; exit 1; }
+      - name: Package
+        run: |
+          cp LICENSE README.md out/
+          tar -czf "safina_linux_${{ matrix.arch }}.tar.gz" -C out safina LICENSE README.md
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: safina_linux_${{ matrix.arch }}
+          path: safina_linux_${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          merge-multiple: true
+      - name: Checksums
+        run: sha256sum safina_linux_*.tar.gz | tee checksums.txt
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "safina $TAG" --generate-notes --verify-tag \
+            safina_linux_amd64.tar.gz safina_linux_arm64.tar.gz checksums.txt
