@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"time"
 	"unicode"
+
+	"k8s.io/apimachinery/pkg/types"
 )
 
 const Version = 1
@@ -72,12 +74,12 @@ func safeActionText(value string) bool {
 }
 
 type Target struct {
-	Cluster    string `json:"cluster"`
-	APIVersion string `json:"apiVersion"`
-	Kind       string `json:"kind"`
-	Namespace  string `json:"namespace"`
-	Name       string `json:"name"`
-	UID        string `json:"uid"`
+	Cluster    string    `json:"cluster"`
+	APIVersion string    `json:"apiVersion"`
+	Kind       string    `json:"kind"`
+	Namespace  string    `json:"namespace"`
+	Name       string    `json:"name"`
+	UID        types.UID `json:"uid"`
 }
 
 func (t Target) Validate(cluster string) error {
@@ -147,7 +149,7 @@ type Execution struct {
 	Decision        string    `json:"decision"`
 	State           string    `json:"state"`
 	Time            time.Time `json:"time"`
-	UID             string    `json:"uid,omitempty"`
+	UID             types.UID `json:"uid,omitempty"`
 	ResourceVersion string    `json:"resourceVersion,omitempty"`
 	Generation      int64     `json:"generation,omitempty"`
 	Detail          string    `json:"detail,omitempty"`

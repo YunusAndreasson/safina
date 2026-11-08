@@ -159,7 +159,7 @@ func BuildPaletteIndex(cache map[string]*Children) []PaletteEntry {
 				Namespace: sv.Namespace,
 				Name:      sv.Name,
 				Path:      composeChild(parentPath, ref),
-				Hint:      sv.Type,
+				Hint:      string(sv.Type),
 			})
 		}
 		for _, ing := range ch.Ingresses {
@@ -178,7 +178,7 @@ func BuildPaletteIndex(cache map[string]*Children) []PaletteEntry {
 				Namespace: pvc.Namespace,
 				Name:      pvc.Name,
 				Path:      composeChild(parentPath, ref),
-				Hint:      pvc.Status,
+				Hint:      string(pvc.Status),
 			})
 		}
 		for _, n := range ch.Nodes {

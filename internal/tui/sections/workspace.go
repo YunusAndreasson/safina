@@ -20,6 +20,7 @@ type WorkspaceTab int
 
 const (
 	WSTabInspector WorkspaceTab = iota
+	WSTabMetrics
 	WSTabLogs
 	WSTabEvents
 	WSTabYaml
@@ -32,6 +33,8 @@ const (
 // Label uses a separate key and sentence-case name for every tab.
 func (t WorkspaceTab) Label() string {
 	switch t {
+	case WSTabMetrics:
+		return "m Metrics"
 	case WSTabInspector:
 		return "1 Inspector"
 	case WSTabLogs:
@@ -39,7 +42,7 @@ func (t WorkspaceTab) Label() string {
 	case WSTabEvents:
 		return "e Events"
 	case WSTabYaml:
-		return "d Describe"
+		return "d YAML"
 	case WSTabChat:
 		return "i Chat"
 	case WSTabHot:
@@ -47,7 +50,7 @@ func (t WorkspaceTab) Label() string {
 	case WSTabForwards:
 		return "⌃f Forwards"
 	case WSTabDrain:
-		return "D Drain"
+		return "Drain"
 	}
 	return ""
 }
@@ -58,6 +61,7 @@ func (t WorkspaceTab) Label() string {
 // operating surface, not a separate mode); pinned tabs (Hot / Forwards /
 // Drain) appear only while their underlying op is live.
 type WSTabAvailability struct {
+	Metrics  bool
 	Logs     bool
 	Events   bool
 	Yaml     bool
@@ -74,6 +78,9 @@ type WSTabAvailability struct {
 // Drain) come last and only appear while their op is active.
 func AvailableTabs(a WSTabAvailability) []WorkspaceTab {
 	tabs := []WorkspaceTab{WSTabInspector}
+	if a.Metrics {
+		tabs = append(tabs, WSTabMetrics)
+	}
 	if a.Logs {
 		tabs = append(tabs, WSTabLogs)
 	}
@@ -173,7 +180,7 @@ func WorkspaceTabHitboxes(tabs []WorkspaceTab, active WorkspaceTab, w int) []Tab
 // RenderWorkspaceTabStrip keeps the active view visible even in narrow panes.
 func RenderWorkspaceTabStrip(t *theme.Theme, tabs []WorkspaceTab, active WorkspaceTab, w int) string {
 	hits, left, right := workspaceTabLayout(tabs, active, w)
-	activeStyle := lipgloss.NewStyle().Foreground(t.P.Cyan).Bold(true)
+	activeStyle := lipgloss.NewStyle().Foreground(t.P.FG).Bold(true)
 	idleStyle := lipgloss.NewStyle().Foreground(t.P.FGFade)
 	sepStyle := lipgloss.NewStyle().Foreground(t.P.Dim)
 	parts := make([]string, 0, len(hits))
@@ -182,7 +189,13 @@ func RenderWorkspaceTabStrip(t *theme.Theme, tabs []WorkspaceTab, active Workspa
 		if hit.Tab == active {
 			style = activeStyle
 		}
-		parts = append(parts, style.Render(components.TruncPad(hit.Tab.Label(), hit.X1-hit.X0)))
+		label := hit.Tab.Label()
+		if shortcut, title, ok := strings.Cut(label, " "); ok {
+			label = t.HelpKey.Render(shortcut) + " " + style.Render(title)
+		} else {
+			label = style.Render(label)
+		}
+		parts = append(parts, components.TruncPad(label, hit.X1-hit.X0))
 	}
 	strip := strings.Join(parts, sepStyle.Render("   "))
 	if left {
@@ -202,11 +215,8 @@ func RenderWorkspaceBodyHeader(t *theme.Theme, w int) string {
 }
 
 // RenderWorkspacePane wraps the tab strip + body content in the workspace's
-// single outer panel. The panel's title is derived from the active tab —
-// when on Inspector, it's the selection breadcrumb leaf; when on Logs, the
-// section's PaneTitle ("logs · podname"). This way the title row doubles
-// as a contextual "what am I looking at" line, while the tab strip on the
-// first content row stays consistent across all tabs.
+// single outer panel. The border title identifies the resource; the tab
+// strip identifies the view, without repeating it in the border.
 func RenderWorkspacePane(t *theme.Theme, w, h int, title, tabStrip, body string, focused bool) string {
 	inner := components.PanelContentWidth(w)
 	header := RenderWorkspaceBodyHeader(t, inner)
@@ -234,43 +244,38 @@ func WorkspaceBodyWidth(w int) int {
 // (e.g. Logs tab is selected but no pod has been targeted, or a load
 // hasn't landed). Centralised so all idle states share one register.
 func IdlePlaceholder(t *theme.Theme, w, h int, message string) string {
-	box := lipgloss.NewStyle().Width(w).Height(h).Align(lipgloss.Center, lipgloss.Center)
-	return box.Render(t.Idle.Render(message))
+	return components.IllustratedEmpty(t, w, h, components.BeaconArt, message, "")
 }
 
-// RenderInspectorTab stacks Inspector + Activity + Connected sub-panels
-// inside the workspace body. Uses a φ-flavored split: facts (top 38%)
-// then activity flow (62% of remainder) then connected (the rest), so
-// the eye lands on identity first and scans downward to "what's
-// happening" and "what's wired in".
+// RenderInspectorTab gives facts and relationships only the rows they need;
+// Activity receives the remaining height for readable event messages.
 func RenderInspectorTab(c *tuictx.Ctx, w, h int, inspector *Inspector, activity *Activity, connected *Connected) string {
 	if h < 6 {
 		return inspector.View(c, w, h)
 	}
-	// Top: Inspector — content-bounded, capped so a tall workspace doesn't
-	// pad a metadata snapshot with empty space. The cap is sized to fit
-	// title + status + LIVE USAGE (4 rows) + one typical metadata section,
-	// trusting Activity to absorb the rest of the height.
-	const inspMax = 17
-	inspH := h * 38 / 100
-	if inspH > inspMax {
-		inspH = inspMax
+	innerW := components.PanelContentWidth(w)
+	if h < 9 {
+		return lipgloss.JoinVertical(lipgloss.Left, inspector.View(c, w, 3), activity.View(c, w, h-3))
 	}
-	if inspH < 6 {
-		inspH = 6
+	connH := 3
+	if connected.snap != nil {
+		body := connected.renderBody(c, innerW, 3)
+		connH = min(5, max(3, lipgloss.Height(body)+2))
 	}
-	rem := h - inspH
-	// Activity gets ~62% of the remainder — the flow-pulse the operator
-	// actively scans. Connected gets the rest (counts of related resources).
-	actH := rem * 62 / 100
-	if actH < 5 {
-		actH = 5
+	activityMin := 3
+	if h >= 11 {
+		activityMin = 5
 	}
-	connH := rem - actH
-	if connH < 4 {
-		connH = 4
-		actH = rem - connH
+	connH = min(connH, h-6)
+	activityMin = min(activityMin, h-connH-3)
+	inspH := 3
+	if inspector.snap != nil {
+		body := inspector.renderBody(c, innerW, 15)
+		inspH = min(17, max(3, lipgloss.Height(body)+2))
 	}
+	inspH = min(inspH, h-connH-activityMin)
+	actH := h - inspH - connH
+	connected.PanelTop = inspH + actH
 	return lipgloss.JoinVertical(lipgloss.Left,
 		inspector.View(c, w, inspH),
 		activity.View(c, w, actH),

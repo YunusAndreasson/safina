@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -94,7 +96,7 @@ func TestRenderWorkspaceTabStrip_DegradesGracefully(t *testing.T) {
 
 	wide := RenderWorkspaceTabStrip(th, tabs, WSTabLogs, 200)
 	for _, tab := range tabs {
-		assert.Contains(t, wide, tab.Label(), "wide strip must include every label")
+		assert.Contains(t, ansi.Strip(wide), tab.Label(), "wide strip must include every label")
 	}
 
 	narrow := RenderWorkspaceTabStrip(th, tabs, WSTabInspector, 25)
@@ -125,11 +127,12 @@ func TestWorkspaceBodyHeight_FloorsAtOne(t *testing.T) {
 // fallback is its number, which we accept; an unrecognised tab returns
 // the empty string and we keep that as the explicit signal.
 func TestWorkspaceTab_LabelsHaveHotkeyHint(t *testing.T) {
-	for _, tab := range []WorkspaceTab{WSTabInspector, WSTabLogs, WSTabEvents, WSTabYaml, WSTabChat, WSTabHot, WSTabForwards, WSTabDrain} {
+	for _, tab := range []WorkspaceTab{WSTabInspector, WSTabLogs, WSTabEvents, WSTabYaml, WSTabChat, WSTabHot, WSTabForwards} {
 		label := tab.Label()
 		assert.NotEmpty(t, label, "tab %d must have a label", tab)
 		assert.GreaterOrEqual(t, len(strings.Fields(label)), 2,
 			"tab %v label %q must separate the hotkey from its name", tab, label)
 	}
+	assert.Equal(t, "Drain", WSTabDrain.Label(), "an operation with no activation key must not advertise one")
 	assert.Empty(t, WorkspaceTab(99).Label(), "unknown tab values must return empty string (explicit signal)")
 }

@@ -11,6 +11,7 @@ import (
 
 	"github.com/yunus/safina/internal/history"
 	"github.com/yunus/safina/internal/k8s"
+	"github.com/yunus/safina/internal/tui/components"
 	"github.com/yunus/safina/internal/tui/theme"
 	"github.com/yunus/safina/internal/tui/tuictx"
 )
@@ -35,9 +36,8 @@ func NewDrain(c *tuictx.Ctx) Drain {
 }
 
 // Reset arms the modal for a new node. The cancel func tears down the
-// drain goroutine when the user presses ctrl+c (esc is intentionally
-// a no-op — drain is destructive enough that close-by-accident is a worse
-// failure than "I can't press esc to close").
+// drain goroutine when the user presses ctrl+c. Leaving the progress view
+// with Esc keeps the drain running.
 func (d *Drain) Reset(node string, cancel context.CancelFunc) {
 	d.node = node
 	d.latest = k8s.DrainEvent{}
@@ -65,15 +65,17 @@ func (d *Drain) Apply(e k8s.DrainEvent) bool {
 }
 
 // Body returns the inline unframed content for the workspace tab.
-func (d *Drain) Body(w int) string { return d.View(w) }
+func (d *Drain) Body(w int) string { return d.render(true) }
 
 // PaneTitle returns the workspace tab title.
 func (d *Drain) PaneTitle() string { return "drain · " + d.node }
 
 // View renders the modal contents. Caller wraps in the modal frame.
-func (d *Drain) View(w int) string {
+func (d *Drain) View(w int) string { return d.render(false) }
+
+func (d *Drain) render(inline bool) string {
 	t := d.theme
-	title := lipgloss.NewStyle().Foreground(t.P.Yellow).Bold(true).Render("◆ drain " + d.node)
+	title := lipgloss.NewStyle().Foreground(t.P.Yellow).Bold(true).Render("drain " + d.node)
 
 	phase := d.latest.Phase
 	if phase == "" {
@@ -116,9 +118,15 @@ func (d *Drain) View(w int) string {
 		elapsed = lipgloss.NewStyle().Foreground(t.P.Dim).Render(fmt.Sprintf("elapsed %ds", int(time.Since(d.latest.StartTimestamp).Seconds())))
 	}
 
-	footer := t.Hint.Render("ctrl+c cancel (node stays cordoned)")
+	footer := components.RenderModalKeysRow(t, []components.KeyDesc{{Key: "esc", Desc: "leave running"}, {Key: "ctrl+c", Desc: "cancel (node stays cordoned)", Write: true}})
+	if inline {
+		footer = t.Hint.Render("Cancellation leaves the node cordoned.")
+	}
 
-	parts := []string{title, "", phaseLine, statsLine}
+	parts := []string{phaseLine, statsLine}
+	if !inline {
+		parts = append([]string{title, ""}, parts...)
+	}
 	if remain != "" {
 		parts = append(parts, "", remain)
 	}

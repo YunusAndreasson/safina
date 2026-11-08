@@ -111,3 +111,15 @@ func TestTree_WorkloadsRefreshNoHealthReorder(t *testing.T) {
 	assert.Equal(t, 2, tr.cursor, "cursor stays at the same row index")
 	assert.Equal(t, "charlie", tr.SelectedRef().Name, "still pointing at charlie")
 }
+
+func TestRefreshPreservesWorkloadKindWhenNamesCollide(t *testing.T) {
+	tr := newTestTree(t)
+	tr.path = append(tr.path, NodeRef{Kind: k8s.KindWorkloadsFold, Name: "Workloads"})
+	deploy := k8s.AppInfo{Kind: k8s.AppKindDeployment, Namespace: "shop", Name: "api"}
+	stateful := k8s.AppInfo{Kind: k8s.AppKindStatefulSet, Namespace: "shop", Name: "api"}
+	tr.SetChildren(tr.path, &Children{Kind: k8s.KindApp, Apps: []k8s.AppInfo{deploy, stateful}})
+	tr.cursor = 1
+	tr.View(newEventsCtx(), 60, 20)
+	tr.SetChildren(tr.path, &Children{Kind: k8s.KindApp, Apps: []k8s.AppInfo{stateful, deploy}})
+	require.Equal(t, k8s.AppKindStatefulSet, tr.SelectedRef().SubKind)
+}

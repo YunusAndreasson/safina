@@ -2,7 +2,6 @@ package components
 
 import (
 	"fmt"
-	"image/color"
 	"strings"
 
 	"charm.land/lipgloss/v2"
@@ -31,52 +30,33 @@ type ClusterHealth struct {
 
 // Topbar renders the one-row title bar that frames the whole app.
 //
-//	▌ safina │ ⎈ prod-east-1 ▸ ◇ my-app    ⬢ 5/5 ◉ 142/150  ↯ 2 fwd   ↻ 3s   14:32:07
+//	safina │ prod-east-1 ▸ my-app    Nodes 5/5 Pods 142/150  2 fwd
 //
-// Left: half-block glyph + app name (the brand). Middle: the breadcrumb of
+// Left: app name. Middle: the breadcrumb of
 // the user's current location in the tree, rendered with a brightness ramp
 // so the eye is led to the leaf. Right: optional cluster-health pills,
-// optional forwards pill, optional refresh-age indicator, and a wall-clock.
+// and optional forwards pill.
 //
 // The breadcrumb gets whatever horizontal budget is left after the fixed
 // elements are placed; BreadcrumbRamped handles truncation when the path
-// overflows. refreshAge is empty when there's no live data ("↻" hidden).
+// overflows.
 // forwardCount == 0 hides the forwards pill entirely.
-func Topbar(t *theme.Theme, w int, crumbs []Crumb, refreshAge, clock string, forwardCount int, health ClusterHealth) string {
+func Topbar(t *theme.Theme, w int, crumbs []Crumb, forwardCount int, health ClusterHealth, cached bool) string {
 	bar := lipgloss.NewStyle().
-		Background(t.P.BG2).
+		Background(t.P.BG).
 		Foreground(t.P.FG).
 		Width(w).
 		Padding(0, 1)
 
-	// Logo: a single-cell half-block bar followed by the name. ▌ is
-	// single-cell BMP, monospace-safe across every terminal. Cyan-bold
-	// matches the title accent the focused-pane border anchors on.
-	logo := lipgloss.NewStyle().Foreground(t.P.Cyan).Bold(true).
-		Background(t.P.BG2).
-		Render("▌ safina")
+	// The wordmark is a quiet landmark; focus color belongs to the active pane.
+	logo := lipgloss.NewStyle().Foreground(t.P.FGFade).Bold(true).
+		Background(t.P.BG).
+		Render("safina")
 
 	// Vertical rule between the brand and the operator's location — a
 	// different visual register from the breadcrumb's own ▸ separator.
-	logoSep := lipgloss.NewStyle().Foreground(t.P.Dim).Background(t.P.BG2).
+	logoSep := lipgloss.NewStyle().Foreground(t.P.Dim).Background(t.P.BG).
 		Render("  │  ")
-
-	clockCell := lipgloss.NewStyle().
-		Foreground(t.P.FGFade).
-		Background(t.P.BG2).
-		Render(clock)
-
-	// Refresh-age pill, only when we have live data. Color shifts with age
-	// so the user feels staleness ramp up: dim under 6s (in step with the
-	// 5s auto-refresh), yellow when something looks sluggish, red when it
-	// looks stuck. Zero-value refreshAge hides the cell entirely.
-	refreshCell := ""
-	if refreshAge != "" {
-		refreshCell = lipgloss.NewStyle().
-			Foreground(refreshColor(t, refreshAge)).
-			Background(t.P.BG2).
-			Render("↻ " + refreshAge)
-	}
 
 	// Active port-forwards pill. Hidden when zero; pink/bold when present
 	// so the operator's eye picks it up immediately (the same pink used
@@ -85,8 +65,8 @@ func Topbar(t *theme.Theme, w int, crumbs []Crumb, refreshAge, clock string, for
 	if forwardCount > 0 {
 		forwardCell = lipgloss.NewStyle().
 			Foreground(t.P.Pink).Bold(true).
-			Background(t.P.BG2).
-			Render(fmt.Sprintf("↯ %d fwd", forwardCount))
+			Background(t.P.BG).
+			Render(fmt.Sprintf("%d fwd", forwardCount))
 	}
 
 	// Cluster health pill — the at-a-glance answer to "is anything on
@@ -99,18 +79,23 @@ func Topbar(t *theme.Theme, w int, crumbs []Crumb, refreshAge, clock string, for
 		healthCell = renderClusterHealth(t, health)
 	}
 
+	cachedCell := ""
+	if cached {
+		cachedCell = lipgloss.NewStyle().Foreground(t.P.Yellow).Background(t.P.BG).Render("cached")
+	}
+
 	// Width math: bar.Padding(0,1) eats two cells. Compute the breadcrumb's
-	// budget as whatever's left after the logo, separator, clock, the two
+	// budget as whatever's left after the logo, separator, the two
 	// optional pills, and a minimum gap so things never touch.
 	innerW := w - 2
 	if innerW < 1 {
 		innerW = 1
 	}
 	const minGap = 2
-	spacer := lipgloss.NewStyle().Background(t.P.BG2).Render("   ")
+	spacer := lipgloss.NewStyle().Background(t.P.BG).Render("   ")
 	renderRight := func() string {
 		cells := []string{}
-		for _, cell := range []string{healthCell, forwardCell, refreshCell, clockCell} {
+		for _, cell := range []string{healthCell, forwardCell, cachedCell} {
 			if cell != "" {
 				cells = append(cells, cell)
 			}
@@ -124,10 +109,6 @@ func Topbar(t *theme.Theme, w int, crumbs []Crumb, refreshAge, clock string, for
 		healthCell = ""
 		right = renderRight()
 	}
-	if budget() < locationMin {
-		clockCell = ""
-		right = renderRight()
-	}
 	crumbBudget := max(1, budget())
 
 	// Breadcrumb runs a four-tier brightness ramp from oldest crumb to leaf
@@ -137,12 +118,12 @@ func Topbar(t *theme.Theme, w int, crumbs []Crumb, refreshAge, clock string, for
 	crumbCell := ""
 	if len(crumbs) > 0 {
 		ramp := []lipgloss.Style{
-			lipgloss.NewStyle().Foreground(t.P.Dim).Background(t.P.BG2),
-			lipgloss.NewStyle().Foreground(t.P.FGFade).Background(t.P.BG2),
-			lipgloss.NewStyle().Foreground(t.P.FG).Background(t.P.BG2),
-			lipgloss.NewStyle().Foreground(t.P.FG).Background(t.P.BG2).Bold(true),
+			lipgloss.NewStyle().Foreground(t.P.Dim).Background(t.P.BG),
+			lipgloss.NewStyle().Foreground(t.P.FGFade).Background(t.P.BG),
+			lipgloss.NewStyle().Foreground(t.P.FG).Background(t.P.BG),
+			lipgloss.NewStyle().Foreground(t.P.FG).Background(t.P.BG).Bold(true),
 		}
-		sepStyle := lipgloss.NewStyle().Foreground(t.P.Dim).Background(t.P.BG2)
+		sepStyle := lipgloss.NewStyle().Foreground(t.P.Dim).Background(t.P.BG)
 		crumbCell = BreadcrumbRamped(crumbs, crumbBudget, ramp, sepStyle)
 		for i, crumb := range crumbs {
 			if !crumb.Pinned {
@@ -164,14 +145,14 @@ func Topbar(t *theme.Theme, w int, crumbs []Crumb, refreshAge, clock string, for
 	if pad < 1 {
 		pad = 1
 	}
-	gap := lipgloss.NewStyle().Background(t.P.BG2).Width(pad).Render("")
+	gap := lipgloss.NewStyle().Background(t.P.BG).Width(pad).Render("")
 
 	return bar.Render(logo + logoSep + crumbCell + gap + right)
 }
 
 // renderClusterHealth composes the topbar's at-a-glance cluster summary:
 //
-//	⬢ 5/5  ◉ 142/150  CPU 34%  MEM 67%  ⚠2
+//	Nodes 5/5  Pods 142/150  CPU 34%  MEM 67%  ⚠2
 //
 // Each cell is colored independently so the operator sees the offending
 // dimension first — yellow nodes if any are NotReady, red pods if any are
@@ -179,7 +160,7 @@ func Topbar(t *theme.Theme, w int, crumbs []Crumb, refreshAge, clock string, for
 // pressure cell is hidden entirely when zero; surfacing it only when it's
 // non-zero keeps the pill quiet on healthy clusters.
 func renderClusterHealth(t *theme.Theme, h ClusterHealth) string {
-	bg := lipgloss.NewStyle().Background(t.P.BG2)
+	bg := lipgloss.NewStyle().Background(t.P.BG)
 
 	// Nodes pill: green when all ready, yellow when any not ready.
 	nodesColor := t.P.Green
@@ -187,7 +168,7 @@ func renderClusterHealth(t *theme.Theme, h ClusterHealth) string {
 		nodesColor = t.P.Yellow
 	}
 	nodes := bg.Foreground(nodesColor).Bold(true).
-		Render(fmt.Sprintf("⬢ %d/%d", h.NodesReady, h.NodesTotal))
+		Render(fmt.Sprintf("Nodes %d/%d", h.NodesReady, h.NodesTotal))
 
 	// Pods pill: red when anything is crashing, yellow when anything's
 	// pending, green otherwise. CrashLoopBackOff outranks Pending — a
@@ -200,7 +181,7 @@ func renderClusterHealth(t *theme.Theme, h ClusterHealth) string {
 		podsColor = t.P.Yellow
 	}
 	pods := bg.Foreground(podsColor).Bold(true).
-		Render(fmt.Sprintf("◉ %d/%d", h.PodsRunning, h.PodsTotal))
+		Render(fmt.Sprintf("Pods %d/%d", h.PodsRunning, h.PodsTotal))
 
 	// CPU / Mem pills: use the same green/yellow/red gradient as the row
 	// sparklines so the topbar reads as a higher-level summary of the same
@@ -218,39 +199,4 @@ func renderClusterHealth(t *theme.Theme, h ClusterHealth) string {
 		parts = append(parts, gap, press)
 	}
 	return strings.Join(parts, "")
-}
-
-// refreshColor maps a refresh-age string to a foreground color. Conservative
-// thresholds: dim under 6s (auto-refresh interval is 5s, so a fresh load
-// reads as a sub-second value most of the time), yellow when it stretches,
-// red when something looks stuck. We parse the leading number out of the
-// "Ns" / "Nm" age string instead of taking a duration so the topbar's
-// caller can format the string however it wants.
-func refreshColor(t *theme.Theme, age string) color.Color {
-	// Shape: "<int><unit>" where unit ∈ {"s","m","h"}. Bail on anything else.
-	if len(age) < 2 {
-		return t.P.Dim
-	}
-	unit := age[len(age)-1]
-	nStr := age[:len(age)-1]
-	n := 0
-	for _, r := range nStr {
-		if r < '0' || r > '9' {
-			return t.P.Dim
-		}
-		n = n*10 + int(r-'0')
-	}
-	switch unit {
-	case 's':
-		if n < 6 {
-			return t.P.FGFade
-		}
-		if n < 15 {
-			return t.P.Yellow
-		}
-		return t.P.Red
-	case 'm', 'h':
-		return t.P.Red
-	}
-	return t.P.Dim
 }

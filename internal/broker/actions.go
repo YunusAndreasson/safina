@@ -102,7 +102,7 @@ func (s *server) prepareAction(ctx context.Context, cs kubernetes.Interface, d *
 		if err != nil {
 			return err
 		}
-		r.RollbackUID = string(rs.UID)
+		r.RollbackUID = rs.UID
 		r.RollbackVersion = rs.ResourceVersion
 		desired.Spec.Template = *rs.Spec.Template.DeepCopy()
 		delete(desired.Spec.Template.Labels, appsv1.DefaultDeploymentUniqueLabelKey)
@@ -119,19 +119,34 @@ func (s *server) prepareAction(ctx context.Context, cs kubernetes.Interface, d *
 		if a.Kind == "restart" {
 			value = desired.Spec.Template.Annotations
 		}
-		r.TemplateDigest = digest(desired.Spec.Template)
+		templateDigest, err := digest(desired.Spec.Template)
+		if err != nil {
+			return err
+		}
+		r.TemplateDigest = templateDigest
 		r.Warnings = append(r.Warnings, "Pod template changes replace pods through the Deployment rollout strategy.")
 	}
-	r.Patch, _ = json.Marshal([]map[string]any{
+	patch, err := json.Marshal([]map[string]any{
 		{"op": "test", "path": "/metadata/uid", "value": r.Target.UID},
 		{"op": "test", "path": "/metadata/resourceVersion", "value": r.ResourceVersion},
 		{"op": "add", "path": path, "value": value},
 	})
-	r.MutationDigest = digest(r.Patch)
+	if err != nil {
+		return fmt.Errorf("encode reviewed patch: %w", err)
+	}
+	r.Patch = patch
+	r.MutationDigest, err = digest(r.Patch)
+	if err != nil {
+		return err
+	}
 	if a.Kind == "scale" {
 		return nil
 	}
-	r.Noop = digest(d.Spec.Template) == digest(desired.Spec.Template)
+	beforeDigest, err := digest(d.Spec.Template)
+	if err != nil {
+		return err
+	}
+	r.Noop = beforeDigest == r.TemplateDigest
 	visibleBefore, visibleAfter := maskedTemplates(d.Spec.Template, desired.Spec.Template)
 	before, _ := yaml.Marshal(visibleBefore)
 	after, _ := yaml.Marshal(visibleAfter)

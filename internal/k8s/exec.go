@@ -15,7 +15,6 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/remotecommand"
-	utilexec "k8s.io/client-go/util/exec"
 )
 
 // ShellEvent is the union type emitted on the session's Events channel. Bytes
@@ -169,16 +168,8 @@ func startSession(parent context.Context, executor remotecommand.Executor) *Shel
 			TerminalSizeQueue: &sizeQueue{ch: resize, ctx: streamCtx},
 		})
 
-		// WebSocket V5 reliably propagates the in-pod shell's exit code as
-		// an ExitError (SPDY usually masked it). A non-zero exit from a
-		// successfully-running shell isn't a connection failure — it's just
-		// "the user typed `exit` after a failed command." Treat any
-		// ExitError as a clean session end so the modal closes cleanly
-		// instead of flashing "connection failed · exit 127".
-		var exitErr utilexec.ExitError
-		if errors.As(err, &exitErr) {
-			err = nil
-		}
+		// Preserve process-exit errors: they can mean the shell never started.
+		// Discarding them makes startup failures look like successful exits.
 
 		ev := ShellEvent{Done: true, Err: err}
 		if err != nil {

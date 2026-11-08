@@ -101,7 +101,7 @@ func (s *Hot) Selected() (k8s.PodInfo, bool) {
 func (s *Hot) Body(c *tuictx.Ctx, w, h int) string {
 	th := c.Theme
 	hint := components.RenderHintRow(th, []components.KeyDesc{
-		{Key: c.Keys.Refresh.Help().Key, Desc: "refresh"}, {Key: "esc", Desc: "close"},
+		{Key: c.Keys.Refresh.Help().Key, Desc: "refresh"},
 	})
 	hintRow := lipgloss.NewStyle().Width(w).Align(lipgloss.Right).Render(hint)
 	if s.gate.Visible() {
@@ -129,7 +129,6 @@ func (s *Hot) PaneTitle() string { return "hot pods · top by CPU" }
 func (s *Hot) renderTable(th *theme.Theme, w, rowsAvail int) string {
 	tableW := w - components.EdgeTotal()
 	const (
-		kW   = 1
 		rkW  = 3 // rank "01."
 		nsW  = 18
 		stW  = 16
@@ -140,20 +139,20 @@ func (s *Hot) renderTable(th *theme.Theme, w, rowsAvail int) string {
 		// header text now sets the floor.
 		rsW = 8
 	)
-	gaps := components.GapTotal(8)
-	nameW := tableW - kW - rkW - nsW - stW - cpuW - memW - rsW - gaps
+	gaps := components.GapTotal(7)
+	nameW := tableW - rkW - nsW - stW - cpuW - memW - rsW - gaps
 	compact := nameW < 12
 	if compact {
 		nameW = max(1, tableW-cpuW-memW-components.GapTotal(3))
 	}
 
-	cols := []int{kW, rkW, nameW, nsW, stW, cpuW, memW, rsW}
+	cols := []int{rkW, nameW, nsW, stW, cpuW, memW, rsW}
 	aligns := []components.Align{
-		components.AlignLeft, components.AlignRight, components.AlignLeft,
+		components.AlignRight, components.AlignLeft,
 		components.AlignLeft, components.AlignLeft,
 		components.AlignRight, components.AlignRight, components.AlignRight,
 	}
-	labels := []string{"", "#", "name", "namespace", "status", "cpu", "mem", "restarts"}
+	labels := []string{"#", "name", "namespace", "status", "cpu", "mem", "restarts"}
 	if compact {
 		cols = []int{nameW, cpuW, memW}
 		aligns = []components.Align{components.AlignLeft, components.AlignRight, components.AlignRight}
@@ -196,7 +195,7 @@ func (s *Hot) renderTable(th *theme.Theme, w, rowsAvail int) string {
 		memCell := bg.Foreground(th.UtilColor(memFrac)).Bold(true).
 			Render(ansi.Truncate(k8s.FormatMem(p.Memory), memW, "…"))
 
-		cells := []string{kindGlyph(k8s.KindPod, ""), rank, nameCell, nsCell, statusCell, cpuCell, memCell, rstCell}
+		cells := []string{rank, nameCell, nsCell, statusCell, cpuCell, memCell, rstCell}
 		if compact {
 			cells = []string{nameCell, cpuCell, memCell}
 		}

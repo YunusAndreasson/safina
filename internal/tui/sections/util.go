@@ -3,14 +3,16 @@ package sections
 import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/yunus/safina/internal/k8s"
+	"k8s.io/apimachinery/pkg/api/resource"
 )
 
-func isResourceGroup(kind string) bool {
+// IsResourceGroup identifies navigation folders rather than API resource instances.
+func IsResourceGroup(kind string) bool {
 	switch kind {
 	case k8s.KindAllNamespacesFold, k8s.KindInfrastructureFold, k8s.KindClusterFold,
 		k8s.KindSystemFold, k8s.KindWorkloadsFold, k8s.KindConfigFold,
 		k8s.KindSecretsFold, k8s.KindNetworkFold, k8s.KindIngressFold,
-		k8s.KindStorageFold, k8s.KindCustomFold:
+		k8s.KindStorageFold, k8s.KindCustomFold, k8s.KindResourceBrowser:
 		return true
 	}
 	return false
@@ -21,7 +23,7 @@ func selectionTitle(ref NodeRef) string {
 	if name == "" {
 		name = ref.Name
 	}
-	if isResourceGroup(ref.Kind) {
+	if IsResourceGroup(ref.Kind) {
 		return name
 	}
 	kind := ref.Kind
@@ -44,7 +46,8 @@ func selectionTitle(ref NodeRef) string {
 // emit wraps a value as a tea.Cmd that yields it as a tea.Msg.
 func emit(msg tea.Msg) tea.Cmd { return func() tea.Msg { return msg } }
 
-func clamp(v, lo, hi int) int {
+func clamp(v, hi int) int {
+	const lo = 0
 	if hi < lo {
 		return lo
 	}
@@ -55,4 +58,11 @@ func clamp(v, lo, hi int) int {
 		return hi
 	}
 	return v
+}
+
+func capacityText(q *resource.Quantity) string {
+	if q == nil {
+		return ""
+	}
+	return q.String()
 }

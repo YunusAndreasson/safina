@@ -2,10 +2,13 @@ package k8s
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 
-	"k8s.io/apimachinery/pkg/api/resource"
+	"github.com/yunus/safina/internal/metrics"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
+
 	"k8s.io/client-go/kubernetes"
 	restclient "k8s.io/client-go/rest"
 )
@@ -27,81 +30,60 @@ func restClientOrNil(cs kubernetes.Interface) restclient.Interface {
 
 // ResourceUsage carries current pod (or aggregated) CPU + memory usage.
 // CPU is in millicores (1 core = 1000); Memory in bytes.
-type ResourceUsage struct {
-	CPU    int64
-	Memory int64
-}
+type ResourceUsage = metrics.Reading
 
-// podMetricsList mirrors the metrics.k8s.io/v1beta1 PodMetricsList JSON. We
-// don't pull in the typed metrics client to keep deps tight — the schema is
-// stable and the response is small.
-type podMetricsList struct {
-	Items []podMetric `json:"items"`
-}
-
-type podMetric struct {
-	Metadata struct {
-		Name      string `json:"name"`
-		Namespace string `json:"namespace"`
-	} `json:"metadata"`
-	Containers []struct {
-		Name  string `json:"name"`
-		Usage struct {
-			CPU    string `json:"cpu"`
-			Memory string `json:"memory"`
-		} `json:"usage"`
-	} `json:"containers"`
-}
-
-// ListPodMetrics returns a map of "namespace/podName" → ResourceUsage for
+// ListPodMetrics returns SDK namespaced pod identities mapped to ResourceUsage for
 // every pod in the namespace (or all namespaces if namespace == "").
 //
-// Best-effort: when metrics-server is not installed (404) or RBAC denies the
-// request, returns (nil, nil) so callers can render "—" rather than an error
-// banner. This is the right call for a TUI — operators on dev clusters
-// without metrics-server still want their list view to render.
-func ListPodMetrics(ctx context.Context, cs kubernetes.Interface, namespace string) (map[string]ResourceUsage, error) {
-	list, ok := fetchPodMetrics(ctx, cs, namespace)
-	if !ok {
-		return nil, nil
+// Errors describe availability; resource-list callers retain rows and annotate metrics.
+func ListPodMetrics(ctx context.Context, cs kubernetes.Interface, namespace string) (map[types.NamespacedName]ResourceUsage, error) {
+	list, err := fetchPodMetrics(ctx, cs, namespace)
+	if err != nil {
+		return nil, err
 	}
-	out := make(map[string]ResourceUsage, len(list.Items))
+	out := make(map[types.NamespacedName]ResourceUsage, len(list.Items))
 	for _, m := range list.Items {
-		var u ResourceUsage
+		u := ResourceUsage{SourceAt: m.Timestamp.Time, Window: m.Window.Duration, State: metrics.Available, Covered: len(m.Containers), Expected: len(m.Containers)}
 		for _, c := range m.Containers {
-			if cq, err := resource.ParseQuantity(c.Usage.CPU); err == nil {
-				u.CPU += cq.MilliValue()
-			}
-			if mq, err := resource.ParseQuantity(c.Usage.Memory); err == nil {
-				u.Memory += mq.Value()
+			u.ContainerNames += "/" + c.Name + "/"
+			cpu, memory, valid := metricAmounts(c.Usage)
+			u.CPU += cpu
+			u.Memory += memory
+			if !valid || list.invalid[types.NamespacedName{Namespace: m.Namespace, Name: m.Name}].Has(c.Name) {
+				u.State = metrics.Invalid
 			}
 		}
-		out[m.Metadata.Namespace+"/"+m.Metadata.Name] = u
+		if u.SourceAt.IsZero() || u.CPU < 0 || u.Memory < 0 || u.Window < 0 {
+			u.State = metrics.Invalid
+		}
+		out[types.NamespacedName{Namespace: m.Namespace, Name: m.Name}] = u
 	}
 	return out, nil
 }
 
 // ListPodMetricsByContainer returns per-container usage:
 //
-//	map["ns/pod"]map["containerName"]ResourceUsage
+//	map[types.NamespacedName]map["containerName"]ResourceUsage
 //
-// Same silent-degrade contract as ListPodMetrics.
-func ListPodMetricsByContainer(ctx context.Context, cs kubernetes.Interface, namespace string) (map[string]map[string]ResourceUsage, error) {
-	list, ok := fetchPodMetrics(ctx, cs, namespace)
-	if !ok {
-		return nil, nil
+// Availability errors follow ListPodMetrics.
+func ListPodMetricsByContainer(ctx context.Context, cs kubernetes.Interface, namespace string) (map[types.NamespacedName]map[string]ResourceUsage, error) {
+	list, err := fetchPodMetrics(ctx, cs, namespace)
+	if err != nil {
+		return nil, err
 	}
-	out := make(map[string]map[string]ResourceUsage, len(list.Items))
+	out := make(map[types.NamespacedName]map[string]ResourceUsage, len(list.Items))
 	for _, m := range list.Items {
-		key := m.Metadata.Namespace + "/" + m.Metadata.Name
+		key := types.NamespacedName{Namespace: m.Namespace, Name: m.Name}
 		byCtr := make(map[string]ResourceUsage, len(m.Containers))
 		for _, c := range m.Containers {
-			var u ResourceUsage
-			if cq, err := resource.ParseQuantity(c.Usage.CPU); err == nil {
-				u.CPU = cq.MilliValue()
+			u := ResourceUsage{SourceAt: m.Timestamp.Time, Window: m.Window.Duration, State: metrics.Available, Covered: 1, Expected: 1}
+			var valid bool
+			u.CPU, u.Memory, valid = metricAmounts(c.Usage)
+			if !valid || list.invalid[types.NamespacedName{Namespace: m.Namespace, Name: m.Name}].Has(c.Name) {
+				u.State = metrics.Invalid
 			}
-			if mq, err := resource.ParseQuantity(c.Usage.Memory); err == nil {
-				u.Memory = mq.Value()
+			if u.SourceAt.IsZero() || u.CPU < 0 || u.Memory < 0 || u.Window < 0 {
+				u.State = metrics.Invalid
 			}
 			byCtr[c.Name] = u
 		}
@@ -110,10 +92,10 @@ func ListPodMetricsByContainer(ctx context.Context, cs kubernetes.Interface, nam
 	return out, nil
 }
 
-func fetchPodMetrics(ctx context.Context, cs kubernetes.Interface, namespace string) (podMetricsList, bool) {
+func fetchPodMetrics(ctx context.Context, cs kubernetes.Interface, namespace string) (podMetricsResult, error) {
 	rc := restClientOrNil(cs)
 	if rc == nil {
-		return podMetricsList{}, false
+		return podMetricsResult{}, errMetricsUnsupported
 	}
 	path := "/apis/metrics.k8s.io/v1beta1/pods"
 	if namespace != "" {
@@ -121,55 +103,38 @@ func fetchPodMetrics(ctx context.Context, cs kubernetes.Interface, namespace str
 	}
 	raw, err := rc.Get().AbsPath(path).DoRaw(ctx)
 	if err != nil {
-		return podMetricsList{}, false
+		return podMetricsResult{}, err
 	}
-	var list podMetricsList
-	if err := json.Unmarshal(raw, &list); err != nil {
-		return podMetricsList{}, false
-	}
-	return list, true
-}
-
-// nodeMetricsList mirrors metrics.k8s.io/v1beta1 NodeMetricsList JSON.
-type nodeMetricsList struct {
-	Items []nodeMetric `json:"items"`
-}
-
-type nodeMetric struct {
-	Metadata struct {
-		Name string `json:"name"`
-	} `json:"metadata"`
-	Usage struct {
-		CPU    string `json:"cpu"`
-		Memory string `json:"memory"`
-	} `json:"usage"`
+	return decodePodMetrics(raw)
 }
 
 // ListNodeMetrics returns "nodeName" → ResourceUsage. Same silent-degrade
-// contract as ListPodMetrics.
+// availability errors as ListPodMetrics.
 func ListNodeMetrics(ctx context.Context, cs kubernetes.Interface) (map[string]ResourceUsage, error) {
 	rc := restClientOrNil(cs)
 	if rc == nil {
-		return nil, nil
+		return nil, errMetricsUnsupported
 	}
 	raw, err := rc.Get().AbsPath("/apis/metrics.k8s.io/v1beta1/nodes").DoRaw(ctx)
 	if err != nil {
-		return nil, nil //nolint:nilerr // silent-degrade: metrics-server unavailable
+		return nil, err
 	}
-	var list nodeMetricsList
-	if err := json.Unmarshal(raw, &list); err != nil {
-		return nil, nil //nolint:nilerr // silent-degrade: unparseable response
+	list, err := decodeNodeMetrics(raw)
+	if err != nil {
+		return nil, err
 	}
 	out := make(map[string]ResourceUsage, len(list.Items))
 	for _, n := range list.Items {
-		var u ResourceUsage
-		if cq, err := resource.ParseQuantity(n.Usage.CPU); err == nil {
-			u.CPU = cq.MilliValue()
+		u := ResourceUsage{SourceAt: n.Timestamp.Time, Window: n.Window.Duration, State: metrics.Available, Covered: 1, Expected: 1}
+		var valid bool
+		u.CPU, u.Memory, valid = metricAmounts(n.Usage)
+		if !valid || list.invalid.Has(n.Name) {
+			u.State = metrics.Invalid
 		}
-		if mq, err := resource.ParseQuantity(n.Usage.Memory); err == nil {
-			u.Memory = mq.Value()
+		if u.SourceAt.IsZero() || u.CPU < 0 || u.Memory < 0 || u.Window < 0 {
+			u.State = metrics.Invalid
 		}
-		out[n.Metadata.Name] = u
+		out[n.Name] = u
 	}
 	return out, nil
 }
@@ -204,4 +169,21 @@ func FormatMem(bytes int64) string {
 	default:
 		return fmt.Sprintf("%dB", bytes)
 	}
+}
+
+var errMetricsUnsupported = errors.New("metrics API unavailable")
+
+func withMetricError(u ResourceUsage, errs []error) ResourceUsage {
+	if len(errs) == 0 || errs[0] == nil {
+		return u
+	}
+	switch {
+	case apierrors.IsForbidden(errs[0]), apierrors.IsUnauthorized(errs[0]):
+		u.State = metrics.Forbidden
+	case apierrors.IsNotFound(errs[0]), errors.Is(errs[0], errMetricsUnsupported):
+		u.State = metrics.Unsupported
+	default:
+		u.State = metrics.Unavailable
+	}
+	return u
 }

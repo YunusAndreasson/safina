@@ -55,6 +55,12 @@ type Theme struct {
 	ErrLine      lipgloss.Style
 	OkLine       lipgloss.Style // green sibling to ErrLine — post-action confirmations
 	Modal        lipgloss.Style
+	// ModalDanger frames a write waiting for its yes (Barbarossa mode, the
+	// Shift keys). It is the only red frame in the app, so red around a
+	// card always means one key from changing the cluster. Danger is its
+	// title and commit key.
+	ModalDanger  lipgloss.Style
+	Danger       lipgloss.Style
 	LineNum      lipgloss.Style
 	HelpKey      lipgloss.Style
 	HelpDesc     lipgloss.Style
@@ -74,7 +80,7 @@ type Theme struct {
 	DimTxt   lipgloss.Style
 	DimBold  lipgloss.Style
 	DimPad   lipgloss.Style
-	Hint     lipgloss.Style // italic muted, no padding — inline hints, placeholders, empty captions
+	Hint     lipgloss.Style // readable secondary text without padding
 	Idle     lipgloss.Style // Hint + 1-cell horizontal padding — for use in framed loader / empty states
 	GreenTxt lipgloss.Style
 	CyanBold lipgloss.Style
@@ -103,16 +109,18 @@ func New(p Palette) *Theme {
 		BorderForeground(p.Blue).
 		Background(p.BG2).
 		Padding(1, 2)
+	t.ModalDanger = t.Modal.BorderForeground(p.Red)
+	t.Danger = lipgloss.NewStyle().Foreground(p.Red).Bold(true)
 	t.LineNum = lipgloss.NewStyle().Foreground(p.Dim).Width(6)
 	t.HelpKey = lipgloss.NewStyle().Foreground(p.Blue).Bold(true)
 	t.HelpDesc = lipgloss.NewStyle().Foreground(p.FGFade)
 	t.FilterPrompt = lipgloss.NewStyle().Foreground(p.Pink).Bold(true)
 	t.FilterText = lipgloss.NewStyle().Foreground(p.FG)
 
-	t.NameStrong = lipgloss.NewStyle().Foreground(p.FG).Bold(true)
+	t.NameStrong = lipgloss.NewStyle().Foreground(p.FG)
 	t.NameDim = lipgloss.NewStyle().Foreground(p.FGFade)
 	t.Label = lipgloss.NewStyle().Foreground(p.Dim).Bold(true)
-	t.Meta = lipgloss.NewStyle().Foreground(p.Dim)
+	t.Meta = lipgloss.NewStyle().Foreground(p.FGFade)
 	t.Numeric = lipgloss.NewStyle().Foreground(p.FG)
 	t.Title = lipgloss.NewStyle().Foreground(p.Cyan).Bold(true)
 	t.TitleDim = lipgloss.NewStyle().Foreground(p.Dim)
@@ -120,15 +128,30 @@ func New(p Palette) *Theme {
 	t.DimTxt = lipgloss.NewStyle().Foreground(p.Dim)
 	t.DimBold = lipgloss.NewStyle().Foreground(p.Dim).Bold(true)
 	t.DimPad = lipgloss.NewStyle().Foreground(p.Dim).Padding(0, 1)
-	// Italic adds a real typographic register for non-data text — empty
-	// states, loaders, hints — so they don't compete with names and counts.
-	t.Hint = lipgloss.NewStyle().Foreground(p.Dim).Italic(true)
+	// Routine guidance stays upright: small terminal text must remain easy to scan.
+	t.Hint = lipgloss.NewStyle().Foreground(p.FGFade)
 	t.Idle = t.Hint.Padding(0, 1)
 	t.GreenTxt = lipgloss.NewStyle().Foreground(p.Green).Bold(true)
 	t.CyanBold = lipgloss.NewStyle().Foreground(p.Cyan).Bold(true)
 	t.BlueBold = lipgloss.NewStyle().Foreground(p.Blue).Bold(true)
 
 	return t
+}
+
+// ResourceKindColor accents only the type label, never the resource name or
+// row. Cool hues distinguish families without borrowing health colors.
+// Unknown/custom kinds stay neutral rather than suggesting a false category.
+func (t *Theme) ResourceKindColor(kind string) color.Color {
+	switch strings.ToLower(strings.ReplaceAll(kind, " ", "")) {
+	case "deployment", "replicaset", "statefulset", "daemonset", "job", "cronjob", "pod", "container", "app", "workload":
+		return t.P.Cyan
+	case "service", "ingress", "ingressclass", "endpoints", "endpointslice", "networkpolicy", "gateway", "httproute":
+		return t.P.Blue
+	case "configmap", "secret", "persistentvolumeclaim", "persistentvolume", "storageclass", "serviceaccount", "role", "rolebinding", "clusterrole", "clusterrolebinding", "horizontalpodautoscaler", "hpa", "pvc", "pv":
+		return t.P.Mauve
+	default:
+		return t.P.FGFade
+	}
 }
 
 // StatusColor maps a Kubernetes status phase to a palette color.
@@ -220,7 +243,7 @@ func (t *Theme) RowBgFor(idx int, selected bool) lipgloss.Style {
 func (t *Theme) Ratio(s string, bg lipgloss.Style) string {
 	ready, total, ok := parseRatio(s)
 	if !ok {
-		return bg.Foreground(t.P.Dim).Render(s)
+		return bg.Foreground(t.P.FGFade).Render(s)
 	}
 	var col color.Color
 	switch {
@@ -257,13 +280,13 @@ func (t *Theme) RestartCount(n int, bg lipgloss.Style) string {
 
 // Age renders an age string in a uniform muted style on the given row bg.
 func (t *Theme) Age(s string, bg lipgloss.Style) string {
-	return bg.Foreground(t.P.Dim).Render(s)
+	return bg.Foreground(t.P.FGFade).Render(s)
 }
 
 // Meta renders a generic muted cell on the given row bg — the bg-aware
 // counterpart to t.Meta.Render(). Use for namespace, age, image, etc.
 func (t *Theme) MetaOn(s string, bg lipgloss.Style) string {
-	return bg.Foreground(t.P.Dim).Render(s)
+	return bg.Foreground(t.P.FGFade).Render(s)
 }
 
 // UtilColor maps a [0,1] utilization fraction to the same green/yellow/red
@@ -286,7 +309,7 @@ func (t *Theme) UtilColor(frac float64) color.Color {
 // NameStrongOn renders a primary identifier (deployment / pod / node name)
 // over the given row bg.
 func (t *Theme) NameStrongOn(s string, bg lipgloss.Style) string {
-	return bg.Foreground(t.P.FG).Bold(true).Render(s)
+	return bg.Foreground(t.P.FG).Render(s)
 }
 
 // ActiveDot returns the green ● used to mark the currently active resource
@@ -323,11 +346,7 @@ func (t *Theme) FocusGradient(base color.Color, n int) []color.Color {
 //
 //	── title ──
 //
-// Everything is Dim — rules, title, no colored glyphs. Recurring section
-// boundaries inside a panel (Inspector's rollout/images/runtime/conditions)
-// must read as structure, not chrome. Loud headings (cyan title + pink
-// glyphs) are reserved for Divider() at modal-headline scale, where
-// they're once-off attention beats rather than every-section dressing.
+// Recurring section boundaries use muted text; Divider uses cyan for modal titles.
 func (t *Theme) SectionRule(title string, width int) string {
 	titleSeg := t.DimTxt.Render(strings.TrimSpace(title))
 	titleW := lipgloss.Width(titleSeg)
@@ -339,20 +358,9 @@ func (t *Theme) SectionRule(title string, width int) string {
 	return rule + " " + titleSeg + " " + rule
 }
 
-// Divider returns a typographic section heading sized to `width` cells:
-//
-//	── ◇ Title ◇ ──
-//
-// Rules render in Dim, glyphs in Pink, the title in CyanBold — three weights
-// the eye reads as "this is a heading," not just "this is bold text on its
-// own line." When width is too small to fit the rules we drop them and just
-// return the inner `◇ Title ◇` cluster. Use this for modal headlines /
-// once-off attention beats; for in-panel recurring section headers, use
-// SectionRule instead.
+// Divider renders a cyan modal title between muted horizontal rules.
 func (t *Theme) Divider(title string, width int) string {
-	glyph := lipgloss.NewStyle().Foreground(t.P.Pink).Render("◇")
-	titleSeg := t.CyanBold.Render(strings.TrimSpace(title))
-	inner := glyph + " " + titleSeg + " " + glyph
+	inner := t.CyanBold.Render(strings.TrimSpace(title))
 	innerW := lipgloss.Width(inner)
 	if width <= innerW+2 {
 		return inner

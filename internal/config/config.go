@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"k8s.io/apimachinery/pkg/runtime/schema"
+
 	"github.com/yunus/safina/internal/history"
 	"sigs.k8s.io/yaml"
 )
@@ -44,12 +46,11 @@ type ResourceRef struct {
 }
 
 // DefaultEnabledResources returns the seed list used when the user has not
-// configured EnabledResources. Matches the six folds the tree historically
-// rendered at the namespace level so existing users see no change after
-// upgrading. Order matches the previous hard-coded visibleRows() order.
+// configured EnabledResources. Existing explicit pin lists are preserved.
 func DefaultEnabledResources() []ResourceRef {
 	return []ResourceRef{
 		{Synthetic: "Workloads"},
+		{Version: "v1", Resource: "pods"},
 		{Group: "", Version: "v1", Resource: "configmaps"},
 		{Group: "", Version: "v1", Resource: "secrets"},
 		{Group: "", Version: "v1", Resource: "services"},
@@ -60,8 +61,12 @@ func DefaultEnabledResources() []ResourceRef {
 
 // Equal reports whether two ResourceRefs identify the same resource.
 func (r ResourceRef) Equal(o ResourceRef) bool {
-	return r.Group == o.Group && r.Version == o.Version &&
-		r.Resource == o.Resource && r.Synthetic == o.Synthetic
+	return r.GVR() == o.GVR() && r.Synthetic == o.Synthetic
+}
+
+// GVR converts the persisted pin fields to the SDK's API resource identity.
+func (r ResourceRef) GVR() schema.GroupVersionResource {
+	return schema.GroupVersion{Group: r.Group, Version: r.Version}.WithResource(r.Resource)
 }
 
 func ConfigDir() (string, error) {

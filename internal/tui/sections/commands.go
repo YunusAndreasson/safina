@@ -143,10 +143,10 @@ func rawLoadDiscovery(mgr *k8s.Manager, contextName string) tea.Cmd {
 		defer debug.Track("k8s.discovery", "context", contextName)()
 		client, ok := mgr.GetClient(contextName)
 		if !ok {
-			return DiscoveryLoadedMsg{Err: errContextNotFound}
+			return DiscoveryLoadedMsg{Context: contextName, Err: errContextNotFound}
 		}
 		kinds, err := k8s.ListAvailableResources(client.Discovery)
-		return DiscoveryLoadedMsg{Kinds: kinds, Err: err}
+		return DiscoveryLoadedMsg{Context: contextName, Kinds: kinds, Err: err}
 	}
 }
 

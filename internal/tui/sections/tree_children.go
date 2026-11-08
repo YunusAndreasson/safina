@@ -3,11 +3,9 @@ package sections
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/yunus/safina/internal/debug"
 	"github.com/yunus/safina/internal/k8s"
@@ -269,52 +267,37 @@ func loadChildren(ctx context.Context, client *k8s.Client, path []NodeRef, cfgUs
 		return &Children{Kind: k8s.KindPV, PVs: pvs}, nil
 
 	case k8s.KindCustomFold:
-		gvr, ok := parseGVR(focus.GVR)
-		if !ok {
+		gvr := focus.GVR
+		if gvr.Version == "" || gvr.Resource == "" {
 			return nil, fmt.Errorf("invalid GVR %q", focus.GVR)
 		}
-		nsList, err := workloadNamespaces(ctx, client, path, cfgUser, cfgSystem)
-		if err != nil {
-			return nil, err
+		nsList := []string{""}
+		if !focus.ClusterScoped {
+			var err error
+			nsList, err = workloadNamespaces(ctx, client, path, cfgUser, cfgSystem)
+			if err != nil {
+				return nil, err
+			}
 		}
-		// Cluster-scope path: list everything (empty namespace). When a
-		// namespace folder is in the breadcrumb we got exactly one ns
-		// back; pass it through so the dynamic List call is namespaced.
-		// "All folder" returns multiple namespaces; we run one list call
-		// per namespace and merge. The dynamic client doesn't have an
-		// "any namespace" shortcut beyond cluster-scope listing — but
-		// listing across the whole cluster from inside the All folder is
-		// also fine for user GVRs (RBAC permitting), so we take that
-		// fast path when nsList covers every user namespace.
+		if gvr.Group == "" && gvr.Version == "v1" && gvr.Resource == "pods" {
+			pods, err := client.ListPodsAcrossNamespaces(ctx, nsList)
+			return &Children{Kind: k8s.KindPod, Pods: pods}, err
+		}
+		// Preserve namespace boundaries, including the configured user-namespace
+		// set under All. Cluster-scoped kinds explicitly use the empty namespace.
 		var items []k8s.GenericResource
-		if len(nsList) == 1 {
-			items, err = k8s.ListGeneric(ctx, client.Dynamic, gvr, nsList[0])
-		} else {
-			items, err = k8s.ListGeneric(ctx, client.Dynamic, gvr, "")
-		}
-		if err != nil {
-			return nil, err
+		for _, ns := range nsList {
+			found, err := k8s.ListGeneric(ctx, client.Dynamic, gvr, ns)
+			if err != nil {
+				return nil, err
+			}
+			items = append(items, found...)
 		}
 		return &Children{Kind: k8s.KindGenericResource, Generic: items}, nil
 
 	}
 
 	return &Children{Kind: focus.Kind}, nil
-}
-
-// parseGVR splits "group/version/resource" back into a schema.GVR. Group
-// is allowed to be empty (core). Returns ok=false when the format isn't
-// the expected three-part shape — we never want to silently list against
-// a bogus GVR.
-func parseGVR(s string) (schema.GroupVersionResource, bool) {
-	parts := strings.SplitN(s, "/", 3)
-	if len(parts) != 3 {
-		return schema.GroupVersionResource{}, false
-	}
-	if parts[1] == "" || parts[2] == "" {
-		return schema.GroupVersionResource{}, false
-	}
-	return schema.GroupVersionResource{Group: parts[0], Version: parts[1], Resource: parts[2]}, true
 }
 
 // workloadNamespaces resolves which namespaces a resource-fold (Workloads,

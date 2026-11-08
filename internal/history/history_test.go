@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"k8s.io/apimachinery/pkg/types"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -33,7 +35,7 @@ func TestJournalSurvivesRestartAndSeparatesOperations(t *testing.T) {
 	require.Len(t, result.Records, 3)
 	for _, r := range result.Records {
 		require.Equal(t, a.ID, r.Operation)
-		require.Equal(t, "old", r.Target.UID)
+		require.Equal(t, types.UID("old"), r.Target.UID)
 		require.Equal(t, 1, r.Version)
 		require.False(t, r.Time.IsZero())
 	}

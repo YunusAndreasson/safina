@@ -8,6 +8,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -19,7 +20,7 @@ func WorkloadProgress(ctx context.Context, cs kubernetes.Interface, namespace, k
 
 var ErrOperationSuperseded = errors.New("resource identity or generation changed")
 
-func WorkloadProgressForGeneration(ctx context.Context, cs kubernetes.Interface, namespace, kind, name string, rollout bool, uid, generation string) (string, bool, error) {
+func WorkloadProgressForGeneration(ctx context.Context, cs kubernetes.Interface, namespace, kind, name string, rollout bool, uid types.UID, generation string) (string, bool, error) {
 	switch kind {
 	case AppKindDeployment:
 		d, err := cs.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
@@ -83,6 +84,6 @@ func WorkloadProgressForGeneration(ctx context.Context, cs kubernetes.Interface,
 	}
 }
 
-func expectedWorkload(obj metav1.Object, uid, generation string) bool {
-	return (uid == "" || string(obj.GetUID()) == uid) && (generation == "" || strconv.FormatInt(obj.GetGeneration(), 10) == generation)
+func expectedWorkload(obj metav1.Object, uid types.UID, generation string) bool {
+	return (uid == "" || obj.GetUID() == uid) && (generation == "" || strconv.FormatInt(obj.GetGeneration(), 10) == generation)
 }

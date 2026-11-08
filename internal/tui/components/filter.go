@@ -80,6 +80,13 @@ func (f *Filter) Clear() {
 	f.snapshot = ""
 }
 
+// Restore applies a saved filter without focusing its input.
+func (f *Filter) Restore(value string) {
+	f.input.SetValue(value)
+	f.snapshot = value
+	f.Close()
+}
+
 func (f *Filter) Active() bool   { return f.active }
 func (f *Filter) Value() string  { return strings.TrimSpace(f.input.Value()) }
 func (f *Filter) View() string   { return f.input.View() }

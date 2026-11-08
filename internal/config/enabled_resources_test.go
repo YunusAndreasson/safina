@@ -9,22 +9,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestDefaultEnabledResources_HasSixFolds confirms the seed list matches
-// the six folds the tree historically rendered. If anyone reorders or
-// adds to this set, the failure surfaces here so they update visibleRows
-// in lock-step.
-func TestDefaultEnabledResources_HasSixFolds(t *testing.T) {
+func TestDefaultEnabledResources_IncludesDirectPods(t *testing.T) {
 	got := DefaultEnabledResources()
-	require.Len(t, got, 6)
-
-	// Workloads is a synthetic fold (unions five GVRs); the rest are 1:1.
+	require.Len(t, got, 7)
 	assert.Equal(t, "Workloads", got[0].Synthetic)
-	assert.Equal(t, "configmaps", got[1].Resource)
-	assert.Equal(t, "secrets", got[2].Resource)
-	assert.Equal(t, "services", got[3].Resource)
-	assert.Equal(t, "ingresses", got[4].Resource)
-	assert.Equal(t, "networking.k8s.io", got[4].Group)
-	assert.Equal(t, "persistentvolumeclaims", got[5].Resource)
+	resources := make([]string, 0, len(got))
+	for _, ref := range got[1:] {
+		resources = append(resources, ref.Resource)
+	}
+	assert.Equal(t, []string{"pods", "configmaps", "secrets", "services", "ingresses", "persistentvolumeclaims"}, resources)
 }
 
 func TestResourceRef_Equal(t *testing.T) {

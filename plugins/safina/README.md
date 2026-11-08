@@ -32,7 +32,7 @@ Use `:` → **Incoming proposals**. Enter opens a proposal, `Tab` cycles summary
 diff and evidence, and `d` opens the complete scrollable diff. `e` edits replicas,
 `container=image`, or an exact rollback revision; restart has no parameters.
 `x` rejects. Review any HPA/GitOps warning and explicitly acknowledge an override
-with `o` if appropriate. After visiting the diff, `a` then `y` approves the reviewed
+with `o` if appropriate. After visiting the diff, `A` then `y` approves the reviewed
 revision. Changing live state requires refreshed review. Tell Claude to retrieve
 the investigation after your review; pending is not approval.
 

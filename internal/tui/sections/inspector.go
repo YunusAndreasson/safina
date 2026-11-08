@@ -2,13 +2,21 @@ package sections
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"image/color"
 	"strconv"
 	"strings"
+	"time"
+
+	storageutil "k8s.io/kubectl/pkg/util/storage"
+
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yunus/safina/internal/k8s"
 	"github.com/yunus/safina/internal/tui/components"
@@ -30,7 +38,8 @@ import (
 type Inspector struct {
 	// ref is the last selection we computed a snapshot for. Compared on
 	// SetSelection to short-circuit when the cursor hasn't moved.
-	ref NodeRef
+	ref         NodeRef
+	cancelFetch context.CancelFunc
 
 	// snap is the base-from-list snapshot (kind-aware framing + a few
 	// fields we can know without a Get). The detail enrichment merges
@@ -42,7 +51,8 @@ type Inspector struct {
 	// throttled separately here — the cache is invalidated when the
 	// detail fetch fires (load issuance is itself throttled by the
 	// "only fetch if not cached" gate below).
-	detail map[string]*inspectorDetail
+	detail        map[string]*inspectorDetail
+	detailRecency cacheRecency
 }
 
 // inspectorDetail is the kind-erased payload for the detail cache.
@@ -64,8 +74,9 @@ type inspectorDetail struct {
 // fields. The renderer is dumb — adding a new kind only touches the
 // per-kind builder.
 type inspectorSnapshot struct {
-	title    string // heading line, e.g. "Pod · checkout-api-xq1z2"
-	subtitle string // optional kind / type breadcrumb under the title
+	title     string // heading line, e.g. "Pod · checkout-api-xq1z2"
+	subtitle  string // optional kind / type breadcrumb under the title
+	shortcuts []components.KeyDesc
 
 	// statusText / statusKind drive the one-line headline above rows:
 	// "Healthy · Progressing", "Pending · ImagePullBackOff", etc. We
@@ -131,9 +142,11 @@ func NewInspector() Inspector {
 // switch / picker pop so stale detail from another cluster doesn't
 // bleed in.
 func (i *Inspector) Clear() {
+	cancelSelectionFetch(&i.cancelFetch)
 	i.snap = nil
 	i.ref = NodeRef{}
 	i.detail = make(map[string]*inspectorDetail)
+	i.detailRecency = cacheRecency{}
 }
 
 // SetSelection re-renders the snapshot for the current tree cursor and
@@ -149,6 +162,9 @@ func (i *Inspector) Clear() {
 // answer; same-selection re-syncs reuse whatever's already in the cache.
 func (i *Inspector) SetSelection(ctx context.Context, mgr *k8s.Manager, contextName string, tr *Tree) tea.Cmd {
 	ref := tr.SelectedRef()
+	if ref != i.ref {
+		cancelSelectionFetch(&i.cancelFetch)
+	}
 	if ref.Kind == "" {
 		i.snap = nil
 		i.ref = ref
@@ -159,6 +175,9 @@ func (i *Inspector) SetSelection(ctx context.Context, mgr *k8s.Manager, contextN
 
 	key := inspectorDetailKey(ref.Kind, ref.Namespace, ref.Name)
 	cached := i.detail[key]
+	if cached != nil {
+		i.detailRecency.touch(key)
+	}
 	i.snap = i.buildSnapshot(tr, ref, cached)
 
 	if sameRef || !kindSupportsDetail(ref.Kind) || mgr == nil || contextName == "" {
@@ -168,7 +187,9 @@ func (i *Inspector) SetSelection(ctx context.Context, mgr *k8s.Manager, contextN
 		return nil
 	}
 	i.snap.loading = true
-	return LoadInspectorDetail(ctx, mgr, contextName, ref.Kind, ref.SubKind, ref.Namespace, ref.Name)
+	return selectionFetch(ctx, &i.cancelFetch, func(ctx context.Context) tea.Cmd {
+		return LoadInspectorDetail(ctx, mgr, contextName, ref.Kind, ref.SubKind, ref.Namespace, ref.Name)
+	})
 }
 
 // Apply ingests a detail-load result, caches it, and re-renders the
@@ -176,6 +197,9 @@ func (i *Inspector) SetSelection(ctx context.Context, mgr *k8s.Manager, contextN
 // results (the user navigated away mid-fetch) are kept in the cache
 // for the future, but don't disturb the live render.
 func (i *Inspector) Apply(msg InspectorDetailMsg, tr *Tree) {
+	if errors.Is(msg.Err, context.Canceled) || errors.Is(msg.Err, context.DeadlineExceeded) {
+		return
+	}
 	key := inspectorDetailKey(msg.Kind, msg.Namespace, msg.Name)
 	det := &inspectorDetail{
 		pod:     msg.Pod,
@@ -188,6 +212,8 @@ func (i *Inspector) Apply(msg InspectorDetailMsg, tr *Tree) {
 		err:     msg.Err,
 	}
 	i.detail[key] = det
+	i.detailRecency.touch(key)
+	pruneCache(i.detail, &i.detailRecency, maxDetailCacheEntries, func(key string) bool { return key == inspectorDetailKey(i.ref.Kind, i.ref.Namespace, i.ref.Name) })
 	cur := i.ref
 	if cur.Kind == msg.Kind && cur.Namespace == msg.Namespace && cur.Name == msg.Name {
 		i.snap = i.buildSnapshot(tr, cur, det)
@@ -198,13 +224,13 @@ func (i *Inspector) Apply(msg InspectorDetailMsg, tr *Tree) {
 func (i *Inspector) View(c *tuictx.Ctx, w, h int) string {
 	t := c.Theme
 	if i.snap == nil {
-		body := t.Idle.Render("nothing selected")
-		return components.PanelWithAccent(t, "Inspector", w, h, body, false, t.P.Dim, t.P.Dim)
+		body := IdlePlaceholder(t, components.PanelContentWidth(w), h-2, "Select a resource to see details.")
+		return components.PanelWithAccent(t, "", w, h, body, false, t.P.Dim, t.P.Dim)
 	}
 	body := i.renderBody(c, components.PanelContentWidth(w), h-2)
-	title := "Inspector"
+	title := ""
 	if i.snap.loading {
-		title = "Inspector · " + c.Spinner.View() + " loading…"
+		title = c.Spinner.View() + " loading…"
 	}
 	return components.PanelWithAccent(t, title, w, h, body, false, t.P.Cyan, t.P.Dim)
 }
@@ -213,18 +239,27 @@ func (i *Inspector) renderBody(c *tuictx.Ctx, innerW, innerH int) string {
 	t := c.Theme
 	s := i.snap
 
-	// Identity group: title + subtitle + status form a single visual unit —
-	// no blank lines between them. The typographic register (bold name,
-	// dim subtitle, colored status) carries the Gestalt grouping; vertical
-	// gaps would just push the eye to read them as three separate things.
-	parts := []string{
-		t.NameStrong.Render(truncate(s.title, innerW)),
+	// Keep type and health together; wrap long states instead of hiding them.
+	kind, _, _ := strings.Cut(s.title, " · ")
+	summary := lipgloss.NewStyle().Foreground(t.ResourceKindColor(kind)).Bold(true).Render(kind)
+	if s.statusText != "" {
+		summary += t.DimTxt.Render(" · ") + statusLine(t, s.statusText, s.statusKind, max(innerW, lipgloss.Width(s.statusText)))
 	}
+	var replicaSummary strings.Builder
+	for _, section := range s.sections {
+		for _, row := range section.rows {
+			if row.label == "replicas" {
+				replicaSummary.WriteString(t.DimTxt.Render(" · ") + t.NameDim.Render(row.value))
+			}
+		}
+	}
+	summary += replicaSummary.String()
+	parts := strings.Split(ansi.Wrap(summary, max(1, innerW), ""), "\n")
 	if s.subtitle != "" {
 		parts = append(parts, t.DimTxt.Render(truncate(s.subtitle, innerW)))
 	}
-	if s.statusText != "" {
-		parts = append(parts, statusLine(t, s.statusText, s.statusKind, innerW))
+	if len(s.shortcuts) > 0 {
+		parts = append(parts, components.RenderBoundedHints(t, s.shortcuts, innerW, components.KeyDesc{}))
 	}
 
 	// Live trends sit immediately under the identity strip — same visual
@@ -234,6 +269,14 @@ func (i *Inspector) renderBody(c *tuictx.Ctx, innerW, innerH int) string {
 	if s.live != nil {
 		parts = append(parts, renderLiveMetric(t, "cpu", s.live, true, innerW))
 		parts = append(parts, renderLiveMetric(t, "mem", s.live, false, innerW))
+		if s.live.cpuBuf != nil && s.live.cpuBuf.Series != nil {
+			latest := s.live.cpuBuf.Series.Latest
+			label := latest.Status(time.Now())
+			if !latest.SourceAt.IsZero() {
+				label += " · source " + k8s.HumanDuration(max(time.Duration(0), time.Since(latest.SourceAt))) + " ago · " + latest.Window.String() + " sample"
+			}
+			parts = append(parts, components.TruncPad(components.RenderModalKeysRow(t, []components.KeyDesc{{Key: "m", Desc: "metrics"}})+t.Hint.Render(" · "+label), innerW))
+		}
 	}
 
 	// Global label width — every detail row across every section right-pads
@@ -259,24 +302,30 @@ func (i *Inspector) renderBody(c *tuictx.Ctx, innerW, innerH int) string {
 	// Whole-or-nothing: skip a section that can't fit at least one row,
 	// so the tail never lands on a stub.
 	for _, sec := range s.sections {
-		if len(sec.rows) == 0 {
+		rows := make([]inspectorRow, 0, len(sec.rows))
+		for _, row := range sec.rows {
+			if row.label != "replicas" {
+				rows = append(rows, row)
+			}
+		}
+		if len(rows) == 0 {
 			continue
 		}
-		need := 1 + len(sec.rows) // blank + rows
-		minNeed := 1 + 1          // blank + at least 1 row
+		need := 1 + len(rows) // blank + rows
+		minNeed := 1 + 1      // blank + at least 1 row
 		remaining := innerH - len(parts) - errReserve
 		if remaining < minNeed {
 			break
 		}
 		parts = append(parts, "")
-		maxRows := len(sec.rows)
+		maxRows := len(rows)
 		if need > remaining {
 			maxRows = remaining - 1
 		}
 		for i := range maxRows {
-			parts = append(parts, renderInspectorRow(t, sec.rows[i], labelW, innerW))
+			parts = append(parts, renderInspectorRow(t, rows[i], labelW, innerW))
 		}
-		if maxRows < len(sec.rows) {
+		if maxRows < len(rows) {
 			break
 		}
 	}
@@ -380,6 +429,13 @@ func renderLiveMetric(t *theme.Theme, kind string, live *inspectorLive, isCPU bo
 		curStr = k8s.FormatMem(cur)
 	}
 
+	if buf != nil && buf.Series != nil {
+		if buf.Series.Latest.Status(time.Now()) == "available" {
+			curStr = components.MetricValue(cur, !isCPU)
+		} else {
+			curStr = "—"
+		}
+	}
 	// Right-pad the value into a fixed cell so cpu↔mem rows share an
 	// edge regardless of digit count.
 	valPad := liveValueCellW - lipgloss.Width(curStr)
@@ -428,7 +484,7 @@ func attachPodLive(s *inspectorSnapshot, tr *Tree, p k8s.PodInfo, _ *inspectorDe
 // is reported next to the current value so the operator reads "we're
 // at X, per-replica budget is Y" without leaving the panel.
 func attachAppLive(s *inspectorSnapshot, tr *Tree, a k8s.AppInfo, _ *inspectorDetail) {
-	cpuBuf, memBuf := tr.MetricSeriesFor(k8s.KindApp, a.Namespace, a.Name)
+	cpuBuf, memBuf := tr.MetricSeriesFor(a.Kind, a.Namespace, a.Name)
 	live := buildLive(cpuBuf, memBuf, a.CPU, a.Memory)
 	if live == nil {
 		return
@@ -454,14 +510,7 @@ func buildLive(cpuBuf, memBuf *components.MetricBuffer, curCPU, curMem int64) *i
 	}
 }
 
-// attachNodeLive populates the LIVE USAGE block for a node selection.
-// Same shape Apps and Pods use, with one semantic adjustment: the
-// sparkline buffer for nodes holds per-mille utilisation (0-1000
-// mapping to 0-100% of allocatable; ratchets to 2000 on overcommit)
-// rather than raw values. The gradient colours therefore align with
-// the percentage the row shows, while the headline value next to the
-// spark is the *raw* CPU / Memory usage so the operator reads
-// "1.5 cores in use" without doing arithmetic against the budget.
+// attachNodeLive shows raw CPU and memory, with allocatable capacity in the chart.
 func attachNodeLive(s *inspectorSnapshot, tr *Tree, n k8s.NodeInfo) {
 	cpuBuf, memBuf := tr.MetricSeriesFor(k8s.KindNode, "", n.Name)
 	live := buildLive(cpuBuf, memBuf, n.CPUUsed, n.MemUsed)
@@ -560,8 +609,8 @@ func (i *Inspector) buildSnapshot(tr *Tree, ref NodeRef, det *inspectorDetail) *
 		}
 	case k8s.KindNamespace, k8s.KindNamespaceFolder:
 		return &inspectorSnapshot{
-			title:    "Namespace · " + ref.Display,
-			subtitle: "press ↵ to drill into resources",
+			title:     "Namespace · " + ref.Display,
+			shortcuts: []components.KeyDesc{{Key: "↵", Desc: "browse resources"}},
 		}
 	case k8s.KindNodePool:
 		if p, ok := selectedNodePool(tr); ok {
@@ -569,12 +618,12 @@ func (i *Inspector) buildSnapshot(tr *Tree, ref NodeRef, det *inspectorDetail) *
 		}
 	case k8s.KindContext:
 		return &inspectorSnapshot{
-			title:    "Cluster · " + ref.Display,
-			subtitle: "press ↵ to drill in",
+			title:     "Cluster · " + ref.Display,
+			shortcuts: []components.KeyDesc{{Key: "↵", Desc: "open cluster"}},
 		}
 	}
-	if isResourceGroup(ref.Kind) {
-		return &inspectorSnapshot{title: selectionTitle(ref), subtitle: "press ↵ to browse resources"}
+	if IsResourceGroup(ref.Kind) {
+		return &inspectorSnapshot{title: selectionTitle(ref), shortcuts: []components.KeyDesc{{Key: "↵", Desc: "browse resources"}}}
 	}
 	return &inspectorSnapshot{title: selectionTitle(ref)}
 }
@@ -614,7 +663,7 @@ func inspectPodSnap(p k8s.PodInfo, det *inspectorDetail) *inspectorSnapshot {
 		// majority of pods that don't set requests. Guaranteed and
 		// Burstable are the actionable signals.
 		if d.QoS != "" && d.QoS != "BestEffort" {
-			runtime = append(runtime, inspectorRow{label: "QoS", value: d.QoS, emphasis: "dim"})
+			runtime = append(runtime, inspectorRow{label: "QoS", value: string(d.QoS), emphasis: "dim"})
 		}
 		if d.OwnerName != "" {
 			runtime = append(runtime, inspectorRow{
@@ -771,7 +820,7 @@ func inspectNodeSnap(n k8s.NodeInfo, det *inspectorDetail) *inspectorSnapshot {
 				if t.Value != "" {
 					val += "=" + t.Value
 				}
-				val += ":" + t.Effect
+				val += ":" + string(t.Effect)
 				rows = append(rows, inspectorRow{label: "taint", value: val, emphasis: "warn"})
 			}
 			s.sections = append(s.sections, inspectorSection{title: "taints", rows: rows})
@@ -781,7 +830,7 @@ func inspectNodeSnap(n k8s.NodeInfo, det *inspectorDetail) *inspectorSnapshot {
 			rows := make([]inspectorRow, 0, len(d.Conditions))
 			for _, c := range d.Conditions {
 				rows = append(rows, inspectorRow{
-					label: c.Type, value: nonEmpty(c.Reason, "—"), emphasis: "warn",
+					label: string(c.Type), value: nonEmpty(c.Reason, "—"), emphasis: "warn",
 				})
 			}
 			s.sections = append(s.sections, inspectorSection{title: "pressure", rows: rows})
@@ -795,7 +844,7 @@ func inspectNodeSnap(n k8s.NodeInfo, det *inspectorDetail) *inspectorSnapshot {
 
 func inspectServiceSnap(svc k8s.ServiceInfo, det *inspectorDetail) *inspectorSnapshot {
 	s := &inspectorSnapshot{title: "Service · " + svc.Name}
-	s.subtitle = svc.Type
+	s.subtitle = string(svc.Type)
 	if det != nil && det.service != nil {
 		d := det.service
 		rows := []inspectorRow{}
@@ -829,13 +878,13 @@ func inspectServiceSnap(svc k8s.ServiceInfo, det *inspectorDetail) *inspectorSna
 			emphasis: endpointKind,
 		})
 		if d.SessionAffinity != "" && d.SessionAffinity != "None" {
-			rows = append(rows, inspectorRow{label: "sessionAff", value: d.SessionAffinity, emphasis: "dim"})
+			rows = append(rows, inspectorRow{label: "sessionAff", value: string(d.SessionAffinity), emphasis: "dim"})
 		}
 		// extPolicy "Cluster" is the default — suppressing it keeps the
 		// inspector quiet on the majority of services. "Local" is the
 		// noteworthy setting that affects source-IP preservation.
 		if d.ExternalTrafficPolicy != "" && d.ExternalTrafficPolicy != "Cluster" {
-			rows = append(rows, inspectorRow{label: "extPolicy", value: d.ExternalTrafficPolicy, emphasis: "dim"})
+			rows = append(rows, inspectorRow{label: "extPolicy", value: string(d.ExternalTrafficPolicy), emphasis: "dim"})
 		}
 		if len(d.LoadBalancerIngress) > 0 {
 			rows = append(rows, inspectorRow{
@@ -913,8 +962,10 @@ func backendRows(backends []k8s.IngressBackend) []inspectorRow {
 		em := "dim"
 		if b.Service != "" {
 			val = b.Service
-			if b.Port != "" {
-				val += ":" + b.Port
+			if b.Port.Number != 0 {
+				val += ":" + strconv.FormatInt(int64(b.Port.Number), 10)
+			} else if b.Port.Name != "" {
+				val += ":" + b.Port.Name
 			}
 			em = "name"
 		}
@@ -999,8 +1050,8 @@ func inspectConfigMapSnap(c k8s.ConfigMapInfo) *inspectorSnapshot {
 	// up to a handful of key names — so the operator sees what the
 	// configmap is *about* without opening the reveal modal.
 	s := &inspectorSnapshot{
-		title:    "ConfigMap · " + c.Name,
-		subtitle: "press d to view keys",
+		title:     "ConfigMap · " + c.Name,
+		shortcuts: []components.KeyDesc{{Key: "d", Desc: "view YAML"}},
 	}
 	if rows := keyPreviewRows(c.KeyNames); len(rows) > 0 {
 		s.sections = append(s.sections, inspectorSection{rows: rows})
@@ -1010,8 +1061,9 @@ func inspectConfigMapSnap(c k8s.ConfigMapInfo) *inspectorSnapshot {
 
 func inspectSecretSnap(sec k8s.SecretInfo) *inspectorSnapshot {
 	s := &inspectorSnapshot{
-		title:    "Secret · " + sec.Name,
-		subtitle: "type · " + nonEmpty(sec.Type, "Opaque") + "  ·  press v to reveal",
+		title:     "Secret · " + sec.Name,
+		subtitle:  "type · " + nonEmpty(string(sec.Type), "Opaque"),
+		shortcuts: []components.KeyDesc{{Key: "v", Desc: "reveal values"}},
 	}
 	if rows := keyPreviewRows(sec.KeyNames); len(rows) > 0 {
 		s.sections = append(s.sections, inspectorSection{rows: rows})
@@ -1051,21 +1103,21 @@ func inspectPVCSnap(p k8s.PVCInfo, det *inspectorDetail) *inspectorSnapshot {
 	// row's STATUS column uses, but here it's the loud bit at the top
 	// of the tile rather than a column entry.
 	if p.Status != "" {
-		s.statusText = p.Status
+		s.statusText = string(p.Status)
 		s.statusKind = pvClaimStatusEmphasis(p.Status)
 	}
 
 	rows := []inspectorRow{}
 	if det != nil && det.pvc != nil {
 		d := det.pvc
-		if d.AccessModes != "" {
-			rows = append(rows, inspectorRow{label: "accessModes", value: d.AccessModes, emphasis: "name"})
+		if len(d.AccessModes) > 0 {
+			rows = append(rows, inspectorRow{label: "accessModes", value: storageutil.GetAccessModesAsString(d.AccessModes), emphasis: "name"})
 		}
 		// Block mode is the unusual setting that changes how the volume
 		// is mounted; suppress the default Filesystem to keep the row
 		// list quiet for the majority case.
 		if d.VolumeMode != "" {
-			rows = append(rows, inspectorRow{label: "volumeMode", value: d.VolumeMode, emphasis: "warn"})
+			rows = append(rows, inspectorRow{label: "volumeMode", value: string(d.VolumeMode), emphasis: "warn"})
 		}
 		if d.PendingReason != "" {
 			rows = append(rows, inspectorRow{
@@ -1096,7 +1148,7 @@ func inspectPVSnap(p k8s.PVInfo, det *inspectorDetail) *inspectorSnapshot {
 	// underlying disk — none of which fit in a row column.
 	s := &inspectorSnapshot{title: "PV · " + p.Name}
 	if p.Status != "" {
-		s.statusText = p.Status
+		s.statusText = string(p.Status)
 		s.statusKind = pvVolumeStatusEmphasis(p.Status)
 	}
 	// Reclaim policy is a strong-emphasis hint (Delete = red) that
@@ -1105,7 +1157,7 @@ func inspectPVSnap(p k8s.PVInfo, det *inspectorDetail) *inspectorSnapshot {
 	// dangerous case so an operator scanning top-down sees it.
 	rows := []inspectorRow{}
 	if p.Reclaim != "" {
-		rows = append(rows, inspectorRow{label: "reclaim", value: p.Reclaim, emphasis: pvReclaimEmphasis(p.Reclaim)})
+		rows = append(rows, inspectorRow{label: "reclaim", value: string(p.Reclaim), emphasis: pvReclaimEmphasis(p.Reclaim)})
 	}
 	if det != nil && det.pv != nil {
 		d := det.pv
@@ -1152,15 +1204,15 @@ func podMountRows(pods []string) []inspectorRow {
 }
 
 // pvClaimStatusEmphasis maps PVC status to an inspectorRow emphasis. Bound
-// is the steady-state happy case (good); Lost or Failed flags trouble; Pending
+// is the steady-state happy case (good); Lost flags trouble; Pending
 // is a known-transient state worth a warn.
-func pvClaimStatusEmphasis(status string) string {
+func pvClaimStatusEmphasis(status corev1.PersistentVolumeClaimPhase) string {
 	switch status {
-	case "Bound":
+	case corev1.ClaimBound:
 		return "good"
-	case "Pending":
+	case corev1.ClaimPending:
 		return "warn"
-	case "Lost", "Failed":
+	case corev1.ClaimLost:
 		return "bad"
 	}
 	return ""
@@ -1169,13 +1221,13 @@ func pvClaimStatusEmphasis(status string) string {
 // pvVolumeStatusEmphasis is the PV-side mirror of pvClaimStatusEmphasis.
 // Released sits between "happy" and "dangerous" — the volume held data and
 // has been unbound, so a Delete reclaim will erase it on next reconcile.
-func pvVolumeStatusEmphasis(status string) string {
+func pvVolumeStatusEmphasis(status corev1.PersistentVolumePhase) string {
 	switch status {
-	case "Bound", "Available":
+	case corev1.VolumeBound, corev1.VolumeAvailable:
 		return "good"
-	case "Released":
+	case corev1.VolumePending, corev1.VolumeReleased:
 		return "warn"
-	case "Failed":
+	case corev1.VolumeFailed:
 		return "bad"
 	}
 	return ""
@@ -1184,12 +1236,14 @@ func pvVolumeStatusEmphasis(status string) string {
 // pvReclaimEmphasis colours Delete red — the case where the on-caller most
 // often wants to know "if I drop the claim, do I lose the data?". Retain is
 // the safe default.
-func pvReclaimEmphasis(reclaim string) string {
+func pvReclaimEmphasis(reclaim corev1.PersistentVolumeReclaimPolicy) string {
 	switch reclaim {
-	case "Delete":
+	case corev1.PersistentVolumeReclaimDelete:
 		return "bad"
-	case "Retain":
+	case corev1.PersistentVolumeReclaimRetain:
 		return "good"
+	case corev1.PersistentVolumeReclaimRecycle:
+		return ""
 	}
 	return ""
 }
@@ -1251,18 +1305,18 @@ func nodeHeadline(n k8s.NodeInfo) (string, string) {
 // loudestCondition returns the most actionable condition string from a
 // Deployment-style condition list — Failed/ReplicaFailure beats
 // Progressing beats Available. Empty when nothing's interesting.
-func loudestCondition(conds []k8s.AppCondition) string {
+func loudestCondition(conds []appsv1.DeploymentCondition) string {
 	var avail, prog, repl string
 	for _, c := range conds {
 		switch c.Type {
-		case "Available":
-			if c.Status == "True" {
+		case appsv1.DeploymentAvailable:
+			if c.Status == corev1.ConditionTrue {
 				avail = "Available"
 			} else {
 				avail = "Unavailable"
 			}
-		case "Progressing":
-			if c.Status == "True" {
+		case appsv1.DeploymentProgressing:
+			if c.Status == corev1.ConditionTrue {
 				prog = "Progressing"
 				if c.Reason == "NewReplicaSetAvailable" {
 					prog = "" // suppress the steady-state "True" we don't need to shout
@@ -1270,8 +1324,8 @@ func loudestCondition(conds []k8s.AppCondition) string {
 			} else {
 				prog = "Rollout stalled"
 			}
-		case "ReplicaFailure":
-			if c.Status == "True" {
+		case appsv1.DeploymentReplicaFailure:
+			if c.Status == corev1.ConditionTrue {
 				repl = "ReplicaFailure"
 			}
 		}
@@ -1288,25 +1342,25 @@ func loudestCondition(conds []k8s.AppCondition) string {
 // abnormalConditions filters out Available=True and the steady-state
 // Progressing=True so the conditions section only lights up when
 // something's actually wrong.
-func abnormalConditions(conds []k8s.AppCondition) []inspectorRow {
+func abnormalConditions(conds []appsv1.DeploymentCondition) []inspectorRow {
 	out := []inspectorRow{}
 	for _, c := range conds {
 		// Skip the boring happy paths.
-		if c.Type == "Available" && c.Status == "True" {
+		if c.Type == appsv1.DeploymentAvailable && c.Status == corev1.ConditionTrue {
 			continue
 		}
-		if c.Type == "Progressing" && c.Status == "True" && c.Reason == "NewReplicaSetAvailable" {
+		if c.Type == appsv1.DeploymentProgressing && c.Status == corev1.ConditionTrue && c.Reason == "NewReplicaSetAvailable" {
 			continue
 		}
 		em := "warn"
-		if c.Status == "True" && c.Type == "ReplicaFailure" {
+		if c.Status == corev1.ConditionTrue && c.Type == appsv1.DeploymentReplicaFailure {
 			em = "bad"
 		}
 		val := c.Reason
 		if val == "" {
-			val = c.Status
+			val = string(c.Status)
 		}
-		out = append(out, inspectorRow{label: c.Type, value: val, emphasis: em})
+		out = append(out, inspectorRow{label: string(c.Type), value: val, emphasis: em})
 	}
 	return out
 }

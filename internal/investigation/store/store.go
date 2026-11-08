@@ -13,6 +13,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -401,11 +402,47 @@ func (s *Store) Close() error {
 	return err
 }
 
+// clone detaches mutable state without a JSON round trip, which can fail on
+// timestamps and silently erase the investigation.
 func clone(v inv.Investigation) inv.Investigation {
-	b, _ := json.Marshal(v)
-	var result inv.Investigation
-	_ = json.Unmarshal(b, &result)
-	return result
+	if v.Target != nil {
+		target := *v.Target
+		v.Target = &target
+	}
+	v.Evidence = slices.Clone(v.Evidence)
+	for i := range v.Evidence {
+		v.Evidence[i].Warnings = slices.Clone(v.Evidence[i].Warnings)
+	}
+	v.Proposals = slices.Clone(v.Proposals)
+	for i := range v.Proposals {
+		a := &v.Proposals[i].Alternative
+		a.Evidence = slices.Clone(a.Evidence)
+		a.Action = cloneAction(a.Action)
+	}
+	v.Decisions = slices.Clone(v.Decisions)
+	for i := range v.Decisions {
+		d := &v.Decisions[i]
+		d.Overrides = slices.Clone(d.Overrides)
+		if d.Prepared != nil {
+			r := *d.Prepared
+			r.Action = cloneAction(r.Action)
+			// Executable patch bytes are transient and were also omitted by JSON cloning.
+			r.Patch = nil
+			r.Warnings = slices.Clone(r.Warnings)
+			r.RequiredOverrides = slices.Clone(r.RequiredOverrides)
+			d.Prepared = &r
+		}
+	}
+	v.Executions = slices.Clone(v.Executions)
+	return v
+}
+
+func cloneAction(a inv.Action) inv.Action {
+	if a.Replicas != nil {
+		replicas := *a.Replicas
+		a.Replicas = &replicas
+	}
+	return a
 }
 
 func (s *Store) Get(id string) (inv.Investigation, error) {
@@ -486,17 +523,28 @@ func (s *Store) validateExecutionUpdate(e event) error {
 	return errors.New("compact execution transition has no valid predecessor")
 }
 
-func digest(v any) string {
-	b, _ := json.Marshal(v)
+func digest(v any) (string, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "", fmt.Errorf("encode digest: %w", err)
+	}
 	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])
+	return hex.EncodeToString(sum[:]), nil
 }
 
 func (s *Store) retry(session, method, key string, request any) (receipt, bool, error) {
 	if session == "" || key == "" || len(session) > 256 || len(key) > 256 {
 		return receipt{}, false, fmt.Errorf("%w: session and idempotency key required (maximum 256 bytes)", inv.ErrInvalid)
 	}
-	rc := receipt{Key: digest([]string{session, method, key}), Digest: digest(request)}
+	receiptKey, err := digest([]string{session, method, key})
+	if err != nil {
+		return receipt{}, false, err
+	}
+	requestDigest, err := digest(request)
+	if err != nil {
+		return receipt{}, false, err
+	}
+	rc := receipt{Key: receiptKey, Digest: requestDigest}
 	prior, ok := s.receipts[rc.Key]
 	if ok && prior.Digest != rc.Digest {
 		return rc, false, inv.ErrConflict

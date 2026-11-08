@@ -151,16 +151,19 @@ func (s *server) approve(parent context.Context, p operator.Request) (inv.Execut
 	if err != nil {
 		return inv.Execution{}, err
 	}
-	if string(d.UID) != r.Target.UID || d.ResourceVersion != r.ResourceVersion {
+	if d.UID != r.Target.UID || d.ResourceVersion != r.ResourceVersion {
 		return inv.Execution{}, inv.ErrConflict
 	}
-	_, _, signature := controllerWarnings(ctx, cs, d)
+	_, _, signature, err := controllerWarnings(ctx, cs, d)
+	if err != nil {
+		return inv.Execution{}, err
+	}
 	if signature != r.ControllerSignature {
 		return inv.Execution{}, inv.ErrConflict
 	}
 	if r.Action.Kind == "rollback" {
 		rs, revisionErr := ownedRevision(ctx, cs, d, r.Action.Revision)
-		if revisionErr != nil || string(rs.UID) != r.RollbackUID || rs.ResourceVersion != r.RollbackVersion {
+		if revisionErr != nil || rs.UID != r.RollbackUID || rs.ResourceVersion != r.RollbackVersion {
 			return inv.Execution{}, inv.ErrConflict
 		}
 	}
@@ -189,6 +192,7 @@ func (s *server) approve(parent context.Context, p operator.Request) (inv.Execut
 	// HTTP request, including when the server returns an ambiguous 503.
 	accepted := &appsv1.Deployment{}
 	sendErr := cs.AppsV1().RESTClient().Patch(types.JSONPatchType).Namespace(r.Target.Namespace).Resource("deployments").Name(r.Target.Name).Param("fieldManager", "safina-broker").Body(patch).MaxRetries(0).Do(ctx).Into(accepted)
+	acceptedDigest, digestErr := digest(accepted.Spec.Template)
 	switch {
 	case sendErr != nil:
 		op.State = "unknown"
@@ -197,12 +201,12 @@ func (s *server) approve(parent context.Context, p operator.Request) (inv.Execut
 			op.State = "failed"
 			op.Detail = "API rejected the reviewed write; refresh and review again."
 		}
-	case string(accepted.UID) != r.Target.UID || accepted.ResourceVersion == "" || accepted.Generation <= r.Generation || accepted.Spec.Replicas == nil || *accepted.Spec.Replicas != r.After || (r.TemplateDigest != "" && digest(accepted.Spec.Template) != r.TemplateDigest):
+	case accepted.UID != r.Target.UID || accepted.ResourceVersion == "" || accepted.Generation <= r.Generation || accepted.Spec.Replicas == nil || *accepted.Spec.Replicas != r.After || (r.TemplateDigest != "" && (digestErr != nil || acceptedDigest != r.TemplateDigest)):
 		op.State = "unknown"
 		op.Detail = "API response did not establish the reviewed change; read-only reconciliation required."
 	default:
 		op.State = "accepted"
-		op.UID = string(accepted.UID)
+		op.UID = accepted.UID
 		op.ResourceVersion = accepted.ResourceVersion
 		op.Generation = accepted.Generation
 		op.Detail = "API accepted the reviewed change; awaiting controller observation. Application recovery is unverified."
@@ -270,7 +274,7 @@ func (s *server) reconcileOne(parent context.Context, current inv.Investigation,
 		return
 	}
 	switch {
-	case apierrors.IsNotFound(err) || string(d.UID) != r.Target.UID:
+	case apierrors.IsNotFound(err) || d.UID != r.Target.UID:
 		op.State = "superseded"
 		op.Detail = "Target removed or replaced; no write will be replayed."
 	case op.State == "unknown":
@@ -281,7 +285,12 @@ func (s *server) reconcileOne(parent context.Context, current inv.Investigation,
 		// Stable detail avoids journal growth on every periodic read.
 		op.Detail = fmt.Sprintf("Read-only reconciliation: desired replicas currently %d (requested %d). Causal outcome remains unknown; no replay. Application recovery unverified.", replicas, r.After)
 		if r.TemplateDigest != "" {
-			op.Detail += fmt.Sprintf(" Template matches reviewed digest: %t.", digest(d.Spec.Template) == r.TemplateDigest)
+			templateDigest, digestErr := digest(d.Spec.Template)
+			if digestErr != nil {
+				op.Detail += " Template digest unavailable; match unverified."
+			} else {
+				op.Detail += fmt.Sprintf(" Template matches reviewed digest: %t.", templateDigest == r.TemplateDigest)
+			}
 		}
 	case d.Generation != op.Generation:
 		op.State = "superseded"

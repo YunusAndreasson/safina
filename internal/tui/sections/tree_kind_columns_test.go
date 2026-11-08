@@ -4,6 +4,9 @@ import (
 	"strings"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -112,7 +115,7 @@ func TestTree_PVCRows_ShowVolumeWhenBound(t *testing.T) {
 		f.tr.children = &Children{
 			Kind: k8s.KindPVC,
 			PVCs: []k8s.PVCInfo{
-				{Name: "data-0", Namespace: "shop", Status: "Bound", Capacity: "10Gi", VolumeName: "pvc-abc-123", StorageClass: "fast", Age: "5d"},
+				{Name: "data-0", Namespace: "shop", Status: "Bound", Capacity: new(resource.MustParse("10Gi")), VolumeName: "pvc-abc-123", StorageClass: "fast", Age: "5d"},
 			},
 		}
 		out := f.tr.renderPVCRows(f.ctx, 120, 5)
@@ -137,7 +140,7 @@ func TestTree_PVRows_ShowClaimAccessReclaim(t *testing.T) {
 	f.tr.children = &Children{
 		Kind: k8s.KindPV,
 		PVs: []k8s.PVInfo{
-			{Name: "pv-001", Capacity: "10Gi", Status: "Bound", Claim: "shop/data-0", StorageClass: "fast", AccessModes: "RWO", Reclaim: "Retain", Age: "5d"},
+			{Name: "pv-001", Capacity: new(resource.MustParse("10Gi")), Status: "Bound", Claim: "shop/data-0", StorageClass: "fast", AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}, Reclaim: "Retain", Age: "5d"},
 		},
 	}
 
@@ -178,7 +181,7 @@ func TestTree_PVRows_DropPriorityUnderNarrowWidth(t *testing.T) {
 		f.tr.children = &Children{
 			Kind: k8s.KindPV,
 			PVs: []k8s.PVInfo{
-				{Name: "pv-001", Capacity: "10Gi", Status: "Bound", Claim: "shop/data-0", StorageClass: "fast", AccessModes: "RWO", Reclaim: "Retain", Age: "5d"},
+				{Name: "pv-001", Capacity: new(resource.MustParse("10Gi")), Status: "Bound", Claim: "shop/data-0", StorageClass: "fast", AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}, Reclaim: "Retain", Age: "5d"},
 			},
 		}
 		tr := f.tr

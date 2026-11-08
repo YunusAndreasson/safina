@@ -30,10 +30,13 @@ type Logs struct {
 	streamErr   error
 	namespace   string
 
-	lines      []string            // raw lines, unfiltered
-	filtered   []int               // indices into lines that match current filter
-	rendered   string              // cached, filter-aware render fed to the viewport
-	renderTail logRenderCheckpoint // state before the unfinished final raw line
+	logBytes          int
+	discardedLogLines int64
+	discardedLogBytes int64
+	lines             []string            // raw lines, unfiltered
+	filtered          []int               // indices into lines that match current filter
+	rendered          string              // cached, filter-aware render fed to the viewport
+	renderTail        logRenderCheckpoint // state before the unfinished final raw line
 
 	vp     viewport.Model
 	follow bool
@@ -86,8 +89,11 @@ func (l *Logs) Reset(pod, namespace string) {
 	l.streamEnded = false
 	l.streamErr = nil
 	l.namespace = namespace
-	l.lines = l.lines[:0]
-	l.filtered = l.filtered[:0]
+	l.lines = nil
+	l.filtered = nil
+	l.logBytes = 0
+	l.discardedLogLines = 0
+	l.discardedLogBytes = 0
 	l.rendered = ""
 	l.renderTail = logRenderCheckpoint{}
 	l.follow = true
@@ -162,18 +168,13 @@ func (l *Logs) Body(c *tuictx.Ctx) string {
 	)
 }
 
-// PaneTitle returns the workspace tab title for this section.
+// SetTarget records the container and stream generation.
 func (l *Logs) SetTarget(container string, previous bool) {
 	l.container = container
 	l.previous = previous
 }
 
-func (l *Logs) PaneTitle() string {
-	if l.namespace != "" {
-		return fmt.Sprintf("logs · %s/%s · %s%s", l.pod, l.container, l.namespace, map[bool]string{true: " · previous"}[l.previous])
-	}
-	return "logs · " + l.pod
-}
+func (l *Logs) PaneTitle() string { return l.pod }
 
 func (l *Logs) recomputeViewportSize() {
 	inner := components.PanelContentWidth(l.modalW)
@@ -193,6 +194,9 @@ func (l *Logs) Append(s string) {
 	if s == "" {
 		return
 	}
+	wasAtBottom := l.follow && l.vp.AtBottom()
+	previousOffset := l.vp.YOffset()
+	l.logBytes += len(s)
 	// HTTP reads are arbitrary chunks, not records. Continue the final
 	// fragment so split reads neither break lines nor insert blank rows.
 	start := max(0, len(l.lines)-1)
@@ -202,6 +206,23 @@ func (l *Logs) Append(s string) {
 	} else {
 		l.lines[len(l.lines)-1] += parts[0]
 		l.lines = append(l.lines, parts[1:]...)
+	}
+	dropped, trimmed := l.trimLogStorage(start)
+	if trimmed {
+		removedMatches := 0
+		for _, idx := range l.filtered {
+			if idx < dropped {
+				removedMatches++
+			}
+		}
+		l.recomputeFilter()
+		l.refreshContent()
+		if l.follow && wasAtBottom {
+			l.vp.GotoBottom()
+		} else {
+			l.vp.SetYOffset(max(0, previousOffset-removedMatches))
+		}
+		return
 	}
 	// Recheck the old final fragment: appending can both introduce and remove
 	// a match (for example, completing a split UTF-8 character).
@@ -219,7 +240,6 @@ func (l *Logs) Append(s string) {
 	if l.renderTail.bytes == len(l.rendered) && l.renderTail.matches == len(l.filtered) {
 		return
 	}
-	wasAtBottom := l.follow && l.vp.AtBottom()
 	l.renderContent(l.renderTail)
 	if l.follow && wasAtBottom {
 		l.vp.GotoBottom()
@@ -507,7 +527,17 @@ func (l *Logs) viewportBlock(c *tuictx.Ctx) string {
 // chunk justify to the panel inner width.
 func (l *Logs) renderStatusRow(c *tuictx.Ctx) string {
 	t := c.Theme
-	indicators := make([]components.Indicator, 0, 4)
+	indicators := make([]components.Indicator, 0, 7)
+	if l.discardedLogBytes > 0 {
+		indicators = append(indicators, components.Indicator{Text: fmt.Sprintf("buffer capped · %d lines / %d KiB discarded", l.discardedLogLines, l.discardedLogBytes/1024)})
+	}
+	source := strings.Trim(strings.Join([]string{l.namespace, l.container}, "/"), "/")
+	if source != "" {
+		indicators = append(indicators, components.Indicator{Text: source})
+	}
+	if l.previous {
+		indicators = append(indicators, components.Indicator{Text: "previous"})
+	}
 	indicators = append(indicators, components.Indicator{Text: "c targets · p previous"})
 	if l.filter.Value() != "" {
 		indicators = append(indicators, components.Indicator{
@@ -559,6 +589,5 @@ func (l *Logs) renderKeysRow() string {
 		{Key: "j/k", Desc: "scroll"},
 		{Key: "g/G", Desc: "top/bot"},
 		{Key: "ctrl+l", Desc: "clear"},
-		{Key: "esc", Desc: "close"},
 	})
 }

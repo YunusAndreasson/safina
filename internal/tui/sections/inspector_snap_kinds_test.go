@@ -3,6 +3,10 @@ package sections
 import (
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -116,8 +120,8 @@ func TestInspectIngressSnap_OmitsHostsRestatesTLSAndBackends(t *testing.T) {
 		det := &inspectorDetail{ingress: &k8s.IngressDetail{
 			Rules: 2,
 			Backends: []k8s.IngressBackend{
-				{Host: "foo.example.com", Path: "/", Service: "foo-svc", Port: "80"},
-				{Host: "bar.example.com", Path: "/api", Service: "bar-svc", Port: "8080"},
+				{Host: "foo.example.com", Path: "/", Service: "foo-svc", Port: networkingv1.ServiceBackendPort{Number: 80}},
+				{Host: "bar.example.com", Path: "/api", Service: "bar-svc", Port: networkingv1.ServiceBackendPort{Number: 8080}},
 			},
 		}}
 		snap := inspectIngressSnap(ing, det)
@@ -151,7 +155,7 @@ func TestInspectIngressSnap_OmitsHostsRestatesTLSAndBackends(t *testing.T) {
 		ing := k8s.IngressInfo{Name: "wildcard"}
 		backends := make([]k8s.IngressBackend, 0, 8)
 		for range 8 {
-			backends = append(backends, k8s.IngressBackend{Host: "h", Service: "svc", Port: "80"})
+			backends = append(backends, k8s.IngressBackend{Host: "h", Service: "svc", Port: networkingv1.ServiceBackendPort{Number: 80}})
 		}
 		det := &inspectorDetail{ingress: &k8s.IngressDetail{Backends: backends}}
 		snap := inspectIngressSnap(ing, det)
@@ -170,9 +174,9 @@ func TestInspectPVCSnap_OmitsRestatedRows(t *testing.T) {
 	t.Run("bound with detail", func(t *testing.T) {
 		p := k8s.PVCInfo{
 			Name: "data-0", Namespace: "shop", Status: "Bound",
-			Capacity: "10Gi", VolumeName: "pvc-abc-123", StorageClass: "fast",
+			Capacity: new(resource.MustParse("10Gi")), VolumeName: "pvc-abc-123", StorageClass: "fast",
 		}
-		det := &inspectorDetail{pvc: &k8s.PVCDetail{AccessModes: "RWO"}}
+		det := &inspectorDetail{pvc: &k8s.PVCDetail{AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}}}
 		snap := inspectPVCSnap(p, det)
 		for _, label := range []string{"volume", "capacity", "storageClass", "status"} {
 			_, ok := rowByLabel(snap, label)
@@ -187,7 +191,7 @@ func TestInspectPVCSnap_OmitsRestatedRows(t *testing.T) {
 	t.Run("pending surfaces reason", func(t *testing.T) {
 		p := k8s.PVCInfo{Name: "data-pending", Namespace: "shop", Status: "Pending", StorageClass: "fast"}
 		det := &inspectorDetail{pvc: &k8s.PVCDetail{
-			AccessModes:   "RWO",
+			AccessModes:   []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 			PendingReason: "waiting for first consumer",
 		}}
 		snap := inspectPVCSnap(p, det)
@@ -200,7 +204,7 @@ func TestInspectPVCSnap_OmitsRestatedRows(t *testing.T) {
 	t.Run("block volume mode surfaces", func(t *testing.T) {
 		p := k8s.PVCInfo{Name: "block-claim", Namespace: "shop", Status: "Bound"}
 		det := &inspectorDetail{pvc: &k8s.PVCDetail{
-			AccessModes: "RWO",
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 			VolumeMode:  "Block",
 		}}
 		snap := inspectPVCSnap(p, det)
@@ -211,7 +215,7 @@ func TestInspectPVCSnap_OmitsRestatedRows(t *testing.T) {
 	t.Run("mounted-by lists pods", func(t *testing.T) {
 		p := k8s.PVCInfo{Name: "data-0", Status: "Bound"}
 		det := &inspectorDetail{pvc: &k8s.PVCDetail{
-			AccessModes: "RWO",
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 			MountedBy:   []string{"web-0", "web-1"},
 		}}
 		snap := inspectPVCSnap(p, det)
@@ -225,9 +229,9 @@ func TestInspectPVCSnap_OmitsRestatedRows(t *testing.T) {
 func TestInspectPVSnap_OmitsRestatedRows(t *testing.T) {
 	t.Run("bound CSI volume", func(t *testing.T) {
 		p := k8s.PVInfo{
-			Name: "pv-001", Capacity: "10Gi", Status: "Bound",
+			Name: "pv-001", Capacity: new(resource.MustParse("10Gi")), Status: "Bound",
 			Claim: "shop/data-0", StorageClass: "fast",
-			AccessModes: "RWO", Reclaim: "Retain",
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}, Reclaim: "Retain",
 		}
 		det := &inspectorDetail{pv: &k8s.PVDetail{
 			CSIDriver:    "ebs.csi.aws.com",
@@ -256,7 +260,7 @@ func TestInspectPVSnap_OmitsRestatedRows(t *testing.T) {
 		assert.Equal(t, "good", snap.statusKind)
 	})
 	t.Run("delete reclaim is loud", func(t *testing.T) {
-		p := k8s.PVInfo{Name: "pv-002", Capacity: "5Gi", Status: "Available", Reclaim: "Delete"}
+		p := k8s.PVInfo{Name: "pv-002", Capacity: new(resource.MustParse("5Gi")), Status: "Available", Reclaim: "Delete"}
 		snap := inspectPVSnap(p, nil)
 		rec, ok := rowByLabel(snap, "reclaim")
 		require.True(t, ok)
@@ -268,7 +272,8 @@ func TestInspectPVSnap_OmitsRestatedRows(t *testing.T) {
 func TestInspectConfigMapSnap_PreviewsKeys(t *testing.T) {
 	t.Run("no keys keeps subtitle only", func(t *testing.T) {
 		snap := inspectConfigMapSnap(k8s.ConfigMapInfo{Name: "cfg"})
-		assert.Contains(t, snap.subtitle, "press d")
+		require.Len(t, snap.shortcuts, 1)
+		assert.Equal(t, "d", snap.shortcuts[0].Key)
 		assert.Empty(t, snap.sections)
 	})
 	t.Run("keys render as a single dim row", func(t *testing.T) {
@@ -292,7 +297,8 @@ func TestInspectConfigMapSnap_PreviewsKeys(t *testing.T) {
 func TestInspectSecretSnap_PreviewsKeys(t *testing.T) {
 	t.Run("no keys keeps subtitle only", func(t *testing.T) {
 		snap := inspectSecretSnap(k8s.SecretInfo{Name: "creds", Type: "Opaque"})
-		assert.Contains(t, snap.subtitle, "press v")
+		require.Len(t, snap.shortcuts, 1)
+		assert.Equal(t, "v", snap.shortcuts[0].Key)
 		assert.Empty(t, snap.sections)
 	})
 	t.Run("TLS key names render", func(t *testing.T) {

@@ -3,20 +3,25 @@ package k8s
 import (
 	"context"
 	"fmt"
+	"hash"
+	"hash/fnv"
 	"iter"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
+	resourcehelper "k8s.io/component-helpers/resource"
 )
 
 // ── Types ─────────────────────────────────────────────────────────────
@@ -78,7 +83,8 @@ const (
 	// resource the user enabled in EnabledResources that isn't one of the
 	// built-in folds above. Drilling it lists instances via the dynamic
 	// client and surfaces them as KindGenericResource rows.
-	KindCustomFold = "CustomFold"
+	KindResourceBrowser = "ResourceBrowser" // opens all discovered resource types
+	KindCustomFold      = "CustomFold"
 	// KindGenericResource is the leaf row for a single instance of a
 	// CustomFold's GVR. The renderer shows name + age + best-effort
 	// status; the resource's GVR travels on NodeRef.GVR so verbs can
@@ -144,6 +150,7 @@ type NamespaceInfo struct {
 // AppInfo is a row in the Apps level — a unified workload (Deployment,
 // StatefulSet, DaemonSet, CronJob, Job) with optional HPA badge.
 type AppInfo struct {
+	Metrics   ResourceUsage
 	Kind      string // AppKind*
 	Name      string
 	Namespace string
@@ -183,6 +190,8 @@ type HPABadge struct {
 // ephemeral). Containers aren't k8s API objects; they're surfaced for the UI
 // drill from a multi-container pod.
 type ContainerInfo struct {
+	PodUID     types.UID
+	Metrics    ResourceUsage
 	PodName    string
 	Namespace  string
 	Name       string
@@ -212,6 +221,7 @@ type ContainerInfo struct {
 
 // NodeInfo describes one node row.
 type NodeInfo struct {
+	Metrics     ResourceUsage
 	Name        string
 	Pool        string
 	UID         types.UID
@@ -238,6 +248,7 @@ type NodeInfo struct {
 
 // NodePoolInfo aggregates over the nodes in a pool.
 type NodePoolInfo struct {
+	Metrics     ResourceUsage
 	Name        string
 	Provider    string
 	Nodes       int
@@ -267,7 +278,7 @@ type ConfigMapInfo struct {
 type ServiceInfo struct {
 	Name      string
 	Namespace string
-	Type      string // ClusterIP, NodePort, LoadBalancer
+	Type      corev1.ServiceType
 	ClusterIP string
 	Ports     string // "80/TCP,443/TCP"
 	Age       string
@@ -286,7 +297,7 @@ type IngressInfo struct {
 type SecretInfo struct {
 	Name      string
 	Namespace string
-	Type      string // Opaque, kubernetes.io/tls, etc.
+	Type      corev1.SecretType
 	Keys      int
 	// KeyNames preview — sorted key names (no values). Inspector
 	// renders the first few so the operator can see the secret's
@@ -299,8 +310,8 @@ type SecretInfo struct {
 type PVCInfo struct {
 	Name         string
 	Namespace    string
-	Status       string // Bound, Pending, Lost
-	Capacity     string // "10Gi"
+	Status       corev1.PersistentVolumeClaimPhase
+	Capacity     *resource.Quantity
 	VolumeName   string // bound PV name
 	StorageClass string
 	Age          string
@@ -309,12 +320,12 @@ type PVCInfo struct {
 // PVInfo is a row for a single PersistentVolume (cluster-scoped).
 type PVInfo struct {
 	Name         string
-	Capacity     string // "10Gi"
-	Status       string // Bound, Available, Released, Failed
+	Capacity     *resource.Quantity
+	Status       corev1.PersistentVolumePhase
 	Claim        string // "namespace/name" if bound
 	StorageClass string
-	AccessModes  string // "RWO,ROX,RWX"
-	Reclaim      string // Retain, Delete, Recycle
+	AccessModes  []corev1.PersistentVolumeAccessMode
+	Reclaim      corev1.PersistentVolumeReclaimPolicy
 	Age          string
 }
 
@@ -448,11 +459,12 @@ func ListAppsInNamespaces(ctx context.Context, cs kubernetes.Interface, namespac
 	}
 
 	var (
-		mu      sync.Mutex
-		out     []AppInfo
-		hpaIdx  = make(map[string]*HPABadge) // key = ns/Kind/Name
-		podsAll []corev1.Pod
-		metrics map[string]ResourceUsage
+		mu         sync.Mutex
+		out        []AppInfo
+		hpaIdx     = make(map[string]*HPABadge) // key = ns/Kind/Name
+		podsAll    []corev1.Pod
+		metrics    map[types.NamespacedName]ResourceUsage
+		metricsErr error
 	)
 
 	// Pre-pull enrichment once, scoped to the namespace when browsing one.
@@ -468,7 +480,7 @@ func ListAppsInNamespaces(ctx context.Context, cs kubernetes.Interface, namespac
 	}()
 	go func() {
 		defer wgEnrich.Done()
-		metrics, _ = ListPodMetrics(ctx, cs, namespaceScope(namespaces))
+		metrics, metricsErr = ListPodMetrics(ctx, cs, namespaceScope(namespaces))
 	}()
 	wgEnrich.Wait()
 
@@ -569,14 +581,15 @@ func ListAppsInNamespaces(ctx context.Context, cs kubernetes.Interface, namespac
 	}
 	wg.Wait()
 
-	return finishApps(out, hpaIdx), nil
+	return finishApps(out, hpaIdx, metricsErr), nil
 }
 
 // finishApps is the shared tail of ListAppsInNamespaces: HPA badge
 // enrichment followed by the identity sort. Shared between the direct-API
 // path and the cache-aware Client method.
-func finishApps(out []AppInfo, hpaIdx map[string]*HPABadge) []AppInfo {
+func finishApps(out []AppInfo, hpaIdx map[string]*HPABadge, metricsErr ...error) []AppInfo {
 	for i := range out {
+		out[i].Metrics = withMetricError(out[i].Metrics, metricsErr)
 		key := out[i].Namespace + "/" + out[i].Kind + "/" + out[i].Name
 		if b, ok := hpaIdx[key]; ok {
 			out[i].HPA = b
@@ -608,7 +621,7 @@ func finishApps(out []AppInfo, hpaIdx map[string]*HPABadge) []AppInfo {
 	return out
 }
 
-func deploymentToApp(d appsv1.Deployment, pods []corev1.Pod, metrics map[string]ResourceUsage) AppInfo {
+func deploymentToApp(d appsv1.Deployment, pods []corev1.Pod, metrics map[types.NamespacedName]ResourceUsage) AppInfo {
 	desired := int32PtrVal(d.Spec.Replicas)
 	ready := d.Status.ReadyReplicas
 	a := AppInfo{
@@ -620,7 +633,8 @@ func deploymentToApp(d appsv1.Deployment, pods []corev1.Pod, metrics map[string]
 		Age:       HumanAge(d.CreationTimestamp.Time),
 	}
 	if d.Spec.Selector != nil {
-		a.CPU, a.Memory = aggregateForSelector(d.Namespace, d.Spec.Selector, pods, metrics)
+		a.Metrics = aggregateMetrics(d.Namespace, d.Spec.Selector, pods, metrics)
+		a.CPU, a.Memory = a.Metrics.CPU, a.Metrics.Memory
 	}
 	a.Health = classifyDeploymentHealth(d)
 	return a
@@ -673,7 +687,7 @@ func classifyDeploymentHealth(d appsv1.Deployment) Health {
 	return HealthInProgress
 }
 
-func statefulSetToApp(s appsv1.StatefulSet, pods []corev1.Pod, metrics map[string]ResourceUsage) AppInfo {
+func statefulSetToApp(s appsv1.StatefulSet, pods []corev1.Pod, metrics map[types.NamespacedName]ResourceUsage) AppInfo {
 	desired := int32PtrVal(s.Spec.Replicas)
 	ready := s.Status.ReadyReplicas
 	a := AppInfo{
@@ -685,13 +699,14 @@ func statefulSetToApp(s appsv1.StatefulSet, pods []corev1.Pod, metrics map[strin
 		Age:       HumanAge(s.CreationTimestamp.Time),
 	}
 	if s.Spec.Selector != nil {
-		a.CPU, a.Memory = aggregateForSelector(s.Namespace, s.Spec.Selector, pods, metrics)
+		a.Metrics = aggregateMetrics(s.Namespace, s.Spec.Selector, pods, metrics)
+		a.CPU, a.Memory = a.Metrics.CPU, a.Metrics.Memory
 	}
 	a.Health = classifyWorkloadHealth(ready, desired, false)
 	return a
 }
 
-func daemonSetToApp(d appsv1.DaemonSet, pods []corev1.Pod, metrics map[string]ResourceUsage) AppInfo {
+func daemonSetToApp(d appsv1.DaemonSet, pods []corev1.Pod, metrics map[types.NamespacedName]ResourceUsage) AppInfo {
 	desired := d.Status.DesiredNumberScheduled
 	ready := d.Status.NumberReady
 	a := AppInfo{
@@ -703,7 +718,8 @@ func daemonSetToApp(d appsv1.DaemonSet, pods []corev1.Pod, metrics map[string]Re
 		Age:       HumanAge(d.CreationTimestamp.Time),
 	}
 	if d.Spec.Selector != nil {
-		a.CPU, a.Memory = aggregateForSelector(d.Namespace, d.Spec.Selector, pods, metrics)
+		a.Metrics = aggregateMetrics(d.Namespace, d.Spec.Selector, pods, metrics)
+		a.CPU, a.Memory = a.Metrics.CPU, a.Metrics.Memory
 	}
 	a.Health = classifyWorkloadHealth(ready, desired, d.Status.NumberUnavailable > 0)
 	return a
@@ -729,7 +745,7 @@ func cronJobToApp(c batchv1.CronJob) AppInfo {
 	return a
 }
 
-func jobToApp(j batchv1.Job, pods []corev1.Pod, metrics map[string]ResourceUsage) AppInfo {
+func jobToApp(j batchv1.Job, pods []corev1.Pod, metrics map[types.NamespacedName]ResourceUsage) AppInfo {
 	desired := int32PtrVal(j.Spec.Completions)
 	if desired == 0 {
 		desired = int32PtrVal(j.Spec.Parallelism)
@@ -753,7 +769,8 @@ func jobToApp(j batchv1.Job, pods []corev1.Pod, metrics map[string]ResourceUsage
 		Age:       HumanAge(j.CreationTimestamp.Time),
 	}
 	if j.Spec.Selector != nil {
-		a.CPU, a.Memory = aggregateForSelector(j.Namespace, j.Spec.Selector, pods, metrics)
+		a.Metrics = aggregateMetrics(j.Namespace, j.Spec.Selector, pods, metrics)
+		a.CPU, a.Memory = a.Metrics.CPU, a.Metrics.Memory
 	}
 	switch {
 	case j.Status.Failed > 0:
@@ -795,7 +812,7 @@ func classifyWorkloadHealth(ready, desired int32, unavailable bool) Health {
 	}
 }
 
-func aggregateForSelector(namespace string, sel *metav1.LabelSelector, pods []corev1.Pod, metrics map[string]ResourceUsage) (cpu, mem int64) {
+func aggregateForSelector(namespace string, sel *metav1.LabelSelector, pods []corev1.Pod, metrics map[types.NamespacedName]ResourceUsage) (cpu, mem int64) {
 	if sel == nil || metrics == nil {
 		return 0, 0
 	}
@@ -811,7 +828,7 @@ func aggregateForSelector(namespace string, sel *metav1.LabelSelector, pods []co
 		if !selector.Matches(labels.Set(p.Labels)) {
 			continue
 		}
-		if u, ok := metrics[p.Namespace+"/"+p.Name]; ok {
+		if u, ok := metrics[types.NamespacedName{Namespace: p.Namespace, Name: p.Name}]; ok {
 			cpu += u.CPU
 			mem += u.Memory
 		}
@@ -961,8 +978,8 @@ func podsByOwnerUID(ctx context.Context, cs kubernetes.Interface, namespace stri
 	if err != nil {
 		return nil, err
 	}
-	metrics, _ := ListPodMetrics(ctx, cs, namespace)
-	return filterPodsByOwner(podPointers(list.Items), ownerUIDs, metrics), nil
+	metrics, metricsErr := ListPodMetrics(ctx, cs, namespace)
+	return filterPodsByOwner(podPointers(list.Items), ownerUIDs, metrics, metricsErr), nil
 }
 
 // podPointers lets read-only projections share direct-API value slices and
@@ -980,7 +997,7 @@ func podPointers(pods []corev1.Pod) iter.Seq[*corev1.Pod] {
 // filterPodsByOwner is the shared tail of podsByOwnerUID: keep pods owned by
 // one of ownerUIDs, enrich with metrics, sort worst-health-first. Shared
 // between the direct-API path and the cache-aware Client method.
-func filterPodsByOwner(pods iter.Seq[*corev1.Pod], ownerUIDs []types.UID, metrics map[string]ResourceUsage) []PodInfo {
+func filterPodsByOwner(pods iter.Seq[*corev1.Pod], ownerUIDs []types.UID, metrics map[types.NamespacedName]ResourceUsage, metricsErr ...error) []PodInfo {
 	allow := make(map[types.UID]bool, len(ownerUIDs))
 	for _, u := range ownerUIDs {
 		allow[u] = true
@@ -998,8 +1015,9 @@ func filterPodsByOwner(pods iter.Seq[*corev1.Pod], ownerUIDs []types.UID, metric
 			continue
 		}
 		info := podToInfo(*p)
+		info.Metrics = withMetricError(podMetricBudget(p, metrics[types.NamespacedName{Namespace: p.Namespace, Name: p.Name}]), metricsErr)
 		if metrics != nil {
-			if u, ok := metrics[p.Namespace+"/"+p.Name]; ok {
+			if u, ok := metrics[types.NamespacedName{Namespace: p.Namespace, Name: p.Name}]; ok {
 				info.CPU = u.CPU
 				info.Memory = u.Memory
 			}
@@ -1024,15 +1042,15 @@ func ListContainersForPod(ctx context.Context, cs kubernetes.Interface, namespac
 	if err != nil {
 		return nil, err
 	}
-	byCtr, _ := ListPodMetricsByContainer(ctx, cs, namespace)
-	return containersForPod(p, byCtr[namespace+"/"+name]), nil
+	byCtr, metricsErr := ListPodMetricsByContainer(ctx, cs, namespace)
+	return containersForPod(p, byCtr[types.NamespacedName{Namespace: namespace, Name: name}], metricsErr), nil
 }
 
 // containersForPod is the shared tail of ListContainersForPod: flatten the
 // pod's regular + init + ephemeral containers into ContainerInfos. Shared
 // between the direct-API path and the cache-aware Client method. Read-only
 // on p — the cache-aware path hands in a SHARED informer object.
-func containersForPod(p *corev1.Pod, usage map[string]ResourceUsage) []ContainerInfo {
+func containersForPod(p *corev1.Pod, usage map[string]ResourceUsage, metricsErr ...error) []ContainerInfo {
 	out := make([]ContainerInfo, 0, len(p.Spec.Containers)+len(p.Spec.InitContainers)+len(p.Spec.EphemeralContainers))
 	statusByName := func(statuses []corev1.ContainerStatus) map[string]corev1.ContainerStatus {
 		m := make(map[string]corev1.ContainerStatus, len(statuses))
@@ -1054,12 +1072,16 @@ func containersForPod(p *corev1.Pod, usage map[string]ResourceUsage) []Container
 		c := corev1.Container{Name: ec.Name, Image: ec.Image}
 		out = append(out, makeContainerInfo(p, c, "ephemeral", corev1.ContainerStatus{}, usage))
 	}
+	for i := range out {
+		out[i].Metrics = withMetricError(out[i].Metrics, metricsErr)
+	}
 	return out
 }
 
 func makeContainerInfo(p *corev1.Pod, c corev1.Container, kind string, st corev1.ContainerStatus, usage map[string]ResourceUsage) ContainerInfo {
 	ci := ContainerInfo{
 		PodName:      p.Name,
+		PodUID:       p.UID,
 		Namespace:    p.Namespace,
 		Name:         c.Name,
 		Image:        c.Image,
@@ -1087,6 +1109,9 @@ func makeContainerInfo(p *corev1.Pod, c corev1.Container, kind string, st corev1
 	if u, ok := usage[c.Name]; ok {
 		ci.CPU = u.CPU
 		ci.Memory = u.Memory
+		ci.Metrics = u
+		ci.Metrics.CPURequest, ci.Metrics.CPULimit = ci.CPURequest, ci.CPULimit
+		ci.Metrics.MemRequest, ci.Metrics.MemLimit = ci.MemRequest, ci.MemLimit
 	}
 	switch {
 	case st.State.Running != nil:
@@ -1126,13 +1151,14 @@ func ListNodesAndPools(ctx context.Context, cs kubernetes.Interface) ([]NodePool
 
 	var (
 		nodeMetrics map[string]ResourceUsage
+		metricsErr  error
 		allPods     *corev1.PodList
 	)
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		nodeMetrics, _ = ListNodeMetrics(ctx, cs)
+		nodeMetrics, metricsErr = ListNodeMetrics(ctx, cs)
 	}()
 	go func() {
 		defer wg.Done()
@@ -1144,14 +1170,14 @@ func ListNodesAndPools(ctx context.Context, cs kubernetes.Interface) ([]NodePool
 	if allPods != nil {
 		podItems = allPods.Items
 	}
-	pools, infos := buildNodesAndPools(nodes.Items, nodeMetrics, podPointers(podItems))
+	pools, infos := buildNodesAndPools(nodes.Items, nodeMetrics, podPointers(podItems), metricsErr)
 	return pools, infos, nil
 }
 
 // buildNodesAndPools is the shared tail of ListNodesAndPools: bucket pods by
 // node for request math, build NodeInfos, sort, and group into pools. Shared
 // between the direct-API path and the cache-aware Client method.
-func buildNodesAndPools(nodes []corev1.Node, nodeMetrics map[string]ResourceUsage, allPods iter.Seq[*corev1.Pod]) ([]NodePoolInfo, []NodeInfo) {
+func buildNodesAndPools(nodes []corev1.Node, nodeMetrics map[string]ResourceUsage, allPods iter.Seq[*corev1.Pod], metricsErr ...error) ([]NodePoolInfo, []NodeInfo) {
 	podsByNode := make(map[string][]*corev1.Pod)
 	for p := range allPods {
 		if p.Spec.NodeName == "" {
@@ -1163,6 +1189,7 @@ func buildNodesAndPools(nodes []corev1.Node, nodeMetrics map[string]ResourceUsag
 	infos := make([]NodeInfo, 0, len(nodes))
 	for _, n := range nodes {
 		ni := nodeToInfo(n, nodeMetrics, podsByNode[n.Name])
+		ni.Metrics = withMetricError(ni.Metrics, metricsErr)
 		infos = append(infos, ni)
 	}
 
@@ -1185,6 +1212,7 @@ func nodeToInfo(n corev1.Node, metrics map[string]ResourceUsage, pods []*corev1.
 		Roles: nodeRoles(n),
 	}
 
+	ni.Metrics.Expected = 1
 	ni.CPUAlloc = quantityMilli(n.Status.Allocatable, corev1.ResourceCPU)
 	ni.MemAlloc = quantityBytes(n.Status.Allocatable, corev1.ResourceMemory)
 	if maxPods := quantityValue(n.Status.Allocatable, corev1.ResourcePods); maxPods > 0 {
@@ -1194,12 +1222,16 @@ func nodeToInfo(n corev1.Node, metrics map[string]ResourceUsage, pods []*corev1.
 		if u, ok := metrics[n.Name]; ok {
 			ni.CPUUsed = u.CPU
 			ni.MemUsed = u.Memory
+			ni.Metrics = u
+			ni.Metrics.CPULimit, ni.Metrics.MemLimit = ni.CPUAlloc, ni.MemAlloc
 		}
 	}
 
 	cpuReq, memReq, podCount := sumPodRequests(pods)
 	ni.CPURequest = cpuReq
 	ni.MemRequest = memReq
+	ni.Metrics.CPURequest, ni.Metrics.MemRequest = cpuReq, memReq
+	ni.Metrics.CPULimit, ni.Metrics.MemLimit = ni.CPUAlloc, ni.MemAlloc
 	ni.PodsCurrent = podCount
 
 	ni.Schedulable = !n.Spec.Unschedulable
@@ -1309,15 +1341,32 @@ func detectNodePool(n corev1.Node) string {
 
 func groupIntoPools(nodes []NodeInfo) []NodePoolInfo {
 	idx := make(map[string]*NodePoolInfo)
+	fingerprints := make(map[string]hash.Hash64)
 	order := []string{}
 	for _, n := range nodes {
 		p, ok := idx[n.Pool]
 		if !ok {
 			p = &NodePoolInfo{Name: n.Pool, Health: HealthHealthy}
 			idx[n.Pool] = p
+			fingerprints[n.Pool] = fnv.New64a()
 			order = append(order, n.Pool)
 		}
+		_, _ = fmt.Fprintf(fingerprints[n.Pool], "%s/%s/%d\n", n.UID, n.Name, n.Metrics.SourceAt.UnixNano())
 		p.Nodes++
+		p.Metrics.Expected++
+		p.Metrics.CPU += n.CPUUsed
+		p.Metrics.Memory += n.MemUsed
+		p.Metrics.CPURequest += n.CPURequest
+		p.Metrics.MemRequest += n.MemRequest
+		p.Metrics.CPULimit += n.CPUAlloc
+		p.Metrics.MemLimit += n.MemAlloc
+		if n.Metrics.Valid() && !n.Metrics.Stale(time.Now()) {
+			p.Metrics.Covered++
+			if p.Metrics.SourceAt.IsZero() || n.Metrics.SourceAt.Before(p.Metrics.SourceAt) {
+				p.Metrics.SourceAt = n.Metrics.SourceAt
+			}
+			p.Metrics.Window = max(p.Metrics.Window, n.Metrics.Window)
+		}
 		p.CPUUsed += n.CPUUsed
 		p.CPUAlloc += n.CPUAlloc
 		p.MemUsed += n.MemUsed
@@ -1329,7 +1378,15 @@ func groupIntoPools(nodes []NodeInfo) []NodePoolInfo {
 	sort.Strings(order)
 	out := make([]NodePoolInfo, 0, len(order))
 	for _, name := range order {
-		out = append(out, *idx[name])
+		p := idx[name]
+		p.Metrics.Fingerprint = fingerprints[name].Sum64()
+		p.Metrics.State = "unavailable"
+		if p.Metrics.Covered == p.Metrics.Expected {
+			p.Metrics.State = "available"
+		} else if p.Metrics.Covered > 0 {
+			p.Metrics.State = "partial"
+		}
+		out = append(out, *p)
 	}
 	return out
 }
@@ -1510,19 +1567,20 @@ func ListPodsOnNode(ctx context.Context, cs kubernetes.Interface, nodeName strin
 	if err != nil {
 		return nil, err
 	}
-	metrics, _ := ListPodMetrics(ctx, cs, "")
-	return podInfosSortedNSName(list.Items, metrics), nil
+	metrics, metricsErr := ListPodMetrics(ctx, cs, "")
+	return podInfosSortedNSName(list.Items, metrics, metricsErr), nil
 }
 
 // podInfosSortedNSName is the shared tail of ListPodsOnNode: convert pods to
 // PodInfos with metrics enrichment, sorted by namespace then name. Shared
 // between the direct-API path and the cache-aware Client method.
-func podInfosSortedNSName(pods []corev1.Pod, metrics map[string]ResourceUsage) []PodInfo {
+func podInfosSortedNSName(pods []corev1.Pod, metrics map[types.NamespacedName]ResourceUsage, metricsErr ...error) []PodInfo {
 	out := make([]PodInfo, 0, len(pods))
 	for _, p := range pods {
 		info := podToInfo(p)
+		info.Metrics = withMetricError(podMetricBudget(&p, metrics[types.NamespacedName{Namespace: p.Namespace, Name: p.Name}]), metricsErr)
 		if metrics != nil {
-			if u, ok := metrics[p.Namespace+"/"+p.Name]; ok {
+			if u, ok := metrics[types.NamespacedName{Namespace: p.Namespace, Name: p.Name}]; ok {
 				info.CPU = u.CPU
 				info.Memory = u.Memory
 			}
@@ -1558,48 +1616,11 @@ func sumPodRequests(pods []*corev1.Pod) (cpu, mem int64, count int32) {
 	return cpu, mem, count
 }
 
-// podEffectiveRequests returns the request resources the scheduler accounts
-// for. Computed as max(sum(containers), max(initContainers)) per kubelet
-// scheduling rules, plus pod.spec.overhead if set, plus all native sidecar
-// init containers (k8s ≥1.29 with restartPolicy=Always count as regular).
+// podEffectiveRequests uses Kubernetes scheduler accounting, including native
+// sidecars, pod overhead and pod-level resource requests.
 func podEffectiveRequests(p *corev1.Pod) (cpu, mem int64) {
-	var regC, regM int64
-	for _, c := range p.Spec.Containers {
-		regC += quantityMilli(c.Resources.Requests, corev1.ResourceCPU)
-		regM += quantityBytes(c.Resources.Requests, corev1.ResourceMemory)
-	}
-	// Native sidecars (initContainers with restartPolicy=Always) count as
-	// regular containers for resource accounting.
-	var maxInitC, maxInitM int64
-	for _, c := range p.Spec.InitContainers {
-		isSidecar := c.RestartPolicy != nil && *c.RestartPolicy == corev1.ContainerRestartPolicyAlways
-		ic := quantityMilli(c.Resources.Requests, corev1.ResourceCPU)
-		im := quantityBytes(c.Resources.Requests, corev1.ResourceMemory)
-		if isSidecar {
-			regC += ic
-			regM += im
-			continue
-		}
-		if ic > maxInitC {
-			maxInitC = ic
-		}
-		if im > maxInitM {
-			maxInitM = im
-		}
-	}
-	cpu = regC
-	mem = regM
-	if maxInitC > cpu {
-		cpu = maxInitC
-	}
-	if maxInitM > mem {
-		mem = maxInitM
-	}
-	if p.Spec.Overhead != nil {
-		cpu += quantityMilli(p.Spec.Overhead, corev1.ResourceCPU)
-		mem += quantityBytes(p.Spec.Overhead, corev1.ResourceMemory)
-	}
-	return cpu, mem
+	req := resourcehelper.PodRequests(p, resourcehelper.PodResourcesOptions{})
+	return req.Cpu().MilliValue(), req.Memory().Value()
 }
 
 // quantityMilli reads a resource quantity as millicores.

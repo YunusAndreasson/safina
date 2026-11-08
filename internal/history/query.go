@@ -9,15 +9,20 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"k8s.io/apimachinery/pkg/types"
+
 	"golang.org/x/sys/unix"
 )
 
 type Filter struct {
+	UID                                       types.UID
+	Actions                                   []string
 	Cluster, Namespace, Resource, Session, ID string
 	Since, Until                              time.Time
 	Limit                                     int
@@ -29,7 +34,7 @@ type Result struct {
 }
 
 func matches(r Record, f Filter) bool {
-	return (f.Cluster == "" || f.Cluster == r.Target.Cluster || f.Cluster == r.Target.Context) &&
+	return (f.UID == "" || f.UID == r.Target.UID || f.UID == r.Target.WorkloadUID) && (len(f.Actions) == 0 || slices.Contains(f.Actions, r.Action)) && (f.Cluster == "" || f.Cluster == r.Target.Cluster || f.Cluster == r.Target.Context) &&
 		(f.Namespace == "" || f.Namespace == r.Target.Namespace) &&
 		(f.Resource == "" || f.Resource == r.Target.Name || strings.EqualFold(f.Resource, r.Target.Kind+"/"+r.Target.Name) || f.Resource == r.Target.WorkloadName || strings.EqualFold(f.Resource, r.Target.WorkloadKind+"/"+r.Target.WorkloadName)) &&
 		(f.Session == "" || f.Session == r.Session) && (f.ID == "" || f.ID == r.ID || f.ID == r.Operation) &&
@@ -157,7 +162,10 @@ func Summary(result Result, limit int) string {
 	}
 	for i := len(result.Records) - 1; i >= 0; i-- {
 		r := result.Records[i]
-		params, _ := json.Marshal(r.Parameters)
+		params, err := json.Marshal(r.Parameters)
+		if err != nil {
+			params = []byte("[parameters unavailable: encoding failed]")
+		}
 		if len(params) > 2048 {
 			params = append(params[:2048], []byte(" [parameters truncated; see events.jsonl]")...)
 		}

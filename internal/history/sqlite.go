@@ -336,6 +336,16 @@ func Query(dir string, f Filter) (Result, error) {
 	where := "1=1"
 	args := []any{}
 	add := func(clause string, values ...any) { where += " AND (" + clause + ")"; args = append(args, values...) }
+	if f.UID != "" {
+		add("json_extract(data,'$.target.uid')=? OR json_extract(data,'$.target.workloadUID')=?", f.UID, f.UID)
+	}
+	if len(f.Actions) > 0 {
+		values := make([]any, len(f.Actions))
+		for i, v := range f.Actions {
+			values[i] = v
+		}
+		add("json_extract(data,'$.action') IN ("+strings.TrimSuffix(strings.Repeat("?,", len(values)), ",")+")", values...)
+	}
 	if f.Cluster != "" {
 		add("cluster=? OR context=?", f.Cluster, f.Cluster)
 	}

@@ -55,7 +55,7 @@ func TestBrowserAndClusterSwitcherFitLongSearches(t *testing.T) {
 			for _, view := range []string{b.View(c, size[0], size[1]), s.View(c, size[0], size[1], "")} {
 				require.LessOrEqual(t, lipgloss.Width(view), size[0])
 				require.LessOrEqual(t, lipgloss.Height(view), size[1])
-				require.Contains(t, ansi.Strip(view), "esc cancel")
+				require.Regexp(t, "esc (cancel|back)", ansi.Strip(view))
 			}
 		}
 	}

@@ -71,13 +71,16 @@ func proposal(current inv.Investigation, p operator.Request) (inv.Proposal, erro
 	return inv.Proposal{}, inv.ErrNotFound
 }
 
-func digest(value any) string {
-	b, _ := json.Marshal(value)
+func digest(value any) (string, error) {
+	b, err := json.Marshal(value)
+	if err != nil {
+		return "", fmt.Errorf("encode digest: %w", err)
+	}
 	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])
+	return hex.EncodeToString(sum[:]), nil
 }
 
-func controllerWarnings(ctx context.Context, cs kubernetes.Interface, d *appsv1.Deployment) ([]string, []string, string) {
+func controllerWarnings(ctx context.Context, cs kubernetes.Interface, d *appsv1.Deployment) ([]string, []string, string, error) {
 	warnings := []string{"Controller completion does not establish application recovery. Undetected external controllers may revert this change."}
 	var required, identities []string
 	hpas, err := cs.AutoscalingV2().HorizontalPodAutoscalers(d.Namespace).List(ctx, metav1.ListOptions{Limit: 100})
@@ -92,7 +95,11 @@ func controllerWarnings(ctx context.Context, cs kubernetes.Interface, d *appsv1.
 		for _, h := range hpas.Items {
 			if (h.Spec.ScaleTargetRef.APIVersion == "apps/v1" || h.Spec.ScaleTargetRef.APIVersion == "") && h.Spec.ScaleTargetRef.Kind == "Deployment" && h.Spec.ScaleTargetRef.Name == d.Name {
 				warnings = append(warnings, "HPA manages replicas and may change the desired count: "+h.Name)
-				identities = append(identities, "hpa:"+string(h.UID)+":"+digest(h.Spec))
+				signature, digestErr := digest(h.Spec)
+				if digestErr != nil {
+					return nil, nil, "", digestErr
+				}
+				identities = append(identities, "hpa:"+string(h.UID)+":"+signature)
 				if !contains(required, "hpa") {
 					required = append(required, "hpa")
 				}
@@ -122,7 +129,8 @@ func controllerWarnings(ctx context.Context, cs kubernetes.Interface, d *appsv1.
 	sort.Strings(warnings)
 	sort.Strings(required)
 	sort.Strings(identities)
-	return warnings, required, digest(struct{ Required, Identities []string }{required, identities})
+	signature, err := digest(struct{ Required, Identities []string }{required, identities})
+	return warnings, required, signature, err
 }
 
 func gitops(s string) bool {
@@ -163,7 +171,7 @@ func (s *server) prepare(ctx context.Context, p operator.Request) (inv.Review, e
 	if err != nil {
 		return inv.Review{}, err
 	}
-	if string(d.UID) != a.Target.UID || d.ResourceVersion == "" {
+	if d.UID != a.Target.UID || d.ResourceVersion == "" {
 		return inv.Review{}, inv.ErrConflict
 	}
 	before := int32(1)
@@ -171,7 +179,10 @@ func (s *server) prepare(ctx context.Context, p operator.Request) (inv.Review, e
 		before = *d.Spec.Replicas
 	}
 	r := inv.Review{ID: inv.ID(), Investigation: current.ID, Proposal: item.ID, Revision: item.Revision, Target: a.Target, ResourceVersion: d.ResourceVersion, Generation: d.Generation, Before: before, After: before, Time: time.Now().UTC()}
-	r.Warnings, r.RequiredOverrides, r.ControllerSignature = controllerWarnings(ctx, cs, d)
+	r.Warnings, r.RequiredOverrides, r.ControllerSignature, err = controllerWarnings(ctx, cs, d)
+	if err != nil {
+		return inv.Review{}, err
+	}
 	r.Drift = a.Observed.ResourceVersion != d.ResourceVersion
 	if err = s.prepareAction(ctx, cs, d, a.Action, &r); err != nil {
 		return inv.Review{}, err
@@ -192,7 +203,10 @@ func (s *server) prepare(ctx context.Context, p operator.Request) (inv.Review, e
 		r.Diff = fmt.Sprintf("--- live Deployment.spec\n+++ reviewed Deployment.spec\n@@ replicas @@\n- replicas: %d\n+ replicas: %d\n\nOnly /spec/replicas changes. Preconditions: UID %s; resourceVersion %s.\n", r.Before, r.After, r.Target.UID, r.ResourceVersion)
 	}
 	r.History = s.reviewHistory(current, a.Target, a.Action.Kind)
-	r.Digest = digest(r)
+	r.Digest, err = digest(r)
+	if err != nil {
+		return inv.Review{}, err
+	}
 	s.reviewMu.Lock()
 	defer s.reviewMu.Unlock()
 	if s.reviews == nil {

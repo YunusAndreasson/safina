@@ -13,29 +13,14 @@ import (
 // identify the resource (Group/Version/Resource), to render a friendly
 // name (Kind), and to decide where it lives in the tree (Namespaced).
 type ResourceKind struct {
-	Group      string
-	Version    string
-	Resource   string // plural, lowercase ("configmaps", "prometheusrules")
+	schema.GroupVersionResource
 	Kind       string // singular, capitalised ("ConfigMap", "PrometheusRule")
 	Namespaced bool
-	ShortNames []string
 	// IsCRD is best-effort: the discovery API doesn't directly say
 	// "this is a CRD", so we infer from group ownership — any GVR whose
 	// group is not in the built-in core/apps/networking/etc. set is
 	// treated as a CRD. Used purely for grouping in the browser.
 	IsCRD bool
-	// IsDefault flags the GVRs that ship as folds out of the box, so
-	// the browser can present them at the top of the list.
-	IsDefault bool
-}
-
-// GVR converts to client-go's GroupVersionResource for dynamic-client calls.
-func (rk ResourceKind) GVR() schema.GroupVersionResource {
-	return schema.GroupVersionResource{
-		Group:    rk.Group,
-		Version:  rk.Version,
-		Resource: rk.Resource,
-	}
 }
 
 // builtInGroups are the groups safina considers "first-class" — anything
@@ -98,13 +83,10 @@ func ListAvailableResources(disco discovery.DiscoveryInterface) ([]ResourceKind,
 				continue
 			}
 			out = append(out, ResourceKind{
-				Group:      gv.Group,
-				Version:    gv.Version,
-				Resource:   r.Name,
-				Kind:       r.Kind,
-				Namespaced: r.Namespaced,
-				ShortNames: append([]string(nil), r.ShortNames...),
-				IsCRD:      !builtInGroups[gv.Group],
+				GroupVersionResource: gv.WithResource(r.Name),
+				Kind:                 r.Kind,
+				Namespaced:           r.Namespaced,
+				IsCRD:                !builtInGroups[gv.Group],
 			})
 		}
 	}
@@ -116,7 +98,7 @@ func ListAvailableResources(disco discovery.DiscoveryInterface) ([]ResourceKind,
 		return out[i].Kind < out[j].Kind
 	})
 
-	return out, nil
+	return out, err
 }
 
 // isListable reports whether a resource supports the "list" verb. The

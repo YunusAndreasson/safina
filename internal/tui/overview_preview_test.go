@@ -61,7 +61,6 @@ func TestOverviewPreviewShowsWhileFreshReadIsBlocked(t *testing.T) {
 	m.Update(preview)
 	require.True(t, m.overviewPreview)
 	require.True(t, m.dataLooksStale())
-	require.Equal(t, "cached", m.refreshAge())
 	require.Contains(t, m.View().Content, "cached")
 	require.Equal(t, "shop", m.tree.Children().UserNS[0].Name)
 	require.False(t, m.tree.Loading)

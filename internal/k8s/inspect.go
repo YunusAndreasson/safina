@@ -3,8 +3,8 @@ package k8s
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
-	"strconv"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -14,22 +14,20 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
 )
 
 // Detail structs returned by the Inspect* family. Each is a small,
-// UI-friendly snapshot of "the fields an on-caller actually wants to see
-// behind the row" — image lists, conditions, scheduling reasons, taints.
-// We deliberately don't bridge the full API object: it would force the
-// UI to know about k8s API types and would blow up the inspector tile
-// with fields nobody scans for.
+// snapshot of the fields an on-caller needs behind a row. SDK types keep
+// API values precise; the projection limits what each section needs to load.
 
 // PodDetail is the deep-fetch view of a single Pod, surfaced under the
 // pod row in the Inspector tile.
 type PodDetail struct {
 	PodIP      string
 	HostIP     string
-	QoS        string // BestEffort | Burstable | Guaranteed
+	QoS        corev1.PodQOSClass
 	Containers []ContainerSnap
 	// Aggregate requests / limits across all containers. The list row
 	// already shows live CPU/MEM usage as a spark + number — this is
@@ -90,7 +88,7 @@ type AppDetail struct {
 	UpdatedReplicas int32
 	ReadyReplicas   int32
 	DesiredReplicas int32
-	Conditions      []AppCondition
+	Conditions      []appsv1.DeploymentCondition
 
 	// CronJob
 	Schedule     string
@@ -104,16 +102,6 @@ type AppDetail struct {
 	JobFailed    int32
 }
 
-// AppCondition is a one-row condition surfaced as "Type · Status · Reason".
-// We collapse k8s's conditions because operators care about the headline,
-// not the per-condition probe details.
-type AppCondition struct {
-	Type    string
-	Status  string // True | False | Unknown
-	Reason  string
-	Message string
-}
-
 // NodeDetail is the deep-fetch view of a Node — kernel / OS / runtime
 // versions an operator needs for compat questions, taints (the answer to
 // "why won't anything schedule here?"), and the pressure conditions.
@@ -123,24 +111,8 @@ type NodeDetail struct {
 	ContainerRuntimeVersion string
 	KubeletVersion          string
 	Architecture            string
-	Taints                  []TaintSnap
-	Conditions              []NodeCondition // only abnormal ones (not "Ready" if Ready)
-}
-
-// TaintSnap is one taint formatted as kubectl prints it: "key=value:effect".
-type TaintSnap struct {
-	Key    string
-	Value  string
-	Effect string // NoSchedule | PreferNoSchedule | NoExecute
-}
-
-// NodeCondition is a node-level health condition (DiskPressure,
-// MemoryPressure, PIDPressure, NetworkUnavailable). We only surface
-// True-state non-Ready conditions in the inspector — they're the
-// actionable signal.
-type NodeCondition struct {
-	Type   string
-	Reason string
+	Taints                  []corev1.Taint
+	Conditions              []corev1.NodeCondition // only abnormal ones (not "Ready" if Ready)
 }
 
 // ServiceDetail is the deep-fetch view of a Service — selector (so the
@@ -150,8 +122,8 @@ type ServiceDetail struct {
 	Selector              string
 	EndpointCount         int // total addresses across all endpoint slices
 	ReadyEndpointCount    int // ready addresses only
-	SessionAffinity       string
-	ExternalTrafficPolicy string
+	SessionAffinity       corev1.ServiceAffinity
+	ExternalTrafficPolicy corev1.ServiceExternalTrafficPolicy
 	ExternalName          string
 	HeadlessClusterIP     bool // true when ClusterIP == "None"
 	LoadBalancerIngress   []string
@@ -176,7 +148,7 @@ type IngressBackend struct {
 	Host    string
 	Path    string
 	Service string
-	Port    string // service-port number or named port
+	Port    networkingv1.ServiceBackendPort
 }
 
 // PVCDetail is the deep-fetch view of a PersistentVolumeClaim — the
@@ -184,9 +156,9 @@ type IngressBackend struct {
 // surfaced when non-default Block), and the latest condition message for
 // Pending claims (the actionable bit when a claim won't bind).
 type PVCDetail struct {
-	AccessModes   string // "RWO,ROX,RWX"
-	VolumeMode    string // "Filesystem" (default) or "Block"
-	PendingReason string // last condition.Message when Status is Pending
+	AccessModes   []corev1.PersistentVolumeAccessMode
+	VolumeMode    corev1.PersistentVolumeMode // "Filesystem" (default) or "Block"
+	PendingReason string                      // last condition.Message when Status is Pending
 	MountedBy     []string
 }
 
@@ -212,7 +184,7 @@ func InspectPod(ctx context.Context, cs kubernetes.Interface, namespace, name st
 	d := PodDetail{
 		PodIP:  p.Status.PodIP,
 		HostIP: p.Status.HostIP,
-		QoS:    string(p.Status.QOSClass),
+		QoS:    p.Status.QOSClass,
 		Reason: p.Status.Reason,
 	}
 	d.Containers = collectContainerSnaps(p)
@@ -262,7 +234,9 @@ func inspectDeployment(ctx context.Context, cs kubernetes.Interface, namespace, 
 	if d.Spec.Replicas != nil {
 		out.DesiredReplicas = *d.Spec.Replicas
 	}
-	out.Conditions = mapDeploymentConditions(d.Status.Conditions)
+	out.Conditions = slices.Clone(d.Status.Conditions)
+	// Keep display order stable across controller updates.
+	sort.Slice(out.Conditions, func(i, j int) bool { return out.Conditions[i].Type < out.Conditions[j].Type })
 	out.CPURequestMilli, out.CPULimitMilli, out.MemRequestBytes, out.MemLimitBytes = sumResources(d.Spec.Template.Spec)
 	return out, nil
 }
@@ -359,12 +333,8 @@ func InspectNode(ctx context.Context, cs kubernetes.Interface, name string) (Nod
 		KubeletVersion:          n.Status.NodeInfo.KubeletVersion,
 		Architecture:            n.Status.NodeInfo.Architecture,
 	}
-	for _, t := range n.Spec.Taints {
-		out.Taints = append(out.Taints, TaintSnap{
-			Key:    t.Key,
-			Value:  t.Value,
-			Effect: string(t.Effect),
-		})
+	for _, taint := range n.Spec.Taints {
+		out.Taints = append(out.Taints, *taint.DeepCopy())
 	}
 	// Surface non-Ready conditions whose Status is True — these are the
 	// actionable ones (DiskPressure, MemoryPressure, etc.). Ready itself
@@ -374,10 +344,7 @@ func InspectNode(ctx context.Context, cs kubernetes.Interface, name string) (Nod
 			continue
 		}
 		if c.Status == corev1.ConditionTrue {
-			out.Conditions = append(out.Conditions, NodeCondition{
-				Type:   string(c.Type),
-				Reason: c.Reason,
-			})
+			out.Conditions = append(out.Conditions, c)
 		}
 	}
 	return out, nil
@@ -393,9 +360,9 @@ func InspectService(ctx context.Context, cs kubernetes.Interface, namespace, nam
 		return ServiceDetail{}, classifyDetailErr(err, "service", name)
 	}
 	out := ServiceDetail{
-		Selector:              formatStringMap(s.Spec.Selector),
-		SessionAffinity:       string(s.Spec.SessionAffinity),
-		ExternalTrafficPolicy: string(s.Spec.ExternalTrafficPolicy),
+		Selector:              labels.SelectorFromSet(s.Spec.Selector).String(),
+		SessionAffinity:       s.Spec.SessionAffinity,
+		ExternalTrafficPolicy: s.Spec.ExternalTrafficPolicy,
 		ExternalName:          s.Spec.ExternalName,
 		HeadlessClusterIP:     s.Spec.ClusterIP == "None",
 	}
@@ -453,12 +420,7 @@ func InspectIngress(ctx context.Context, cs kubernetes.Interface, namespace, nam
 			b := IngressBackend{Host: r.Host, Path: p.Path}
 			if p.Backend.Service != nil {
 				b.Service = p.Backend.Service.Name
-				switch {
-				case p.Backend.Service.Port.Number != 0:
-					b.Port = strconv.Itoa(int(p.Backend.Service.Port.Number))
-				case p.Backend.Service.Port.Name != "":
-					b.Port = p.Backend.Service.Port.Name
-				}
+				b.Port = p.Backend.Service.Port
 			}
 			out.Backends = append(out.Backends, b)
 		}
@@ -466,12 +428,7 @@ func InspectIngress(ctx context.Context, cs kubernetes.Interface, namespace, nam
 	if ing.Spec.DefaultBackend != nil && ing.Spec.DefaultBackend.Service != nil {
 		db := ing.Spec.DefaultBackend.Service
 		b := IngressBackend{Service: db.Name}
-		switch {
-		case db.Port.Number != 0:
-			b.Port = strconv.Itoa(int(db.Port.Number))
-		case db.Port.Name != "":
-			b.Port = db.Port.Name
-		}
+		b.Port = db.Port
 		out.Backends = append(out.Backends, b)
 	}
 	return out, nil
@@ -490,13 +447,9 @@ func InspectPVC(ctx context.Context, cs kubernetes.Interface, namespace, name st
 		return PVCDetail{}, classifyDetailErr(err, "pvc", name)
 	}
 	out := PVCDetail{}
-	modes := make([]string, 0, len(pvc.Spec.AccessModes))
-	for _, m := range pvc.Spec.AccessModes {
-		modes = append(modes, string(m))
-	}
-	out.AccessModes = strings.Join(modes, ",")
+	out.AccessModes = slices.Clone(pvc.Spec.AccessModes)
 	if pvc.Spec.VolumeMode != nil && *pvc.Spec.VolumeMode == corev1.PersistentVolumeBlock {
-		out.VolumeMode = string(*pvc.Spec.VolumeMode)
+		out.VolumeMode = *pvc.Spec.VolumeMode
 	}
 	if pvc.Status.Phase == corev1.ClaimPending {
 		// k8s appends new conditions, so the last one carries the freshest
@@ -690,44 +643,15 @@ func uniqueImages(pod corev1.PodSpec) []string {
 	return out
 }
 
-func mapDeploymentConditions(cs []appsv1.DeploymentCondition) []AppCondition {
-	out := make([]AppCondition, 0, len(cs))
-	for _, c := range cs {
-		out = append(out, AppCondition{
-			Type:    string(c.Type),
-			Status:  string(c.Status),
-			Reason:  c.Reason,
-			Message: c.Message,
-		})
-	}
-	// Sort so the rendered order is stable across refreshes — the API
-	// orders by transition time, which would shuffle visually on every
-	// rollout step.
-	sort.Slice(out, func(i, j int) bool { return out[i].Type < out[j].Type })
-	return out
-}
-
 func formatLabelSelector(sel *metav1.LabelSelector) string {
 	if sel == nil {
 		return ""
 	}
-	return formatStringMap(sel.MatchLabels)
-}
-
-func formatStringMap(m map[string]string) string {
-	if len(m) == 0 {
-		return ""
+	selector, err := metav1.LabelSelectorAsSelector(sel)
+	if err != nil {
+		return "<invalid selector>"
 	}
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	parts := make([]string, 0, len(keys))
-	for _, k := range keys {
-		parts = append(parts, k+"="+m[k])
-	}
-	return strings.Join(parts, ",")
+	return selector.String()
 }
 
 // classifyDetailErr maps a k8s API error to a human-friendly message

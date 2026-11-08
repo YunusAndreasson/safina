@@ -17,7 +17,7 @@ import (
 // including retries hidden inside kubectl's helper.
 type drainClient struct {
 	kubernetes.Interface
-	uids map[string]types.UID
+	uids map[types.NamespacedName]types.UID
 }
 
 func (c drainClient) Discovery() discovery.DiscoveryInterfaces {
@@ -50,7 +50,7 @@ func (d evictionDiscovery) ServerResourcesForGroupVersion(gv string) (*metav1.AP
 
 type recordedPolicy struct {
 	typedpolicy.PolicyV1Interface
-	uids map[string]types.UID
+	uids map[types.NamespacedName]types.UID
 }
 
 func (p recordedPolicy) Evictions(namespace string) typedpolicy.EvictionInterface {
@@ -59,11 +59,11 @@ func (p recordedPolicy) Evictions(namespace string) typedpolicy.EvictionInterfac
 
 type recordedEvictions struct {
 	typedpolicy.EvictionInterface
-	uids map[string]types.UID
+	uids map[types.NamespacedName]types.UID
 }
 
 func (e recordedEvictions) Evict(ctx context.Context, eviction *policyv1.Eviction) error {
-	uid := e.uids[eviction.Namespace+"/"+eviction.Name]
+	uid := e.uids[types.NamespacedName{Namespace: eviction.Namespace, Name: eviction.Name}]
 	if uid != "" {
 		eviction = eviction.DeepCopy()
 		if eviction.DeleteOptions == nil {
@@ -77,7 +77,7 @@ func (e recordedEvictions) Evict(ctx context.Context, eviction *policyv1.Evictio
 		target.Kind, target.Name, target.Namespace = "Pod", eviction.Name, eviction.Namespace
 		target.UID = ""
 		if eviction.DeleteOptions != nil && eviction.DeleteOptions.Preconditions != nil && eviction.DeleteOptions.Preconditions.UID != nil {
-			target.UID = string(*eviction.DeleteOptions.Preconditions.UID)
+			target.UID = *eviction.DeleteOptions.Preconditions.UID
 		}
 		op = parent.Store.Begin(target, "evict", map[string]string{"drainOperation": parent.ID})
 	}

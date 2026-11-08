@@ -8,6 +8,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ktesting "k8s.io/client-go/testing"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/stretchr/testify/require"
 	"github.com/yunus/safina/internal/claude"
 	"github.com/yunus/safina/internal/config"
@@ -153,4 +154,19 @@ func TestHistoryItemReadsInWords(t *testing.T) {
 	require.Contains(t, logs.detail, "· previous")
 	done := historyItem(history.Record{Target: target, Action: "scale", Outcome: "completed", Detail: "3/3 ready"})
 	require.Contains(t, done.detail, "· 3/3 ready")
+}
+
+// In the chat, ctrl+n starts a new conversation, as the chat's footer says;
+// it must not be taken by the notifications shortcut.
+func TestChatCtrlNStartsNewConversation(t *testing.T) {
+	store, err := history.Open(history.Options{Directory: t.TempDir()})
+	require.NoError(t, err)
+	defer func() { _ = store.Close() }()
+	m := NewModel(&k8s.Manager{History: store}, &config.AppConfig{})
+	t.Cleanup(m.ctx.Cancel)
+	m.attachHistoryToChat("saved evidence")
+	require.Equal(t, stateChatView, m.state)
+	m.handleKey(tea.KeyPressMsg{Code: 'n', Mod: tea.ModCtrl})
+	require.Nil(t, m.choices, "ctrl+n in the chat opened notifications")
+	require.Equal(t, stateChatView, m.state)
 }

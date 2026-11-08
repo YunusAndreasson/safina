@@ -2,7 +2,10 @@ package sections
 
 import (
 	"context"
+	"fmt"
 	"testing"
+
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -105,4 +108,42 @@ func TestConnected_ApplyDropsStaleResults(t *testing.T) {
 	})
 	assert.Empty(t, c.snap.uses, "stale result must not alter the live render")
 	assert.NotEmpty(t, c.cache, "stale result still caches for the future")
+}
+
+func TestConnectedKeyboardCanReachEveryLinkInSmallPanels(t *testing.T) {
+	c := NewConnected()
+	c.Focused = true
+	c.snap = &connectedSnapshot{}
+	for n := range 8 {
+		c.snap.uses = append(c.snap.uses, k8s.ConnectedRef{Kind: k8s.KindSecret, Namespace: "ns", Name: fmt.Sprintf("secret-%d", n)})
+		c.snap.usedBy = append(c.snap.usedBy, k8s.ConnectedRef{Kind: k8s.KindService, Namespace: "ns", Name: fmt.Sprintf("service-%d", n)})
+	}
+	ctx := newEventsCtx()
+	for _, height := range []int{3, 4, 5, 7} {
+		c.cursor = 0
+		for n := range c.Count() {
+			body := ansi.Strip(c.renderBody(ctx, 40, height-2))
+			selected, ok := c.Selected()
+			require.True(t, ok)
+			require.Contains(t, body, selected.Name, "cursor %d height %d", n, height)
+			require.Contains(t, body, "›")
+			hit := false
+			for row := range height - 2 {
+				ref, ok := c.Hit(row)
+				hit = hit || (ok && ref == selected)
+			}
+			require.True(t, hit, "selected link must also be clickable")
+			c.MoveCursor(1)
+		}
+	}
+}
+
+func TestConnectedRefreshPreservesSelectedResource(t *testing.T) {
+	c := NewConnected()
+	c.ref = NodeRef{Kind: k8s.KindService, Namespace: "shop", Name: "service"}
+	c.snap = &connectedSnapshot{uses: []k8s.ConnectedRef{{Kind: k8s.KindSecret, Name: "target", Namespace: "shop"}}}
+	c.Apply(ConnectedMsg{Kind: k8s.KindService, Namespace: "shop", Name: "service", Connections: k8s.Connections{Uses: []k8s.ConnectedRef{{Kind: k8s.KindConfigMap, Name: "new", Namespace: "shop"}, {Kind: k8s.KindSecret, Name: "target", Namespace: "shop"}}}})
+	selected, ok := c.Selected()
+	require.True(t, ok)
+	require.Equal(t, "target", selected.Name)
 }

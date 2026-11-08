@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -11,6 +12,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
@@ -163,7 +165,7 @@ func serviceToInfo(s corev1.Service) ServiceInfo {
 	return ServiceInfo{
 		Name:      s.Name,
 		Namespace: s.Namespace,
-		Type:      string(s.Spec.Type),
+		Type:      s.Spec.Type,
 		ClusterIP: s.Spec.ClusterIP,
 		Ports:     strings.Join(ports, ", "),
 		Age:       HumanAge(s.CreationTimestamp.Time),
@@ -194,7 +196,7 @@ func secretToInfo(s corev1.Secret) SecretInfo {
 	return SecretInfo{
 		Name:      s.Name,
 		Namespace: s.Namespace,
-		Type:      string(s.Type),
+		Type:      s.Type,
 		Keys:      len(s.Data),
 		KeyNames:  sortedSecretKeyNames(s.Data),
 		Age:       HumanAge(s.CreationTimestamp.Time),
@@ -202,9 +204,10 @@ func secretToInfo(s corev1.Secret) SecretInfo {
 }
 
 func pvcToInfo(pvc corev1.PersistentVolumeClaim) PVCInfo {
-	capacity := ""
-	if q, ok := pvc.Spec.Resources.Requests["storage"]; ok {
-		capacity = q.String()
+	var capacity *resource.Quantity
+	if q, ok := pvc.Spec.Resources.Requests[corev1.ResourceStorage]; ok {
+		quantity := q.DeepCopy()
+		capacity = &quantity
 	}
 	sc := ""
 	if pvc.Spec.StorageClassName != nil {
@@ -213,7 +216,7 @@ func pvcToInfo(pvc corev1.PersistentVolumeClaim) PVCInfo {
 	return PVCInfo{
 		Name:         pvc.Name,
 		Namespace:    pvc.Namespace,
-		Status:       string(pvc.Status.Phase),
+		Status:       pvc.Status.Phase,
 		Capacity:     capacity,
 		VolumeName:   pvc.Spec.VolumeName,
 		StorageClass: sc,
@@ -264,26 +267,23 @@ func GetPVByName(ctx context.Context, cs kubernetes.Interface, name string) (*PV
 	if err != nil {
 		return nil, err
 	}
-	capacity := ""
-	if q, ok := pv.Spec.Capacity["storage"]; ok {
-		capacity = q.String()
+	var capacity *resource.Quantity
+	if q, ok := pv.Spec.Capacity[corev1.ResourceStorage]; ok {
+		quantity := q.DeepCopy()
+		capacity = &quantity
 	}
 	claim := ""
 	if pv.Spec.ClaimRef != nil {
 		claim = pv.Spec.ClaimRef.Namespace + "/" + pv.Spec.ClaimRef.Name
 	}
-	modes := make([]string, len(pv.Spec.AccessModes))
-	for i, m := range pv.Spec.AccessModes {
-		modes[i] = string(m)
-	}
 	return &PVInfo{
 		Name:         pv.Name,
 		Capacity:     capacity,
-		Status:       string(pv.Status.Phase),
+		Status:       pv.Status.Phase,
 		Claim:        claim,
 		StorageClass: pv.Spec.StorageClassName,
-		AccessModes:  strings.Join(modes, ","),
-		Reclaim:      string(pv.Spec.PersistentVolumeReclaimPolicy),
+		AccessModes:  slices.Clone(pv.Spec.AccessModes),
+		Reclaim:      pv.Spec.PersistentVolumeReclaimPolicy,
 		Age:          HumanAge(pv.CreationTimestamp.Time),
 	}, nil
 }

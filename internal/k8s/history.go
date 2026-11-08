@@ -96,14 +96,14 @@ func (c *Client) HistorySnapshot(ctx context.Context, t history.Target) (history
 			}
 			t.WorkloadKind = owner.Kind
 			t.WorkloadName = owner.Name
-			t.WorkloadUID = string(owner.UID)
+			t.WorkloadUID = owner.UID
 			if owner.Kind == "ReplicaSet" {
 				if rs, e := c.Clientset.AppsV1().ReplicaSets(t.Namespace).Get(ctx, owner.Name, metav1.GetOptions{}); e == nil && rs.UID == owner.UID {
 					for _, parent := range rs.OwnerReferences {
 						if parent.Controller != nil && *parent.Controller {
 							t.WorkloadKind = parent.Kind
 							t.WorkloadName = parent.Name
-							t.WorkloadUID = string(parent.UID)
+							t.WorkloadUID = parent.UID
 							break
 						}
 					}
@@ -114,7 +114,7 @@ func (c *Client) HistorySnapshot(ctx context.Context, t history.Target) (history
 	default:
 		return t, fields
 	}
-	t.UID = string(obj.GetUID())
+	t.UID = obj.GetUID()
 	fields["generation"] = strconv.FormatInt(obj.GetGeneration(), 10)
 	fields["resourceVersion"] = obj.GetResourceVersion()
 	return t, fields
@@ -135,7 +135,7 @@ func RecordMutationResponse(ctx context.Context, obj metav1.Object, err error) {
 	if op == nil {
 		return
 	}
-	op.Target.UID = string(obj.GetUID())
+	op.Target.UID = obj.GetUID()
 	op.ResourceVersion = obj.GetResourceVersion()
 	if obj.GetGeneration() > 0 {
 		op.Generation = strconv.FormatInt(obj.GetGeneration(), 10)

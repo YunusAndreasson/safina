@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"sort"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 const evidenceBytes = 16 << 10
@@ -91,12 +93,15 @@ func (s *server) inspect(ctx context.Context, p api.InspectRequest) (api.Observa
 	}
 	// Selected fields only: no env values, command/args, volumes, Secret contents,
 	// or arbitrary annotations are sent to the model.
-	containers := []map[string]string{}
+	containers := make([]containerEvidence, 0, len(d.Spec.Template.Spec.Containers))
 	for _, c := range d.Spec.Template.Spec.Containers {
-		containers = append(containers, map[string]string{"name": c.Name, "image": c.Image})
+		containers = append(containers, containerEvidence{Name: c.Name, Image: c.Image})
 	}
-	data := map[string]any{"target": inv.Target{Cluster: current.Cluster, APIVersion: "apps/v1", Kind: "Deployment", Namespace: d.Namespace, Name: d.Name, UID: string(d.UID)}, "resourceVersion": d.ResourceVersion, "generation": d.Generation, "replicas": d.Spec.Replicas, "status": d.Status, "containers": containers}
-	warnings, _, _ := controllerWarnings(ctx, cs, d)
+	data := workloadEvidence{Target: inv.Target{Cluster: current.Cluster, APIVersion: "apps/v1", Kind: "Deployment", Namespace: d.Namespace, Name: d.Name, UID: d.UID}, ResourceVersion: d.ResourceVersion, Generation: d.Generation, Replicas: d.Spec.Replicas, Status: d.Status, Containers: containers}
+	warnings, _, _, err := controllerWarnings(ctx, cs, d)
+	if err != nil {
+		return api.Observation{}, err
+	}
 	truncated := false
 	selector := ""
 	if d.Spec.Selector != nil {
@@ -109,8 +114,8 @@ func (s *server) inspect(ctx context.Context, p api.InspectRequest) (api.Observa
 		warnings = append(warnings, "No usable selector; related Pods/ReplicaSets omitted")
 	} else {
 		sets, e := cs.AppsV1().ReplicaSets(p.Namespace).List(ctx, metav1.ListOptions{LabelSelector: selector, Limit: 100})
-		owners := map[string]bool{}
-		var rsData []map[string]any
+		owners := map[types.UID]bool{}
+		var rsData []replicaSetEvidence
 		if e != nil {
 			warnings = append(warnings, readWarning(e))
 		} else {
@@ -118,36 +123,39 @@ func (s *server) inspect(ctx context.Context, p api.InspectRequest) (api.Observa
 			for _, rs := range sets.Items {
 				for _, owner := range rs.OwnerReferences {
 					if owner.UID == d.UID && owner.Controller != nil && *owner.Controller {
-						owners[string(rs.UID)] = true
-						rsData = append(rsData, map[string]any{"name": rs.Name, "uid": rs.UID, "revision": rs.Annotations["deployment.kubernetes.io/revision"], "replicas": rs.Spec.Replicas, "readyReplicas": rs.Status.ReadyReplicas})
+						owners[rs.UID] = true
+						rsData = append(rsData, replicaSetEvidence{Name: rs.Name, UID: rs.UID, Revision: rs.Annotations["deployment.kubernetes.io/revision"], Replicas: rs.Spec.Replicas, ReadyReplicas: rs.Status.ReadyReplicas})
 					}
 				}
 			}
 		}
-		data["replicaSets"] = rsData
+		data.ReplicaSets = &rsData
 		pods, e := cs.CoreV1().Pods(p.Namespace).List(ctx, metav1.ListOptions{LabelSelector: selector, Limit: 100})
-		var podData []map[string]any
+		var podData []podEvidence
 		if e != nil {
 			warnings = append(warnings, readWarning(e))
 		} else {
 			truncated = truncated || pods.Continue != ""
 			for _, pod := range pods.Items {
 				for _, owner := range pod.OwnerReferences {
-					if owners[string(owner.UID)] && owner.Controller != nil && *owner.Controller {
-						podData = append(podData, map[string]any{"name": pod.Name, "uid": pod.UID, "phase": pod.Status.Phase, "conditions": pod.Status.Conditions, "containerStatuses": pod.Status.ContainerStatuses})
+					if owners[owner.UID] && owner.Controller != nil && *owner.Controller {
+						podData = append(podData, podEvidence{Name: pod.Name, UID: pod.UID, Phase: pod.Status.Phase, Conditions: pod.Status.Conditions, ContainerStatuses: pod.Status.ContainerStatuses})
 					}
 				}
 			}
 		}
-		data["pods"] = podData
+		data.Pods = &podData
 	}
 	// Identity and observation metadata precede potentially large dependency
 	// lists so truncation cannot remove the fields needed for a scoped proposal.
-	b, _ := json.Marshal(struct {
-		Target   any            `json:"target"`
-		Observed inv.Observed   `json:"observed"`
-		Data     map[string]any `json:"data"`
-	}{data["target"], inv.Observed{ResourceVersion: d.ResourceVersion, Generation: d.Generation, Time: time.Now().UTC()}, data})
+	b, err := json.Marshal(struct {
+		Target   inv.Target       `json:"target"`
+		Observed inv.Observed     `json:"observed"`
+		Data     workloadEvidence `json:"data"`
+	}{data.Target, inv.Observed{ResourceVersion: d.ResourceVersion, Generation: d.Generation, Time: time.Now().UTC()}, data})
+	if err != nil {
+		return api.Observation{}, fmt.Errorf("encode workload evidence: %w", err)
+	}
 	return s.capture(current.ID, p.Namespace, p.Name, "workload", string(b), truncated, warnings)
 }
 
@@ -163,19 +171,22 @@ func (s *server) events(ctx context.Context, p api.EventsRequest) (api.Observati
 	if err != nil {
 		return api.Observation{}, err
 	}
-	list, err := cs.CoreV1().Events(p.Namespace).List(ctx, metav1.ListOptions{FieldSelector: fields.OneTermEqualSelector("involvedObject.uid", p.UID).String(), Limit: 100})
+	list, err := cs.CoreV1().Events(p.Namespace).List(ctx, metav1.ListOptions{FieldSelector: fields.OneTermEqualSelector("involvedObject.uid", string(p.UID)).String(), Limit: 100})
 	if err != nil {
-		return s.capture(current.ID, p.Namespace, p.UID, "events", "", false, []string{readWarning(err)})
+		return s.capture(current.ID, p.Namespace, string(p.UID), "events", "", false, []string{readWarning(err)})
 	}
-	var rows []map[string]any
+	var rows []eventEvidence
 	for _, e := range list.Items {
-		if string(e.InvolvedObject.UID) != p.UID {
+		if e.InvolvedObject.UID != p.UID {
 			continue
 		}
-		rows = append(rows, map[string]any{"reason": e.Reason, "message": e.Message, "type": e.Type, "count": e.Count, "firstTimestamp": e.FirstTimestamp, "lastTimestamp": e.LastTimestamp, "eventTime": e.EventTime})
+		rows = append(rows, eventEvidence{Reason: e.Reason, Message: e.Message, Type: e.Type, Count: e.Count, FirstTimestamp: e.FirstTimestamp, LastTimestamp: e.LastTimestamp, EventTime: e.EventTime})
 	}
-	b, _ := json.Marshal(rows)
-	return s.capture(current.ID, p.Namespace, p.UID, "events", string(b), list.Continue != "", []string{"Events expire and may be aggregated; absence is not proof of no activity"})
+	b, err := json.Marshal(rows)
+	if err != nil {
+		return api.Observation{}, fmt.Errorf("encode event evidence: %w", err)
+	}
+	return s.capture(current.ID, p.Namespace, string(p.UID), "events", string(b), list.Continue != "", []string{"Events expire and may be aggregated; absence is not proof of no activity"})
 }
 
 func (s *server) logs(ctx context.Context, p api.LogsRequest) (api.Observation, error) {
@@ -249,7 +260,10 @@ func (s *server) historyQuery(p api.HistoryRequest) (api.HistoryResult, error) {
 		out.Records = append(out.Records, r)
 	}
 	for {
-		b, _ := json.Marshal(out)
+		b, err := json.Marshal(out)
+		if err != nil {
+			return api.HistoryResult{}, fmt.Errorf("encode history: %w", err)
+		}
 		if len(b) <= 16<<10 || len(out.Records) == 0 {
 			break
 		}
@@ -269,7 +283,10 @@ func (s *server) historyBrief(current inv.Investigation, target *inv.Target) str
 	if err != nil {
 		return "History unavailable"
 	}
-	b, _ := json.Marshal(result)
+	b, err := json.Marshal(result)
+	if err != nil {
+		return "History unavailable: encoding failed"
+	}
 	return string(b)
 }
 
@@ -323,7 +340,10 @@ func (s *server) reviewHistory(current inv.Investigation, target inv.Target, act
 		Truncated bool             `json:"truncated"`
 	}{action, matching, result.Warnings, result.Truncated}
 	for {
-		b, _ := json.Marshal(view)
+		b, err := json.Marshal(view)
+		if err != nil {
+			return "History unavailable: encoding failed"
+		}
 		if len(b) <= 16<<10 || len(view.Records) == 0 {
 			return string(b)
 		}

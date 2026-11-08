@@ -50,7 +50,8 @@ type Chat struct {
 	vp    viewport.Model
 	input textarea.Model
 
-	turns []chatTurn
+	turns        []chatTurn
+	omittedTurns int
 
 	// Live token-stream destination. When non-empty the trailing turn in
 	// `turns` is the assistant turn currently being filled; KindToken events
@@ -88,11 +89,12 @@ type Chat struct {
 // what was sent with this turn — so old turns keep their original framing
 // even after the user navigates elsewhere.
 type chatTurn struct {
-	role    string
-	text    string
-	crumbs  []ContextCrumb
-	ts      time.Time
-	pending bool // true while streaming into this turn
+	role      string
+	text      string
+	crumbs    []ContextCrumb
+	ts        time.Time
+	pending   bool // true while streaming into this turn
+	truncated bool
 }
 
 // NewChat constructs the chat section. The Service is shared with the root
@@ -211,6 +213,9 @@ func (c *Chat) Cursor() *tea.Cursor {
 func (c *Chat) YankPayload() string {
 	for i := len(c.turns) - 1; i >= 0; i-- {
 		if c.turns[i].role == "assistant" {
+			if c.turns[i].truncated {
+				return c.turns[i].text + chatTruncationNotice
+			}
 			return c.turns[i].text
 		}
 	}
@@ -244,6 +249,7 @@ func (c *Chat) CancelStream() {
 func (c *Chat) ResetSession() {
 	c.CancelStream()
 	c.turns = nil
+	c.omittedTurns = 0
 	c.errMsg = ""
 	c.retryHint = ""
 	if c.svc != nil {
@@ -286,27 +292,23 @@ type ChatTurnDoneMsg struct {
 // section so the renderer stays in lock-step with the producer.
 func NextChatEvent(ch <-chan claude.Event) tea.Cmd {
 	return func() tea.Msg {
-		ev, ok := <-ch
-		if !ok {
-			return ChatTurnDoneMsg{Ch: ch}
-		}
-		switch ev.Kind {
-		case claude.KindToken:
-			return ChatTokenMsg{Ch: ch, Delta: ev.Delta}
-		case claude.KindRetry:
-			return ChatRetryMsg{
-				Ch:      ch,
-				Attempt: ev.Attempt, Of: ev.MaxRetries,
-				DelayMS: ev.DelayMS, Reason: ev.Reason,
+		for {
+			ev, ok := <-ch
+			if !ok {
+				return ChatTurnDoneMsg{Ch: ch}
 			}
-		case claude.KindDone:
-			return ChatTurnDoneMsg{Ch: ch, Err: ev.Err}
-		case claude.KindInit:
-			// Init events carry the session id but the Service tracks that
-			// internally; nothing for the UI to do — recurse and read again.
-			return NextChatEvent(ch)()
+			switch ev.Kind {
+			case claude.KindInit:
+				continue
+			case claude.KindToken:
+				return ChatTokenMsg{Ch: ch, Delta: ev.Delta}
+			case claude.KindRetry:
+				return ChatRetryMsg{Ch: ch, Attempt: ev.Attempt, Of: ev.MaxRetries, DelayMS: ev.DelayMS, Reason: ev.Reason}
+			case claude.KindDone:
+				return ChatTurnDoneMsg{Ch: ch, Err: ev.Err}
+			}
+			// Init and non-display events do not grow the goroutine's stack.
 		}
-		return NextChatEvent(ch)()
 	}
 }
 
@@ -319,7 +321,11 @@ func (c *Chat) IngestToken(delta string) {
 	if last.role != "assistant" {
 		return
 	}
-	last.text += delta
+	if last.truncated {
+		return
+	}
+	last.text, last.truncated = boundedChatDelta(last.text, delta)
+	c.trimScrollback()
 	c.refreshViewport()
 	c.vp.GotoBottom()
 }
@@ -345,6 +351,7 @@ func (c *Chat) FinishTurn(err error) {
 		if len(c.turns) > 0 {
 			last := &c.turns[len(c.turns)-1]
 			if last.role == "assistant" && strings.TrimSpace(last.text) == "" {
+				c.turns[len(c.turns)-1] = chatTurn{}
 				c.turns = c.turns[:len(c.turns)-1]
 			}
 		}
@@ -408,6 +415,7 @@ func (c *Chat) Update(msg tea.Msg, ctx *tuictx.Ctx) (cmd tea.Cmd, submit *Submit
 		// want a clean panel without losing context.
 		c.CancelStream()
 		c.turns = nil
+		c.omittedTurns = 0
 		c.errMsg = ""
 		c.retryHint = ""
 		c.refreshViewport()
@@ -441,6 +449,7 @@ func (c *Chat) Update(msg tea.Msg, ctx *tuictx.Ctx) (cmd tea.Cmd, submit *Submit
 			ts:      time.Now(),
 		})
 		c.streaming = true
+		c.trimScrollback()
 		c.refreshViewport()
 		c.vp.GotoBottom()
 		// The actual context block is built by the root (it has the tree
@@ -544,7 +553,10 @@ func (c *Chat) renderTurns() string {
 	if len(c.turns) == 0 {
 		return ""
 	}
-	parts := make([]string, 0, len(c.turns)*2)
+	parts := make([]string, 0, len(c.turns)*2+1)
+	if c.omittedTurns > 0 {
+		parts = append(parts, c.t.Hint.Render(fmt.Sprintf("%d older turns omitted from scrollback.", c.omittedTurns)))
+	}
 	for i, turn := range c.turns {
 		if i > 0 {
 			parts = append(parts, "")
@@ -555,7 +567,7 @@ func (c *Chat) renderTurns() string {
 	return strings.Join(parts, "\n")
 }
 
-// renderTurnHeader is the "▸ you" / "◆ ai" label plus, for user turns, the
+// renderTurnHeader is the "you" / "ai" label plus, for user turns, the
 // breadcrumb captured when the message was sent. Old turns keep their
 // original context — the strip at the top of the panel always shows
 // "now", but the historical turn shows "what was selected when I asked".
@@ -563,14 +575,14 @@ func (c *Chat) renderTurnHeader(turn chatTurn) string {
 	p := c.t.P
 	switch turn.role {
 	case "user":
-		head := lipgloss.NewStyle().Foreground(p.Cyan).Bold(true).Render("▸ you")
+		head := lipgloss.NewStyle().Foreground(p.Cyan).Bold(true).Render("you")
 		if len(turn.crumbs) > 0 {
-			strip := renderCrumbStrip(turn.crumbs, p.Dim, p.FGFade, true)
+			strip := renderCrumbStrip(turn.crumbs, p.Dim, p.FGFade)
 			return ansi.Truncate(head+"  "+lipgloss.NewStyle().Foreground(p.Dim).Render(strip), c.vp.Width(), "…")
 		}
 		return head
 	case "assistant":
-		head := lipgloss.NewStyle().Foreground(p.Pink).Bold(true).Render("◆ ai")
+		head := lipgloss.NewStyle().Foreground(p.Pink).Bold(true).Render("ai")
 		if turn.pending {
 			head += "  " + c.t.Hint.Render("…")
 		}
@@ -585,7 +597,11 @@ func (c *Chat) renderTurnBody(turn chatTurn) string {
 		if turn.pending && turn.text == "" {
 			return c.t.Hint.Render("  thinking…")
 		}
-		body := c.renderMarkdown(turn.text)
+		text := turn.text
+		if turn.truncated {
+			text += chatTruncationNotice
+		}
+		body := c.renderMarkdown(text)
 		if turn.pending {
 			// Streaming cursor — visual proof that more tokens are coming.
 			// Cyan to match the panel's focus accent; placed flush with
@@ -783,18 +799,13 @@ func (c *Chat) renderInstallCard(t *theme.Theme) string {
 // ── helpers ──────────────────────────────────────────────────────────
 
 // renderCrumbStrip joins crumbs with the same `›` separator the topbar uses,
-// optionally wrapping each label in dim styling. When `compact` is true we
-// drop the leading glyph (used in turn headers where space is tight).
-func renderCrumbStrip(crumbs []ContextCrumb, sepCol, labelCol color.Color, compact bool) string {
+// with explicit styles for labels and separators.
+func renderCrumbStrip(crumbs []ContextCrumb, sepCol, labelCol color.Color) string {
 	sep := lipgloss.NewStyle().Foreground(sepCol).Render(" › ")
 	label := lipgloss.NewStyle().Foreground(labelCol)
-	glyph := lipgloss.NewStyle().Foreground(sepCol)
 	parts := make([]string, 0, len(crumbs))
 	for _, cr := range crumbs {
 		seg := label.Render(cr.Label)
-		if !compact && cr.Glyph != "" {
-			seg = glyph.Render(cr.Glyph) + " " + seg
-		}
 		parts = append(parts, seg)
 	}
 	return strings.Join(parts, sep)

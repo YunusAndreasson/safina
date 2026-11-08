@@ -2,8 +2,13 @@ package sections
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/charmbracelet/x/ansi"
+	"github.com/yunus/safina/internal/tui/theme"
+	"github.com/yunus/safina/internal/tui/tuictx"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -86,4 +91,59 @@ func TestActivity_ClearWipesState(t *testing.T) {
 	assert.Empty(t, a.items)
 	assert.Empty(t, a.kind)
 	assert.True(t, a.lastFetch.IsZero())
+}
+
+func TestActivityUsesAvailableSpaceWithoutClippingFields(t *testing.T) {
+	a := NewActivity()
+	a.kind = "Pod"
+	a.items = []k8s.EventInfo{{Age: "2m", Type: "Warning", Reason: "FailedScheduling", Message: "No nodes have enough memory for this pod", Count: 3}}
+	c := &tuictx.Ctx{Theme: theme.Default()}
+	for _, width := range []int{24, 40, 80} {
+		body := a.renderBody(c, width, 8)
+		plain := strings.Join(strings.Fields(ansi.Strip(body)), " ")
+		require.Contains(t, plain, "FailedScheduling")
+		require.Contains(t, plain, "No nodes have enough memory for this pod (×3)")
+		for _, row := range strings.Split(body, "\n") {
+			require.LessOrEqual(t, ansi.StringWidth(row), width)
+		}
+	}
+	body := a.renderBody(c, 24, 1)
+	require.Len(t, strings.Split(body, "\n"), 1)
+	require.Contains(t, ansi.Strip(body), "…")
+}
+
+func TestActivityAgeColumnAlignsMixedDurations(t *testing.T) {
+	a := NewActivity()
+	a.kind = "Pod"
+	for _, age := range []string{"5s", "12m", "1h59m", "2d23h", "—"} {
+		a.items = append(a.items, k8s.EventInfo{Age: age, Type: "Normal", Reason: "Started", Message: "container ready"})
+	}
+	c := &tuictx.Ctx{Theme: theme.Default()}
+	rows := strings.Split(ansi.Strip(a.renderBody(c, 80, 10)), "\n")
+	require.Len(t, rows, 5)
+	for _, row := range rows {
+		require.Equal(t, 6, ansi.StringWidth(strings.SplitN(row, "●", 2)[0]), row)
+		require.Equal(t, 8, ansi.StringWidth(strings.SplitN(row, "Started", 2)[0]), row)
+	}
+	require.Contains(t, ansi.Strip(a.View(c, 80, 10)), "Recent events")
+}
+
+func TestEventsAgeAndTypeColumnsAlign(t *testing.T) {
+	for _, wrap := range []bool{false, true} {
+		s := Events{theme: theme.Default(), wrap: wrap}
+		column := -1
+		for _, e := range []k8s.EventInfo{
+			{Age: "5s", Type: "Normal", Reason: "Started"},
+			{Age: "1h59m", Type: "Warning", Reason: "Started"},
+			{Age: "2d23h", Type: "Normal", Reason: "Started"},
+		} {
+			row := ansi.Strip(s.renderRow(e, 100))
+			pos := ansi.StringWidth(strings.SplitN(row, "Started", 2)[0])
+			if column < 0 {
+				column = pos
+			}
+			require.Equal(t, column, pos, row)
+			require.Contains(t, row, e.Age+" ago")
+		}
+	}
 }

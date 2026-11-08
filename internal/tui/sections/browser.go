@@ -17,28 +17,29 @@ import (
 	"github.com/yunus/safina/internal/tui/tuictx"
 )
 
-// Browser is the Resource Browser modal. It shows every resource kind
-// the cluster exposes plus the special synthetic "Workloads" group, and
-// lets the operator toggle which appear as folds in the tree.
+// Browser lists discovered resource types for immediate navigation.
+// Pinning is an independent action handled by the root model.
 //
-// Modeled after Palette: same fuzzy-filter machinery, same modal styling,
-// same keyboard shape — but the rows are checkboxes and the result is a
-// new []config.ResourceRef instead of a navigation Path.
+// It shares the palette’s fuzzy search and modal styling.
 type Browser struct {
-	open    bool
-	input   components.SearchInput
-	entries []browserEntry // full corpus, captured at Open()
-	matches []int          // indexes into entries, ranked
-	indices [][]int        // matched-char offsets per match — highlight
-	cursor  int            // index into matches
+	Scope          string
+	Loading        bool
+	DiscoveryError string
+	open           bool
+	input          components.SearchInput
+	entries        []browserEntry // full corpus, captured at Open()
+	matches        []int          // indexes into entries, ranked
+	indices        [][]int        // matched-char offsets per match — highlight
+	cursor         int            // index into matches
 }
 
-// browserEntry is one toggleable row in the modal.
+// browserEntry is a browse target with an optional pin.
 type browserEntry struct {
-	Ref     config.ResourceRef
-	Display string // plural label ("Workloads", "PrometheusRules", "ConfigMaps")
-	Group   string // for the right-hand suffix ("monitoring.coreos.com/v1", "core/v1")
-	Enabled bool
+	Ref        config.ResourceRef
+	Display    string // plural label ("Workloads", "PrometheusRules", "ConfigMaps")
+	Namespaced bool
+	Group      string // for the right-hand suffix ("monitoring.coreos.com/v1", "core/v1")
+	Enabled    bool
 }
 
 // NewBrowser builds an empty browser. Open() seeds it.
@@ -50,7 +51,7 @@ func (b *Browser) IsOpen() bool { return b.open }
 
 // Open seeds the browser with the discovered kinds + the synthetic
 // Workloads entry. enabled marks the user's current selection so the
-// "already on" rows show as [x] from the start.
+// pinned rows are marked from the start.
 func (b *Browser) Open(kinds []k8s.ResourceKind, enabled []config.ResourceRef) {
 	b.entries = buildBrowserEntries(kinds, enabled)
 	b.input.SetValue("")
@@ -59,8 +60,7 @@ func (b *Browser) Open(kinds []k8s.ResourceKind, enabled []config.ResourceRef) {
 	b.recomputeMatches()
 }
 
-// Close dismisses the modal without saving — the model handles the
-// "cancel" path. Confirm() is the save path.
+// Close dismisses browsing. Pin changes have already been saved.
 func (b *Browser) Close() { b.open = false }
 
 // SetQuery replaces the query and reranks matches.
@@ -95,28 +95,6 @@ func (b *Browser) CursorDown() {
 	if b.cursor < len(b.matches)-1 {
 		b.cursor++
 	}
-}
-
-// Toggle flips the Enabled state of the highlighted entry. Space.
-func (b *Browser) Toggle() {
-	if b.cursor < 0 || b.cursor >= len(b.matches) {
-		return
-	}
-	idx := b.matches[b.cursor]
-	b.entries[idx].Enabled = !b.entries[idx].Enabled
-}
-
-// Confirm closes the modal and returns the chosen ResourceRefs in
-// display order so folds render in a stable order across sessions.
-func (b *Browser) Confirm() []config.ResourceRef {
-	b.open = false
-	out := make([]config.ResourceRef, 0, len(b.entries))
-	for _, e := range b.entries {
-		if e.Enabled {
-			out = append(out, e.Ref)
-		}
-	}
-	return out
 }
 
 // buildBrowserEntries composes the corpus from the synthetic Workloads
@@ -165,10 +143,11 @@ func buildBrowserEntries(kinds []k8s.ResourceKind, enabled []config.ResourceRef)
 	for _, k := range sorted {
 		ref := config.ResourceRef{Group: k.Group, Version: k.Version, Resource: k.Resource}
 		out = append(out, browserEntry{
-			Ref:     ref,
-			Display: kindDisplayName(k),
-			Group:   groupVersionLabel(k.Group, k.Version),
-			Enabled: enabledSet[refKey(ref)],
+			Ref:        ref,
+			Namespaced: k.Namespaced,
+			Display:    kindDisplayName(k),
+			Group:      groupVersionLabel(k.Group, k.Version),
+			Enabled:    enabledSet[refKey(ref)],
 		})
 	}
 	return out
@@ -216,7 +195,7 @@ func refKey(r config.ResourceRef) string {
 	if r.Synthetic != "" {
 		return "synthetic:" + r.Synthetic
 	}
-	return gvrKey(r.Group, r.Version, r.Resource)
+	return gvrPath(r.GVR())
 }
 
 // recomputeMatches reranks entries against the current query. Empty
@@ -265,19 +244,27 @@ func (b *Browser) Card(c *tuictx.Ctx, termW, termH int) string {
 			enabled++
 		}
 	}
-	header := fmt.Sprintf("Resource kinds · %d enabled", enabled)
+	header := fmt.Sprintf("All resource types · %d pinned", enabled)
+	status := "Open a type to browse. Pins appear in the resource list."
+	if b.Loading {
+		status = "Discovering resource types…"
+	}
+	if b.DiscoveryError != "" {
+		status = "Discovery incomplete: " + b.DiscoveryError
+	}
 	body := lipgloss.JoinVertical(lipgloss.Left,
 		t.CyanBold.Render(ansi.Truncate(header, innerW, "…")),
 		ansi.Truncate(b.input.View(t, innerW), innerW, "…"),
-		t.Hint.Render("Choose which kinds appear in the tree."), "",
+		t.Meta.Render(ansi.Truncate(b.Scope, innerW, "…")),
+		t.Hint.Render(ansi.Truncate(status, innerW, "…")), "",
 		b.renderList(c, innerW, listRows), "",
-		t.Hint.Render("space toggle · ↵ save · esc cancel"))
+		components.RenderBoundedHints(t, []components.KeyDesc{{Key: "↵", Desc: "open"}, {Key: "space", Desc: "pin/unpin"}, {Key: "esc", Desc: "back"}}, innerW, components.KeyDesc{Key: "esc", Desc: "back"}))
 	panel := t.Modal.Padding(1, 2).Width(innerW + 6).Render(body)
 	return panel
 }
 
 // renderList renders the matches as a window into the corpus, centred
-// around the cursor. Each row is "[x] DisplayName            group/v".
+// around the cursor. A quiet dot marks pinned types.
 func (b *Browser) renderList(c *tuictx.Ctx, w, rows int) string {
 	t := c.Theme
 	if len(b.matches) == 0 {
@@ -323,16 +310,41 @@ func renderBrowserRow(c *tuictx.Ctx, e browserEntry, hits []int, w int, selected
 	}
 	var check string
 	if e.Enabled {
-		check = bg.Foreground(t.P.Green).Bold(true).Render("[x] ")
+		check = bg.Foreground(t.P.FGFade).Render("• ")
 	} else {
-		check = bg.Foreground(t.P.Dim).Render("[ ] ")
+		check = bg.Foreground(t.P.Dim).Render("  ")
 	}
 	highlighted := highlightMatches(e.Display, hits, bg, lipgloss.NewStyle().Inherit(bg).Foreground(t.P.Yellow).Bold(true))
-	suffix := bg.Render("  ") + bg.Foreground(t.P.Dim).Render(e.Group)
+	scope := ""
+	if !e.Namespaced && e.Ref.Synthetic == "" {
+		scope = " · cluster scope"
+	}
+	suffix := bg.Render("  ") + bg.Foreground(t.P.FGFade).Render(e.Group+scope)
 	line := cursor + check + highlighted + suffix
 	pad := w - lipgloss.Width(line)
 	if pad > 0 {
 		line += bg.Width(pad).Render("")
 	}
 	return ansi.Truncate(line, w, "…")
+}
+
+// Selected identifies the browse target independently of its pin state.
+func (b *Browser) Selected() (config.ResourceRef, bool) {
+	if b.cursor < 0 || b.cursor >= len(b.matches) {
+		return config.ResourceRef{}, false
+	}
+	return b.entries[b.matches[b.cursor]].Ref, true
+}
+
+func (b *Browser) Refresh(kinds []k8s.ResourceKind, enabled []config.ResourceRef) {
+	selected, _ := b.Selected()
+	b.entries = buildBrowserEntries(kinds, enabled)
+	b.recomputeMatches()
+	b.cursor = 0
+	for i, idx := range b.matches {
+		if b.entries[idx].Ref.Equal(selected) {
+			b.cursor = i
+			break
+		}
+	}
 }

@@ -82,7 +82,7 @@ func (c *scaleCluster) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		c.hpas.TypeMeta = metav1.TypeMeta{APIVersion: "autoscaling/v2", Kind: "HorizontalPodAutoscalerList"}
-		_ = json.NewEncoder(w).Encode(c.hpas)
+		writeJSON(w, c.hpas)
 		return
 	}
 	if c.readDenied && r.Method == http.MethodGet {
@@ -90,15 +90,15 @@ func (c *scaleCluster) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.HasSuffix(r.URL.Path, "/replicasets") {
-		_ = json.NewEncoder(w).Encode(appsv1.ReplicaSetList{TypeMeta: metav1.TypeMeta{Kind: "ReplicaSetList", APIVersion: "apps/v1"}, Items: c.replicaSets})
+		writeJSON(w, appsv1.ReplicaSetList{TypeMeta: metav1.TypeMeta{Kind: "ReplicaSetList", APIVersion: "apps/v1"}, Items: c.replicaSets})
 		return
 	}
 	if strings.HasSuffix(r.URL.Path, "/pods") {
-		_ = json.NewEncoder(w).Encode(corev1.PodList{TypeMeta: metav1.TypeMeta{Kind: "PodList", APIVersion: "v1"}})
+		writeJSON(w, corev1.PodList{TypeMeta: metav1.TypeMeta{Kind: "PodList", APIVersion: "v1"}})
 		return
 	}
 	if strings.HasSuffix(r.URL.Path, "/events") {
-		_ = json.NewEncoder(w).Encode(corev1.EventList{TypeMeta: metav1.TypeMeta{Kind: "EventList", APIVersion: "v1"}})
+		writeJSON(w, corev1.EventList{TypeMeta: metav1.TypeMeta{Kind: "EventList", APIVersion: "v1"}})
 		return
 	}
 	if strings.HasSuffix(r.URL.Path, "/log") {
@@ -130,7 +130,11 @@ func (c *scaleCluster) serve(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusConflict)
 			return
 		}
-		value, _ := json.Marshal(c.patches[2]["value"])
+		value, err := json.Marshal(c.patches[2]["value"])
+		if err != nil {
+			http.Error(w, "invalid patch value", http.StatusBadRequest)
+			return
+		}
 		switch c.patches[2]["path"] {
 		case "/spec/replicas":
 			_ = json.Unmarshal(value, &c.deployment.Spec.Replicas)
@@ -155,7 +159,7 @@ func (c *scaleCluster) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	_ = json.NewEncoder(w).Encode(c.deployment)
+	writeJSON(w, c.deployment)
 }
 
 func approval(r inv.Review) operator.Request {

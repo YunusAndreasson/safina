@@ -14,6 +14,7 @@ import (
 // result when the user navigated to a different selection between dispatch
 // and arrival.
 type ConnectedMsg struct {
+	Context                        string
 	Kind, SubKind, Namespace, Name string
 	Connections                    k8s.Connections
 	Err                            error
@@ -26,7 +27,7 @@ type ConnectedMsg struct {
 func LoadConnections(ctx context.Context, mgr *k8s.Manager, contextName, kind, subKind, namespace, name string) tea.Cmd {
 	return func() tea.Msg {
 		defer debug.Track("k8s.connections", "context", contextName, "kind", kind, "name", name)()
-		out := ConnectedMsg{Kind: kind, SubKind: subKind, Namespace: namespace, Name: name}
+		out := ConnectedMsg{Context: contextName, Kind: kind, SubKind: subKind, Namespace: namespace, Name: name}
 		client, ok := mgr.GetClient(contextName)
 		if !ok {
 			out.Err = errContextNotFound
@@ -37,7 +38,11 @@ func LoadConnections(ctx context.Context, mgr *k8s.Manager, contextName, kind, s
 			conns k8s.Connections
 			err   error
 		)
-		switch kind {
+		resolvedKind := kind
+		if kind == k8s.KindGenericResource {
+			resolvedKind = subKind
+		}
+		switch resolvedKind {
 		case k8s.KindApp:
 			conns, err = k8s.ConnectionsForWorkload(ctx, cs, subKind, namespace, name)
 		case k8s.KindPod:
@@ -52,7 +57,7 @@ func LoadConnections(ctx context.Context, mgr *k8s.Manager, contextName, kind, s
 			conns, err = client.ConnectionsForSecret(ctx, namespace, name)
 		case k8s.KindServiceAccount:
 			conns, err = client.ConnectionsForServiceAccount(ctx, namespace, name)
-		case k8s.KindHPA:
+		case k8s.KindHPA, "HorizontalPodAutoscaler":
 			conns, err = k8s.ConnectionsForHPA(ctx, cs, namespace, name)
 		}
 		out.Connections = conns

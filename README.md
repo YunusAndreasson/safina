@@ -21,7 +21,56 @@ A lightweight terminal-based Kubernetes navigation tool — like `k9s` but simpl
 
 Search starts with already-loaded resources. Inside a namespace, `Ctrl+S` expands it to workloads, their pods, ConfigMaps, Secrets, Services, Ingresses, and PVCs. Partial failures are labeled. `Tab` in the palette shows resource actions. In logs, `c` switches targets and `p` opens previous-container logs when available.
 
+Log scrollback keeps up to 10,000 recent lines and 8 MiB of raw text; individual
+records retain up to 256 KiB. Older data is discarded in batches, and the status
+bar reports truncation. Copy uses the retained output. Switching log targets
+releases the previous buffer.
+
+Chat scrollback keeps up to 200 turns and 4 MiB, with a 1 MiB display limit per
+response. Omitted turns and truncated responses are labeled. This limits the
+terminal's scrollback, not the CLI's resumable conversation.
+
 Notification history keeps the latest 50 messages for the session. `Enter` opens the full message; `r` retries supported failed reads without replaying a mutation. Scale/restart monitoring checks controller status for up to five minutes and distinguishes acceptance, readiness, and monitoring failures.
+
+## Resource charts
+
+Press `m` on a workload, pod, or node to inspect CPU and memory trends.
+Charts use the existing theme: cyan CPU, mauve memory, muted requests, and
+yellow limits (allocatable capacity for nodes). Requests are reservations,
+not usage thresholds. Both charts appear when there is enough height;
+`t` switches between them in a shorter pane, and `z` expands the workspace.
+
+Use `[` / `]` for 5-minute, 15-minute, 1-hour, or 6-hour windows;
+`Space` freezes the visible interval while collection continues, and `y`
+copies a text summary with source timestamps, coverage, and peaks.
+`Tab` moves focus between the tree and workspace; `Esc` returns to Inspector.
+
+These are session-local observations from metrics-server while browsing,
+not historical monitoring data. Samples stay in memory for up to six hours,
+subject to resource and sample caps, and reset when switching contexts.
+Repeated source readings are deduplicated. Missing, stale, forbidden, and
+partial readings leave gaps; a measured zero remains zero. Resource UIDs
+keep a replacement pod or workload from inheriting its predecessor's chart.
+
+Metrics starts with usage only. Press `a` to show or hide **Related changes**
+from the Logbook. Use ↑/↓ to select a change and Enter to open its Logbook
+entry; `d` opens the resource YAML throughout the app. Markers show temporal
+proximity, not causation; shell commands and external changes are not included.
+Charts still work when recording is disabled or history cannot be read.
+
+A cluster opens to **All user namespaces**, individual user namespaces, and
+**Infrastructure** (nodes and system namespaces). Namespace resource lists show
+your pinned kinds and **All resource types…**.
+Open any discovered type without changing pins. In the browser, Enter opens,
+Space pins or unpins, and Esc returns to your previous view. Pin changes are
+saved immediately. Cluster-scoped types are labeled explicitly.
+
+## Terminal appearance
+
+Safina uses your terminal’s font and size. Use a monospace font with regular
+and bold faces; no Nerd Font is required. True color gives the clearest
+separation between resource types, selection, and health. If names or hints
+feel cramped, increase the terminal font size before changing fonts.
 
 ## Installation
 
@@ -56,8 +105,18 @@ safina --namespace=default
 
 ## Keybindings
 
-Lowercase keys are read-only verbs (safe to fat-finger); uppercase or chord
-keys mutate cluster state.
+Lowercase shortcuts inspect resources or open connections; uppercase change
+shortcuts open a review or confirmation before mutating cluster state. Shell
+access can run commands that change the cluster and is not inherently read-only.
+
+The footer normally shows inspection and navigation shortcuts. On terminals
+with enhanced keyboard support, hold Shift to reveal changes for the selected
+resource; release it to restore the normal hints. This only reveals shortcuts:
+it does not arm an action or bypass confirmation. The right-hand footer shows
+whether the hold gesture is available. Press `?` for the complete **Inspect**
+and **Change** groups on every terminal. Shortcut keys use the same hotkey color
+in tabs, help, pickers, and empty states; keys that confirm changes use danger red. Filters, chat, and dialogs keep their
+normal typing behaviour.
 
 ### Navigation
 
@@ -69,13 +128,14 @@ keys mutate cluster state.
 | / | Filter rows |
 | g, G | Jump to top / bottom |
 | n | Next failing row |
-| : | Search loaded resources (type to search; Tab enables action shortcuts) |
+| Ctrl+P / : | Search resources and app tools, including Logbook and Incoming proposals; Tab enables resource actions |
 
 ### Inspect and connect
 
 | Key | Action |
 |-----|--------|
-| d | Describe (YAML) |
+| d | Resource YAML |
+| m | CPU / memory metrics for the selected workload, pod, or node |
 | l | Logs |
 | e | Events |
 | s | Shell into pod (falls back to a netshoot debug container) |
@@ -101,15 +161,16 @@ they disappear. Safina requires the eviction API and never falls back to direct
 pod deletion. Cancelling or timing out after cordoning leaves the node cordoned;
 inspect the remaining pods, then explicitly uncordon when appropriate.
 
-### Meta
+### Navigate and tools
 
 | Key | Action |
 |-----|--------|
 | r | Refresh |
-| Tab | Move focus between tree (left) and workspace (right); ←/→ then cycles tabs |
+| → / ← | In the tree: ← goes up a level, → opens Inspector. In the workspace: arrows switch tabs; ← from Inspector returns to the tree |
+| Tab | Toggle focus between tree and workspace |
 | z | Expand / split the reading pane (logs, events, YAML, hot pods, forwards) |
 | i | Open chat tab |
-| Ctrl+B | Resource browser (choose which resource kinds appear in the tree) |
+| Ctrl+B | All resource types (Enter opens; Space pins/unpins) |
 | Ctrl+K | Switch cluster |
 | Ctrl+F | Active port-forwards list |
 | h | Hot pods (top-N by CPU, cluster-wide) |
@@ -469,7 +530,7 @@ read the summary, previous attempts and warnings, and use `d` for the complete e
 (`Tab` cycles summary, diff and captured evidence). `e` edits replicas,
 `container=image`, or the pinned rollback revision as a new immutable revision;
 restart has no editable parameters. `x` rejects a proposal. If controller warnings require an
-override, `o` explicitly acknowledges them. `a`, then `y`, approves the exact
+override, `o` explicitly acknowledges them. `A`, then `y`, approves the exact
 reviewed change once. No-op changes cannot be approved.
 
 The broker checks Deployment identity/version and controller observations again

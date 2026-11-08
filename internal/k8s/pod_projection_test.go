@@ -18,7 +18,7 @@ func TestPodProjectionsPreserveSources(t *testing.T) {
 	}
 	before := (&corev1.PodList{Items: pods}).DeepCopy()
 	pointers := []*corev1.Pod{&pods[0], &pods[1], &pods[2]}
-	usage := map[string]ResourceUsage{"ns/failed": {CPU: 20, Memory: 30}, "ns/running": {CPU: 40, Memory: 50}}
+	usage := map[types.NamespacedName]ResourceUsage{{Namespace: "ns", Name: "failed"}: {CPU: 20, Memory: 30}, {Namespace: "ns", Name: "running"}: {CPU: 40, Memory: 50}}
 	direct := filterPodsByOwner(podPointers(pods), []types.UID{"wanted"}, usage)
 	cached := filterPodsByOwner(slices.Values(pointers), []types.UID{"wanted"}, usage)
 	require.Equal(t, direct, cached)

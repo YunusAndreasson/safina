@@ -139,7 +139,7 @@ func TestDrainRetriesAreRecordedAndCompletionWaits(t *testing.T) {
 		return true, nil, deleteErr
 	})
 	helper := newDrainHelper(ctx, cs, DefaultDrainOptions())
-	helper.Client = drainClient{Interface: cs, uids: map[string]types.UID{"default/app": pod.UID}}
+	helper.Client = drainClient{Interface: cs, uids: map[types.NamespacedName]types.UID{{Namespace: "default", Name: "app"}: pod.UID}}
 	helper.EvictErrorRetryDelay = time.Millisecond
 	require.NoError(t, helper.DeleteOrEvictPods([]corev1.Pod{*pod}))
 	require.Equal(t, 2, calls)
@@ -148,7 +148,7 @@ func TestDrainRetriesAreRecordedAndCompletionWaits(t *testing.T) {
 	require.NoError(t, err)
 	outcomes := []string{}
 	for _, record := range result.Records {
-		require.Equal(t, pod.UID, types.UID(record.Target.UID))
+		require.Equal(t, pod.UID, record.Target.UID)
 		if record.Outcome != "started" {
 			outcomes = append(outcomes, record.Outcome)
 		}

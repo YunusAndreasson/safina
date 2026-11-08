@@ -8,11 +8,11 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yunus/safina/internal/debug"
 	"github.com/yunus/safina/internal/k8s"
 	"github.com/yunus/safina/internal/tui/components"
-	"github.com/yunus/safina/internal/tui/theme"
 	"github.com/yunus/safina/internal/tui/tuictx"
 )
 
@@ -29,7 +29,8 @@ type Activity struct {
 	// curKey is the "kind/ns/name" key of the selection the last successful
 	// fetch was for. When SetSelection delivers a new key, we clear the
 	// items and schedule a fresh load.
-	curKey string
+	curKey      string
+	cancelFetch context.CancelFunc
 
 	// kind/name/namespace echo the load target so a result Msg can be
 	// matched to the current selection (if the user navigated away while a
@@ -60,6 +61,7 @@ const activityRefreshInterval = 15 * time.Second
 // LoadActivity command. The (kind, name, namespace) echo lets the model
 // drop stale results when the user has moved on.
 type ActivityLoadedMsg struct {
+	Context               string
 	Kind, Name, Namespace string
 	Events                []k8s.EventInfo
 	Err                   error
@@ -71,6 +73,7 @@ func NewActivity() Activity { return Activity{} }
 // Clear drops the tile's state — used when leaving a cluster or when the
 // selection becomes a non-eventable kind.
 func (a *Activity) Clear() {
+	cancelSelectionFetch(&a.cancelFetch)
 	a.curKey = ""
 	a.kind, a.name, a.namespace = "", "", ""
 	a.items = nil
@@ -121,7 +124,7 @@ func (a *Activity) SetSelection(ctx context.Context, mgr *k8s.Manager, contextNa
 	a.err = nil
 	a.gate.Start()
 	a.lastFetch = time.Time{}
-	return loadActivity(ctx, mgr, contextName, kind, name, namespace)
+	return selectionFetch(ctx, &a.cancelFetch, func(ctx context.Context) tea.Cmd { return loadActivity(ctx, mgr, contextName, kind, name, namespace) })
 }
 
 // Refresh re-issues a load against the current selection. No-op when
@@ -131,7 +134,8 @@ func (a *Activity) Refresh(ctx context.Context, mgr *k8s.Manager, contextName st
 		return nil
 	}
 	a.gate.Start()
-	return loadActivity(ctx, mgr, contextName, a.kind, a.name, a.namespace)
+	kind, name, namespace := a.kind, a.name, a.namespace
+	return selectionFetch(ctx, &a.cancelFetch, func(ctx context.Context) tea.Cmd { return loadActivity(ctx, mgr, contextName, kind, name, namespace) })
 }
 
 // Apply ingests a load result. Stale results (for a different selection)
@@ -153,7 +157,7 @@ func (a *Activity) Apply(msg ActivityLoadedMsg) {
 func loadActivity(ctx context.Context, mgr *k8s.Manager, contextName, kind, name, namespace string) tea.Cmd {
 	return func() tea.Msg {
 		defer debug.Track("activity.events", "context", contextName, "kind", kind, "name", name)()
-		out := ActivityLoadedMsg{Kind: kind, Name: name, Namespace: namespace}
+		out := ActivityLoadedMsg{Context: contextName, Kind: kind, Name: name, Namespace: namespace}
 		client, ok := mgr.GetClient(contextName)
 		if !ok {
 			out.Err = errContextNotFound
@@ -177,11 +181,7 @@ func (a *Activity) View(c *tuictx.Ctx, w, h int) string {
 	}
 
 	body := a.renderBody(c, innerW, innerH)
-	title := "Activity"
-	if a.kind != "" {
-		title = "Activity · " + stringsTitle(a.kind) + " · " + a.name
-		title = truncate(title, innerW)
-	}
+	title := "Recent events"
 	return components.PanelWithAccent(t, title, w, h, body, false, t.P.Cyan, t.P.Dim)
 }
 
@@ -189,7 +189,7 @@ func (a *Activity) renderBody(c *tuictx.Ctx, innerW, innerH int) string {
 	t := c.Theme
 	switch {
 	case a.kind == "":
-		return t.Idle.Render("nothing selected")
+		return t.Idle.Render("No event preview for this selection.")
 	case a.gate.Visible() && len(a.items) == 0:
 		return t.Idle.Render(c.Spinner.View() + " loading events…")
 	case a.err != nil:
@@ -199,52 +199,47 @@ func (a *Activity) renderBody(c *tuictx.Ctx, innerW, innerH int) string {
 		return t.Idle.Render("no recent events")
 	}
 
-	// Layout per row: age (right, 5 cells) · type-dot (1) · reason (12)
-	// · message (rest). Compact — three or four events should comfortably
-	// fit in 5-6 rows. Type is reduced to a single colored dot because
-	// "Normal" is overwhelmingly the most common value; the dot's color
-	// alone tells the operator whether the row is a warning.
-	const ageW, dotW, reasonW = 5, 1, 14
-	msgW := innerW - ageW - dotW - reasonW - 3
-	if msgW < 10 {
-		msgW = 10
+	// Keep time and severity aligned while allowing event text to wrap.
+	ageW := 5
+	for _, e := range a.items {
+		ageW = max(ageW, ansi.StringWidth(e.Age))
 	}
-
-	rowCount := innerH
-	if rowCount > len(a.items) {
-		rowCount = len(a.items)
-	}
-
-	lines := make([]string, 0, rowCount)
-	for i := range rowCount {
-		e := a.items[i]
-		lines = append(lines, a.renderRow(t, e, ageW, dotW, reasonW, msgW))
+	ageW = min(ageW, max(1, innerW-4))
+	lines := make([]string, 0, innerH)
+	for _, e := range a.items {
+		if len(lines) >= innerH {
+			break
+		}
+		color := t.P.FGFade
+		if e.Type == "Warning" {
+			color = t.P.Red
+		}
+		message := strings.Join(strings.Fields(e.Message), " ")
+		if e.Count > 1 {
+			message = fmt.Sprintf("%s (×%d)", message, e.Count)
+		}
+		prefix := t.Meta.Render(lipgloss.NewStyle().Width(ageW).Align(lipgloss.Right).Render(ansi.Truncate(e.Age, ageW, "…"))) + " " + lipgloss.NewStyle().Foreground(color).Render("●") + " "
+		text := t.NameStrong.Render(e.Reason) + " " + t.NameDim.Render(message)
+		wrapped := strings.Split(ansi.Wrap(prefix+text, max(1, innerW), ""), "\n")
+		if innerW >= 40 {
+			// Continuations belong under event text, leaving the time gutter clear.
+			prefixW := ansi.StringWidth(prefix)
+			wrapped = strings.Split(ansi.Wrap(text, innerW-prefixW, ""), "\n")
+			for i := range wrapped {
+				if i == 0 {
+					wrapped[i] = prefix + wrapped[i]
+				} else {
+					wrapped[i] = strings.Repeat(" ", prefixW) + wrapped[i]
+				}
+			}
+		}
+		remaining := innerH - len(lines)
+		if len(wrapped) > remaining {
+			// Signal that the final visible event continues beyond the tile.
+			wrapped = wrapped[:remaining]
+			wrapped[remaining-1] = ansi.Truncate(wrapped[remaining-1], max(1, innerW-1), "") + "…"
+		}
+		lines = append(lines, wrapped...)
 	}
 	return strings.Join(lines, "\n")
-}
-
-func (a *Activity) renderRow(t *theme.Theme, e k8s.EventInfo, ageW, dotW, reasonW, msgW int) string {
-	age := lipgloss.NewStyle().Foreground(t.P.Dim).Width(ageW).AlignHorizontal(lipgloss.Right).
-		Render(components.TruncPad(e.Age, ageW))
-
-	dotColor := t.P.FGFade
-	switch e.Type {
-	case "Warning":
-		dotColor = t.P.Red
-	case "Normal":
-		dotColor = t.P.Green
-	}
-	dot := lipgloss.NewStyle().Foreground(dotColor).Width(dotW).Render("●")
-
-	reason := lipgloss.NewStyle().Foreground(t.P.FG).Bold(true).Width(reasonW).
-		Render(components.TruncPad(e.Reason, reasonW))
-
-	msgText := e.Message
-	if e.Count > 1 {
-		msgText = fmt.Sprintf("%s (×%d)", msgText, e.Count)
-	}
-	msg := lipgloss.NewStyle().Foreground(t.P.FGFade).Width(msgW).
-		Render(components.TruncPad(msgText, msgW))
-
-	return age + " " + dot + " " + reason + " " + msg
 }

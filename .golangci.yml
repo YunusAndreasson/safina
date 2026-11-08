@@ -17,13 +17,16 @@ linters:
     - contextcheck
     - copyloopvar
     - durationcheck
+    - errchkjson
     - errname
     - errorlint
     - exhaustive
     - fatcontext
+    - gocheckcompilerdirectives
     - gocritic
     - gosec
     - intrange
+    - loggercheck
     - makezero
     - musttag
     - nosprintfhostport
@@ -40,6 +43,7 @@ linters:
     - sloglint
     - testifylint
     - thelper
+    - tparallel
     - unconvert
     - unparam
     - usetesting

@@ -56,6 +56,9 @@ func TestMouseWheelPausesLogFollow(t *testing.T) {
 func TestEventMessageReadableAtNarrowWidth(t *testing.T) {
 	s := NewEvents(newEventsCtx())
 	e := k8s.EventInfo{Age: "3m", Type: "Warning", Reason: "FailedScheduling", Count: 7, Message: "0/1 nodes are available: insufficient memory. Preemption is not helpful for scheduling."}
+	require.False(t, s.wrap)
+	require.Len(t, strings.Split(s.renderRow(e, 42), "\n"), 1)
+	s.wrap = true
 	row := ansi.Strip(s.renderRow(e, 42))
 	require.Contains(t, row, "FailedScheduling")
 	require.Contains(t, row, "×7")
@@ -104,4 +107,19 @@ func TestEndedLogsRemainReadableButNotLabeledFollowing(t *testing.T) {
 	require.Contains(t, text, "existing output")
 	require.Contains(t, text, "stream ended")
 	require.NotContains(t, text, "● follow")
+}
+
+func TestEventRowsAreCompactAndBounded(t *testing.T) {
+	s := NewEvents(newEventsCtx())
+	e := k8s.EventInfo{Age: "12m", Type: "Warning", Reason: "FailedScheduling", Count: 12, Message: "node unavailable\n\n  retry later 東京"}
+	for _, width := range []int{24, 42, 80, 120} {
+		row := ansi.Strip(s.renderRow(e, width))
+		require.NotContains(t, row, "\n")
+		require.LessOrEqual(t, ansi.StringWidth(row), width)
+	}
+	s.wrap = true
+	row := ansi.Strip(s.renderRow(e, 42))
+	require.NotContains(t, row, "\n\n")
+	require.False(t, strings.HasSuffix(row, "\n"))
+	require.Contains(t, strings.Join(strings.Fields(row), " "), "node unavailable retry later 東京")
 }

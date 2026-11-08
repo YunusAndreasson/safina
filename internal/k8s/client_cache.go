@@ -8,6 +8,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	corev1listers "k8s.io/client-go/listers/core/v1"
@@ -68,7 +69,7 @@ func (c *Client) ListAppsInNamespaces(ctx context.Context, namespaces []string) 
 	}
 
 	// Metrics aren't watchable — direct call, same as the direct path.
-	metrics, _ := ListPodMetrics(ctx, c.Clientset, namespaceScope(namespaces))
+	metrics, metricsErr := ListPodMetrics(ctx, c.Clientset, namespaceScope(namespaces))
 
 	var out []AppInfo
 	hpaIdx := make(map[string]*HPABadge)
@@ -128,7 +129,7 @@ func (c *Client) ListAppsInNamespaces(ctx context.Context, namespaces []string) 
 		}
 	}
 
-	return finishApps(out, hpaIdx), nil
+	return finishApps(out, hpaIdx, metricsErr), nil
 }
 
 // ListNodesAndPools is the cache-aware variant of the package-level function.
@@ -138,7 +139,7 @@ func (c *Client) ListNodesAndPools(ctx context.Context) ([]NodePoolInfo, []NodeI
 	if nodeL == nil || podL == nil {
 		return ListNodesAndPools(ctx, c.Clientset)
 	}
-	nodeMetrics, _ := ListNodeMetrics(ctx, c.Clientset)
+	nodeMetrics, metricsErr := ListNodeMetrics(ctx, c.Clientset)
 	cachedNodes, err := nodeL.List(labels.Everything())
 	if err != nil {
 		return nil, nil, err
@@ -151,7 +152,7 @@ func (c *Client) ListNodesAndPools(ctx context.Context) ([]NodePoolInfo, []NodeI
 	for i, n := range cachedNodes {
 		nodes[i] = *n
 	}
-	pools, infos := buildNodesAndPools(nodes, nodeMetrics, slices.Values(cachedPods))
+	pools, infos := buildNodesAndPools(nodes, nodeMetrics, slices.Values(cachedPods), metricsErr)
 	return pools, infos, nil
 }
 
@@ -217,8 +218,8 @@ func (c *Client) cachedPodsByOwnerUID(ctx context.Context, namespace string, own
 	if err != nil {
 		return nil, err
 	}
-	metrics, _ := ListPodMetrics(ctx, c.Clientset, namespace)
-	return filterPodsByOwner(slices.Values(cached), ownerUIDs, metrics), nil
+	metrics, metricsErr := ListPodMetrics(ctx, c.Clientset, namespace)
+	return filterPodsByOwner(slices.Values(cached), ownerUIDs, metrics, metricsErr), nil
 }
 
 // ListPodsOnNode uses the informer's maintained node-name index, avoiding
@@ -232,8 +233,8 @@ func (c *Client) ListPodsOnNode(ctx context.Context, nodeName string) ([]PodInfo
 	if err != nil {
 		return nil, err
 	}
-	metrics, _ := ListPodMetrics(ctx, c.Clientset, "")
-	return podInfosSortedNSName(derefPods(onNode), metrics), nil
+	metrics, metricsErr := ListPodMetrics(ctx, c.Clientset, "")
+	return podInfosSortedNSName(derefPods(onNode), metrics, metricsErr), nil
 }
 
 func (c *Client) ListContainersForPod(ctx context.Context, namespace, name string) ([]ContainerInfo, error) {
@@ -245,8 +246,8 @@ func (c *Client) ListContainersForPod(ctx context.Context, namespace, name strin
 	if err != nil {
 		return ListContainersForPod(ctx, c.Clientset, namespace, name)
 	}
-	byCtr, _ := ListPodMetricsByContainer(ctx, c.Clientset, namespace)
-	return containersForPod(p, byCtr[namespace+"/"+name]), nil
+	byCtr, metricsErr := ListPodMetricsByContainer(ctx, c.Clientset, namespace)
+	return containersForPod(p, byCtr[types.NamespacedName{Namespace: namespace, Name: name}], metricsErr), nil
 }
 
 // ListConfigMapsAcrossNamespaces is the cache-aware variant of the
@@ -380,4 +381,32 @@ func sortByNSName[R any](rows []R, key func(R) (string, string)) {
 		}
 		return cmp.Compare(nameI, nameJ)
 	})
+}
+
+// ListPodsAcrossNamespaces includes standalone pods as well as managed workloads.
+func (c *Client) ListPodsAcrossNamespaces(ctx context.Context, namespaces []string) ([]PodInfo, error) {
+	var out []PodInfo
+	lister := c.Informers().Pods()
+	for _, ns := range namespaces {
+		var pods []corev1.Pod
+		if lister != nil {
+			cached, err := lister.Pods(ns).List(labels.Everything())
+			if err != nil {
+				return nil, err
+			}
+			pods = derefPods(cached)
+		} else {
+			list, err := c.Clientset.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{})
+			if err != nil {
+				return nil, err
+			}
+			pods = list.Items
+		}
+		metrics, metricsErr := ListPodMetrics(ctx, c.Clientset, ns)
+		out = append(out, podInfosSortedNSName(pods, metrics, metricsErr)...)
+	}
+	slices.SortFunc(out, func(a, b PodInfo) int {
+		return cmp.Or(cmp.Compare(a.Namespace, b.Namespace), cmp.Compare(a.Name, b.Name))
+	})
+	return out, nil
 }

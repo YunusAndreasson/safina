@@ -14,6 +14,11 @@ type PodSelectedMsg struct {
 	Name, Namespace, Container string
 }
 
+type ResourceBrowserRequestedMsg struct {
+	Path  []NodeRef
+	Query string
+}
+
 // TreeFocusChangedMsg is emitted by the Tree section after Push/Pop. The
 // root model uses it to schedule a load for the new focus.
 type TreeFocusChangedMsg struct {
@@ -123,6 +128,7 @@ type ShellExitMsg struct {
 // Browser). The root model stores the list on the Tree so future fold
 // rendering can use real Kind names from discovery.
 type DiscoveryLoadedMsg struct {
-	Kinds []k8s.ResourceKind
-	Err   error
+	Context string
+	Kinds   []k8s.ResourceKind
+	Err     error
 }

@@ -12,6 +12,8 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/yunus/safina/internal/history"
 	"github.com/yunus/safina/internal/k8s"
+	"github.com/yunus/safina/internal/tui/components"
+	"github.com/yunus/safina/internal/tui/sections"
 )
 
 type historyLoadedMsg struct {
@@ -43,11 +45,19 @@ func (m *Model) selectedHistoryFilter() history.Filter {
 	if ref.SubKind != "" {
 		kind = ref.SubKind
 	}
-	f := history.Filter{Cluster: m.ctx.ActiveContext, Namespace: ref.Namespace, Limit: 500}
+	namespace := ref.Namespace
+	if namespace == "" && !ref.ClusterScoped && ref.Kind != k8s.KindNode && ref.Kind != k8s.KindNodePool && ref.Kind != k8s.KindPV {
+		for _, ancestor := range m.tree.Path() {
+			if ancestor.Kind == k8s.KindNamespaceFolder || ancestor.Kind == k8s.KindNamespace {
+				namespace = ancestor.Name
+			}
+		}
+	}
+	f := history.Filter{Cluster: m.ctx.ActiveContext, Namespace: namespace, Limit: 500}
 	if client, ok := m.ctx.Manager.GetClient(m.ctx.ActiveContext); ok && client.RESTConfig != nil {
 		f.Cluster = m.ctx.Manager.HistoryTarget(m.ctx.ActiveContext, "", "", "").Cluster
 	}
-	if ref.Kind != k8s.KindContext && ref.Kind != k8s.KindNamespace && ref.Kind != k8s.KindNamespaceFolder && ref.Kind != k8s.KindContextList && ref.Name != "" {
+	if ref.Kind != k8s.KindContext && ref.Kind != k8s.KindNamespace && ref.Kind != k8s.KindNamespaceFolder && ref.Kind != k8s.KindContextList && ref.Kind != k8s.KindNodePool && !sections.IsResourceGroup(ref.Kind) && ref.Name != "" {
 		f.Resource = kind + "/" + ref.Name
 	}
 	return f
@@ -71,7 +81,7 @@ func (m *Model) loadHistory() tea.Cmd {
 	request := m.historyRequest
 	dir := m.ctx.Manager.History.Directory()
 	filter := m.historyFilter
-	m.openChoices("history", "Logbook", "Loading saved activity…", nil)
+	m.openChoices("history", "Logbook", "Loading saved activity…", nil, components.KeyDesc{Key: "esc", Desc: "close"})
 	return func() tea.Msg {
 		r, e := history.Query(dir, filter)
 		return historyLoadedMsg{request: request, result: r, err: e}
@@ -90,11 +100,18 @@ func (m *Model) showHistory(msg historyLoadedMsg) tea.Cmd {
 		r := msg.result.Records[i]
 		items = append(items, historyItem(r))
 	}
-	title := "Logbook · retained"
-	if !m.historyFilter.Since.IsZero() {
-		title = "Logbook · since " + m.historyFilter.Since.UTC().Format("Jan 02 15:04Z")
+	scope := m.ctx.ActiveContext
+	if m.historyFilter.Namespace != "" {
+		scope += "/" + m.historyFilter.Namespace
 	}
-	m.openChoices("history", title, "/ filter · enter details · a all resources · t time window · e export · c attach interval to chat · esc close", items)
+	if m.historyFilter.Resource != "" {
+		scope += " · " + m.historyFilter.Resource
+	}
+	title := "Logbook · " + scope + " · retained"
+	if !m.historyFilter.Since.IsZero() {
+		title = "Logbook · " + scope + " · since " + m.historyFilter.Since.UTC().Format("Jan 02 15:04Z")
+	}
+	m.openChoices("history", title, "Recorded Safina activity; external changes are not included.", items, components.KeyDesc{Key: "/", Desc: "filter"}, components.KeyDesc{Key: "↵", Desc: "details"}, components.KeyDesc{Key: "a", Desc: "cluster activity"}, components.KeyDesc{Key: "t", Desc: "time window"}, components.KeyDesc{Key: "e", Desc: "export"}, components.KeyDesc{Key: "c", Desc: "attach interval to chat"}, components.KeyDesc{Key: "esc", Desc: "close"})
 	m.choices.model.SetFilteringEnabled(true)
 	if msg.result.Omitted > 0 || len(msg.result.Warnings) > 0 {
 		m.choices.footer += " · partial results; use CLI time filters"
@@ -166,7 +183,7 @@ func (m *Model) showHistoryDetail(msg historyDetailMsg) {
 	for _, line := range lines {
 		items = append(items, choiceItem{title: line})
 	}
-	m.openChoices("history_detail", "Logbook entry", "c attach record/evidence to chat · esc close", items)
+	m.openChoices("history_detail", "Logbook entry", "", items, components.KeyDesc{Key: "c", Desc: "attach record/evidence to chat"}, components.KeyDesc{Key: "esc", Desc: "close"})
 }
 
 func (m *Model) exportHistory() tea.Cmd {

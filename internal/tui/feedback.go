@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/yunus/safina/internal/history"
+	"github.com/yunus/safina/internal/tui/components"
 
 	"charm.land/bubbles/v2/list"
 	tea "charm.land/bubbletea/v2"
@@ -29,6 +30,7 @@ type (
 		kind   string
 		model  list.Model
 		footer string
+		keys   []components.KeyDesc
 	}
 	notification struct {
 		text, context string
@@ -38,7 +40,7 @@ type (
 	}
 )
 
-func (m *Model) openChoices(kind, title, footer string, items []list.Item) {
+func (m *Model) openChoices(kind, title, footer string, items []list.Item, shortcuts ...components.KeyDesc) {
 	d := list.NewDefaultDelegate()
 	d.SetSpacing(0)
 	t := m.ctx.Theme
@@ -59,7 +61,7 @@ func (m *Model) openChoices(kind, title, footer string, items []list.Item) {
 	l.SetShowHelp(false)
 	l.SetShowStatusBar(false)
 	l.DisableQuitKeybindings()
-	m.choices = &choiceDialog{kind: kind, model: l, footer: footer}
+	m.choices = &choiceDialog{kind: kind, model: l, footer: footer, keys: shortcuts}
 }
 
 func (m *Model) choicesCard() string {
@@ -71,6 +73,17 @@ func (m *Model) choicesCard() string {
 	}
 	w := max(20, min(widest, m.ctx.Width-10))
 	footer := m.ctx.Theme.Hint.Render(ansi.Wrap(m.choices.footer, w, ""))
+	shortcuts := m.choices.keys
+	if m.choices.kind == "history" && m.choices.model.FilterState() == list.Filtering {
+		shortcuts = []components.KeyDesc{{Key: "↵", Desc: "apply filter"}, {Key: "esc", Desc: "cancel filter"}}
+	}
+	if len(shortcuts) > 0 {
+		keys := ansi.Wrap(components.RenderModalKeysRow(m.ctx.Theme, shortcuts), w, "")
+		if footer != "" {
+			footer += "\n"
+		}
+		footer += keys
+	}
 	h := max(4, min(tallest, max(5, len(m.choices.model.Items())*2+4), m.ctx.Height-6-lipgloss.Height(footer)))
 	m.choices.model.SetSize(w, h)
 	return m.ctx.Theme.Modal.Padding(1, 2).Render(lipgloss.JoinVertical(lipgloss.Left, m.choices.model.View(), footer))
@@ -104,7 +117,7 @@ func (m *Model) openNotifications() {
 		}
 		items = append(items, choiceItem{title: mark + " " + n.text, detail: n.at.Format("15:04:05") + " · " + n.context, value: n})
 	}
-	m.openChoices("notifications", "Notifications", "enter details · r retry read · ctrl+d dismiss · esc close", items)
+	m.openChoices("notifications", "Notifications", "", items, components.KeyDesc{Key: "↵", Desc: "details"}, components.KeyDesc{Key: "r", Desc: "retry read"}, components.KeyDesc{Key: "ctrl+d", Desc: "dismiss"}, components.KeyDesc{Key: "esc", Desc: "close"})
 }
 func (m *Model) dismissBanner() { m.bannerMsg = ""; m.bannerErr = false; m.bannerEpoch++ }
 func (m *Model) handleChoices(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -126,7 +139,7 @@ func (m *Model) handleChoices(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, m.loadHistory()
 		case "a":
-			m.historyFilter.Resource = ""
+			m.historyFilter.Resource, m.historyFilter.Namespace, m.historyFilter.UID = "", "", ""
 			return m, m.loadHistory()
 		case "e":
 			return m, m.exportHistory()
@@ -141,7 +154,10 @@ func (m *Model) handleChoices(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.choices.kind == "history_detail" && msg.String() == "c" && m.historySelection != nil {
 		r := *m.historySelection
-		b, _ := json.Marshal(r)
+		b, err := json.Marshal(r)
+		if err != nil {
+			return m, m.raiseError("Could not encode history record: " + err.Error())
+		}
 		text := string(b)
 		if r.Evidence != "" {
 			data, err := history.ReadEvidence(m.ctx.Manager.History.Directory(), r.Evidence)
@@ -185,7 +201,7 @@ func (m *Model) handleChoices(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			for _, line := range lines {
 				items = append(items, choiceItem{title: line, detail: n.context})
 			}
-			m.openChoices("details", "Notification · "+n.at.Format("15:04:05"), "esc close", items)
+			m.openChoices("details", "Notification · "+n.at.Format("15:04:05"), "", items, components.KeyDesc{Key: "esc", Desc: "close"})
 			return m, nil
 		}
 		if target, ok := item.value.(logTarget); ok {

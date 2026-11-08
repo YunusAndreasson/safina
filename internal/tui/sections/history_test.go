@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"k8s.io/apimachinery/pkg/types"
+
 	"github.com/stretchr/testify/require"
 	"github.com/yunus/safina/internal/history"
 	"github.com/yunus/safina/internal/k8s"
@@ -38,7 +40,7 @@ func TestHistoryRecordsFailureAndIdentityBeforeMutation(t *testing.T) {
 	require.NoError(t, err)
 	last := r.Records[len(r.Records)-1]
 	require.Equal(t, "failed", last.Outcome)
-	require.Equal(t, "pod-original", last.Target.UID)
+	require.Equal(t, types.UID("pod-original"), last.Target.UID)
 	require.Equal(t, "shop", last.Target.Namespace)
 	require.Contains(t, last.Detail, "Forbidden")
 }
@@ -59,7 +61,7 @@ func TestHistoryRestartUsesMutationResponseAndSecretRevealOmitsValues(t *testing
 	require.True(t, ok)
 	require.NoError(t, msg.Err)
 	require.Equal(t, "5", msg.Generation, "later GET still returns generation 4; acceptance must use response")
-	require.Equal(t, "deployment-original", msg.Operation.Target.UID)
+	require.Equal(t, types.UID("deployment-original"), msg.Operation.Target.UID)
 	reveal, ok := LoadSecretReveal(t.Context(), mgr, "prod", "shop", "auth")().(DescribeLoadedMsg)
 	require.True(t, ok)
 	require.NoError(t, reveal.Err)

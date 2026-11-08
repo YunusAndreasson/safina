@@ -878,10 +878,10 @@ func TestAggregateForSelector(t *testing.T) {
 			},
 		},
 	}
-	metrics := map[string]ResourceUsage{
-		"ns/p1":       {CPU: 100, Memory: 1000},
-		"ns/p2":       {CPU: 200, Memory: 2000},
-		"other-ns/p3": {CPU: 999, Memory: 9999},
+	metrics := map[types.NamespacedName]ResourceUsage{
+		{Namespace: "ns", Name: "p1"}:       {CPU: 100, Memory: 1000},
+		{Namespace: "ns", Name: "p2"}:       {CPU: 200, Memory: 2000},
+		{Namespace: "other-ns", Name: "p3"}: {CPU: 999, Memory: 9999},
 	}
 	sel := &metav1.LabelSelector{MatchLabels: map[string]string{"app": "nginx"}}
 
@@ -1020,10 +1020,10 @@ func TestAggregateForSelector_Expressions(t *testing.T) {
 		{ObjectMeta: metav1.ObjectMeta{Name: "excluded", Namespace: "ns", Labels: map[string]string{"app": "web", "tier": "backend"}}},
 		{ObjectMeta: metav1.ObjectMeta{Name: "other", Namespace: "other", Labels: map[string]string{"app": "web", "tier": "frontend"}}},
 	}
-	metrics := map[string]ResourceUsage{
-		"ns/selected": {CPU: 10, Memory: 20},
-		"ns/excluded": {CPU: 100, Memory: 200},
-		"other/other": {CPU: 1000, Memory: 2000},
+	metrics := map[types.NamespacedName]ResourceUsage{
+		{Namespace: "ns", Name: "selected"}: {CPU: 10, Memory: 20},
+		{Namespace: "ns", Name: "excluded"}: {CPU: 100, Memory: 200},
+		{Namespace: "other", Name: "other"}: {CPU: 1000, Memory: 2000},
 	}
 	for _, matchLabels := range []map[string]string{nil, {"app": "web"}} {
 		sel := &metav1.LabelSelector{

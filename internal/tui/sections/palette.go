@@ -2,7 +2,6 @@ package sections
 
 import (
 	"fmt"
-	"image/color"
 	"strings"
 	"unicode/utf8"
 
@@ -14,13 +13,12 @@ import (
 
 	"github.com/yunus/safina/internal/k8s"
 	"github.com/yunus/safina/internal/tui/components"
-	"github.com/yunus/safina/internal/tui/theme"
 	"github.com/yunus/safina/internal/tui/tuictx"
 )
 
 // Palette is the `:` Vim-style command palette. It scores everything the
 // tree has loaded so far against a fuzzy query, surfaces ranked matches
-// with an inline kind glyph and namespace, and shows the highlighted
+// with a readable kind label and namespace, and shows the highlighted
 // match's quick-info panel + verb chips at the bottom so the operator
 // can jump straight to a verb (logs, edit, reveal, …) without first
 // drilling.
@@ -61,7 +59,7 @@ func NewPalette() Palette {
 // Called whenever the user presses `:` so the corpus is always fresh
 // against the latest cache.
 func (p *Palette) Open(entries []PaletteEntry) {
-	p.scope = "Loaded resources"
+	p.scope = "Resources & tools"
 	p.entries = entries
 	p.input.SetValue("")
 	p.cursor = 0
@@ -91,8 +89,19 @@ func (p *Palette) UpdateQuery(msg tea.Msg) tea.Cmd {
 // Query returns the current query string (for the input-line render).
 func (p *Palette) Query() string { return p.input.Value() }
 
-func (p *Palette) ActionsActive() bool { return p.actions }
-func (p *Palette) ToggleActions()      { p.actions = !p.actions }
+func (p *Palette) ActionsActive() bool {
+	selected, ok := p.Selected()
+	return p.actions && ok && len(PaletteVerbsFor(selected)) > 0
+}
+
+func (p *Palette) ToggleActions() {
+	if p.actions {
+		p.actions = false
+		return
+	}
+	selected, ok := p.Selected()
+	p.actions = ok && len(PaletteVerbsFor(selected)) > 0
+}
 
 // CursorUp / CursorDown move within the result list.
 func (p *Palette) CursorUp() {
@@ -171,25 +180,34 @@ func (p *Palette) Card(c *tuictx.Ctx, termW, termH int) string {
 
 	innerW := max(1, min(76, termW-8))
 	input := p.input.View(t, innerW)
-	if p.actions {
-		input = t.BlueBold.Render("Actions · press a letter · Tab to search")
+	if p.ActionsActive() {
+		input = t.CyanBold.Render("Resource actions · ") + components.RenderModalKeysRow(t, []components.KeyDesc{{Key: "tab", Desc: "back to search"}})
 	}
 	input = ansi.Truncate(input, innerW, "…")
 	preview, verbs := "", ""
-	if sel, ok := p.Selected(); ok && p.actions {
+	if sel, ok := p.Selected(); ok && p.ActionsActive() {
 		if termH >= 18 {
 			preview = ansi.Truncate(renderPalettePreview(c, sel), innerW, "…")
 		}
 		verbs = ansi.Wrap(renderPaletteVerbs(c, sel), innerW, "")
 	}
-	footer := components.RenderBoundedHints(t, []components.KeyDesc{{Key: "↵", Desc: "open"}, {Key: "tab", Desc: "actions"}, {Key: "ctrl+s", Desc: "search namespace"}, {Key: "esc", Desc: "close"}}, innerW, components.KeyDesc{Key: "esc", Desc: "close"})
+	hints := []components.KeyDesc{{Key: "↵", Desc: "open"}}
+	if selected, ok := p.Selected(); ok && len(PaletteVerbsFor(selected)) > 0 {
+		desc := "actions"
+		if p.ActionsActive() {
+			desc = "search"
+		}
+		hints = append(hints, components.KeyDesc{Key: "tab", Desc: desc})
+	}
+	hints = append(hints, components.KeyDesc{Key: "ctrl+s", Desc: "search namespace"}, components.KeyDesc{Key: "esc", Desc: "close"})
+	footer := components.RenderBoundedHints(t, hints, innerW, components.KeyDesc{Key: "esc", Desc: "close"})
 	// Keep the namespace expansion discoverable at narrow widths too.
 	searchHint := ""
-	if innerW < 65 && !p.actions {
-		searchHint = t.Hint.Render("ctrl+s search namespace")
+	if innerW < 65 && !p.ActionsActive() {
+		searchHint = components.RenderBoundedHints(t, []components.KeyDesc{{Key: "ctrl+s", Desc: "search namespace"}}, innerW, components.KeyDesc{})
 	}
 	extra := 0
-	if p.actions {
+	if p.ActionsActive() {
 		extra = lipgloss.Height(verbs)
 		if preview != "" {
 			extra += lipgloss.Height(preview)
@@ -202,11 +220,11 @@ func (p *Palette) Card(c *tuictx.Ctx, termW, termH int) string {
 	rows := max(1, min(8, termH-fixed))
 	scope := p.scope
 	if scope == "" {
-		scope = "Loaded resources"
+		scope = "Resources & tools"
 	}
 	title := fmt.Sprintf("%s · %d matches", scope, len(p.matches))
 	parts := []string{t.CyanBold.Render(ansi.Truncate(title, innerW, "…")), input, "", p.renderList(c, innerW, rows), ""}
-	if p.actions {
+	if p.ActionsActive() {
 		if preview != "" {
 			parts = append(parts, preview)
 		}
@@ -227,7 +245,7 @@ func (p *Palette) renderList(c *tuictx.Ctx, w, rows int) string {
 	t := c.Theme
 	if len(p.matches) == 0 {
 		if len(p.entries) == 0 {
-			return t.Hint.Render(ansi.Truncate("No resources loaded. Esc, then open a cluster.", w, "…"))
+			return t.Hint.Render("No resources loaded. ") + components.RenderBoundedHints(t, []components.KeyDesc{{Key: "esc", Desc: "back to clusters"}}, max(0, w-21), components.KeyDesc{})
 		}
 		return t.Hint.Render(ansi.Truncate("No matches. Try a shorter query or browse more resources.", w, "…"))
 	}
@@ -261,11 +279,7 @@ func (p *Palette) renderList(c *tuictx.Ctx, w, rows int) string {
 	return strings.Join(out, "\n")
 }
 
-// renderPaletteRow renders one match line: cursor mark, kind glyph,
-// fuzzy-highlighted name, namespace, hint. The kind glyphs come from the
-// existing tree palette so the palette feels like a continuation of the
-// same visual language — operators see the same ◇ for Deployments,
-// ⌧ for Secrets, etc., they already learned.
+// renderPaletteRow shows the selected name, namespace, and readable resource kind.
 func renderPaletteRow(c *tuictx.Ctx, e PaletteEntry, hits []int, w int, selected bool) string {
 	t := c.Theme
 	var bg lipgloss.Style
@@ -280,9 +294,6 @@ func renderPaletteRow(c *tuictx.Ctx, e PaletteEntry, hits []int, w int, selected
 		cursor = bg.Foreground(t.P.Cyan).Bold(true).Render("▌ ")
 	}
 
-	glyph := paletteGlyph(e)
-	glyphCell := bg.Render(" ") + lipgloss.NewStyle().Inherit(bg).Foreground(paletteGlyphColor(t, e)).Render(glyph) + bg.Render(" ")
-
 	// Highlight matched chars in the search string. Hits are positions
 	// within SearchString(), which begins with Name — so the prefix of
 	// the highlight set lands on the name body.
@@ -295,12 +306,12 @@ func renderPaletteRow(c *tuictx.Ctx, e PaletteEntry, hits []int, w int, selected
 		suffix += bg.Render("  ") + bg.Foreground(t.P.Dim).Render("ns:"+e.Namespace)
 	}
 	kindLabel := e.kindLabel()
-	suffix += bg.Render("  ") + bg.Foreground(t.P.FGFade).Render(kindLabel)
+	suffix += bg.Render("  ") + bg.Foreground(t.ResourceKindColor(kindLabel)).Render(kindLabel)
 	if e.Hint != "" {
 		suffix += bg.Render("  ") + bg.Foreground(t.P.Dim).Render(e.Hint)
 	}
 
-	line := cursor + glyphCell + highlighted + suffix
+	line := cursor + highlighted + suffix
 	// Pad to width so the row's background fills the modal column.
 	pad := w - lipgloss.Width(line)
 	if pad > 0 {
@@ -333,7 +344,7 @@ func renderPalettePreview(c *tuictx.Ctx, e PaletteEntry) string {
 		parts = append(parts, lipgloss.NewStyle().Foreground(t.P.Dim).Render("ns: "+e.Namespace))
 	}
 	kind := e.kindLabel()
-	parts = append(parts, lipgloss.NewStyle().Foreground(t.P.FGFade).Render(kind))
+	parts = append(parts, lipgloss.NewStyle().Foreground(t.ResourceKindColor(kind)).Render(kind))
 	if e.Hint != "" {
 		parts = append(parts, lipgloss.NewStyle().Foreground(t.P.Dim).Render(e.Hint))
 	}
@@ -350,14 +361,12 @@ func renderPaletteVerbs(c *tuictx.Ctx, e PaletteEntry) string {
 	if len(verbs) == 0 {
 		return ""
 	}
-	chips := make([]string, 0, len(verbs))
+	pairs := make([]components.KeyDesc, 0, len(verbs))
 	for _, v := range verbs {
-		k := lipgloss.NewStyle().Foreground(t.P.Blue).Bold(true).Render(v.Letter)
-		l := lipgloss.NewStyle().Foreground(t.P.FGFade).Render(v.Label)
-		chips = append(chips, k+" "+l)
+		pairs = append(pairs, components.KeyDesc{Key: v.Letter, Desc: v.Label, Write: c.Keys.IsWrite(v.Letter)})
 	}
 	prefix := lipgloss.NewStyle().Foreground(t.P.Cyan).Render("▌ ")
-	return prefix + strings.Join(chips, "  ")
+	return prefix + components.RenderModalKeysRow(t, pairs)
 }
 
 // PaletteVerbsFor returns the action verb chips for an entry. Mirrors the
@@ -371,7 +380,7 @@ func PaletteVerbsFor(e PaletteEntry) []PaletteVerb {
 	case k8s.KindApp:
 		// Reads (lowercase, left) first.
 		base := []PaletteVerb{
-			{Letter: "d", Label: "describe"},
+			{Letter: "d", Label: "YAML"},
 			{Letter: "l", Label: "logs"},
 			{Letter: "e", Label: "events"},
 		}
@@ -404,7 +413,7 @@ func PaletteVerbsFor(e PaletteEntry) []PaletteVerb {
 		return base
 	case k8s.KindPod:
 		return []PaletteVerb{
-			{Letter: "d", Label: "describe"},
+			{Letter: "d", Label: "YAML"},
 			{Letter: "l", Label: "logs"},
 			{Letter: "e", Label: "events"},
 			{Letter: "s", Label: "shell"},
@@ -414,20 +423,20 @@ func PaletteVerbsFor(e PaletteEntry) []PaletteVerb {
 		}
 	case k8s.KindSecret:
 		return []PaletteVerb{
-			{Letter: "d", Label: "describe"},
+			{Letter: "d", Label: "YAML"},
 			{Letter: "v", Label: "reveal"},
 			{Letter: "E", Label: "edit"},
 			del,
 		}
 	case k8s.KindConfigMap:
 		return []PaletteVerb{
-			{Letter: "d", Label: "describe"},
+			{Letter: "d", Label: "YAML"},
 			{Letter: "E", Label: "edit"},
 			del,
 		}
 	case k8s.KindService:
 		return []PaletteVerb{
-			{Letter: "d", Label: "describe"},
+			{Letter: "d", Label: "YAML"},
 			{Letter: "e", Label: "events"},
 			{Letter: "E", Label: "edit"},
 			{Letter: "f", Label: "forward"},
@@ -435,58 +444,29 @@ func PaletteVerbsFor(e PaletteEntry) []PaletteVerb {
 		}
 	case k8s.KindPVC:
 		return []PaletteVerb{
-			{Letter: "d", Label: "describe"},
+			{Letter: "d", Label: "YAML"},
 			{Letter: "e", Label: "events"},
 			{Letter: "E", Label: "edit"},
 			del,
 		}
 	case k8s.KindIngress:
 		return []PaletteVerb{
-			{Letter: "d", Label: "describe"},
+			{Letter: "d", Label: "YAML"},
 			{Letter: "E", Label: "edit"},
 			del,
 		}
 	case k8s.KindNode:
 		return []PaletteVerb{
-			{Letter: "d", Label: "describe"},
+			{Letter: "d", Label: "YAML"},
 			{Letter: "e", Label: "events"},
 			{Letter: "C", Label: "cordon"},
 			{Letter: "D", Label: "drain"},
 		}
 	case k8s.KindNamespace, k8s.KindNamespaceFolder:
 		return []PaletteVerb{
-			{Letter: "d", Label: "describe"},
+			{Letter: "d", Label: "YAML"},
 			{Letter: "e", Label: "events"},
 		}
 	}
 	return nil
-}
-
-// paletteGlyph returns the same glyph the tree uses for this kind. We
-// re-use the existing kindGlyph and appKindGlyph helpers so the palette
-// reads as a continuation of the tree's visual language.
-func paletteGlyph(e PaletteEntry) string {
-	if e.Kind == k8s.KindApp && e.SubKind != "" {
-		return appKindGlyph(e.SubKind)
-	}
-	return kindGlyph(e.Kind, "")
-}
-
-// paletteGlyphColor picks an accent for the kind glyph. Without per-row
-// health data we color by kind family: workloads in blue, infra/cluster
-// kinds in cyan, network/storage in yellow as a non-saturated accent,
-// secrets/config dim. Cheap heuristic — the goal is just visual variety
-// in the result list, not full health signaling.
-func paletteGlyphColor(t *theme.Theme, e PaletteEntry) color.Color {
-	switch e.Kind {
-	case k8s.KindApp, k8s.KindPod, k8s.KindContainer:
-		return t.P.Blue
-	case k8s.KindContext, k8s.KindNode, k8s.KindNodePool, k8s.KindNamespace, k8s.KindNamespaceFolder:
-		return t.P.Cyan
-	case k8s.KindService, k8s.KindIngress, k8s.KindPVC, k8s.KindPV:
-		return t.P.Yellow
-	case k8s.KindConfigMap, k8s.KindSecret:
-		return t.P.FGFade
-	}
-	return t.P.FG
 }

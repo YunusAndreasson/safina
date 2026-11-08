@@ -20,6 +20,8 @@ import (
 	"sync"
 	"time"
 
+	"k8s.io/apimachinery/pkg/types"
+
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
@@ -60,16 +62,16 @@ func (o Options) Defaults() Options {
 }
 
 type Target struct {
-	WorkloadKind string `json:"workloadKind,omitempty"`
-	WorkloadName string `json:"workloadName,omitempty"`
-	WorkloadUID  string `json:"workloadUID,omitempty"`
-	Cluster      string `json:"cluster,omitempty"`
-	Context      string `json:"context,omitempty"`
-	Namespace    string `json:"namespace,omitempty"`
-	Kind         string `json:"kind,omitempty"`
-	Name         string `json:"name,omitempty"`
-	UID          string `json:"uid,omitempty"`
-	Container    string `json:"container,omitempty"`
+	WorkloadKind string    `json:"workloadKind,omitempty"`
+	WorkloadName string    `json:"workloadName,omitempty"`
+	WorkloadUID  types.UID `json:"workloadUID,omitempty"`
+	Cluster      string    `json:"cluster,omitempty"`
+	Context      string    `json:"context,omitempty"`
+	Namespace    string    `json:"namespace,omitempty"`
+	Kind         string    `json:"kind,omitempty"`
+	Name         string    `json:"name,omitempty"`
+	UID          types.UID `json:"uid,omitempty"`
+	Container    string    `json:"container,omitempty"`
 }
 
 type Record struct {
@@ -183,6 +185,15 @@ func (s *Store) Directory() string {
 		return ""
 	}
 	return s.opts.Directory
+}
+
+func (s *Store) Enabled() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return !s.closed && !s.closing
 }
 
 func (s *Store) EvidenceEnabled() bool {

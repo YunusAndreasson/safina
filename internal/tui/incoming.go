@@ -14,6 +14,7 @@ import (
 	"github.com/yunus/safina/internal/broker"
 	"github.com/yunus/safina/internal/broker/operator"
 	inv "github.com/yunus/safina/internal/investigation"
+	"github.com/yunus/safina/internal/tui/components"
 )
 
 type operatorAPI interface {
@@ -397,7 +398,7 @@ func (m *Model) handleIncoming(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "r":
 			return m, m.incomingCommand("prepare")
-		case "a":
+		case "A": // a write, so a capital (Barbarossa mode), like every other key that changes the cluster
 			switch {
 			case p.review.Noop:
 				p.err = "No-op: there is no change to approve"
@@ -468,7 +469,8 @@ func (m *Model) renderIncoming() string {
 	p := &m.incoming
 	w, h := m.ctx.Width, m.ctx.Height
 	title := fmt.Sprintf("Incoming proposals · %d pending · %s", p.inbox.Pending, p.mode)
-	footer := "j/k select · enter review/outcome · x reject · r refresh · esc close"
+	shortcuts := []components.KeyDesc{{Key: "↑↓/j/k", Desc: "select"}, {Key: "↵", Desc: "review/outcome"}, {Key: "x", Desc: "reject", Write: true}, {Key: "r", Desc: "refresh"}, {Key: "esc", Desc: "close"}}
+	footerNote := ""
 	var body string
 	switch p.mode {
 	case "list":
@@ -489,7 +491,7 @@ func (m *Model) renderIncoming() string {
 		}
 		body = b.String()
 	case "review":
-		footer = "tab summary/diff/evidence · d diff · e edit · o override · a approve · x reject · r refresh · esc back"
+		shortcuts = []components.KeyDesc{{Key: "tab", Desc: "summary/diff/evidence"}, {Key: "d", Desc: "diff"}, {Key: "e", Desc: "edit"}, {Key: "o", Desc: "override"}, {Key: "A", Desc: "approve", Write: true}, {Key: "x", Desc: "reject", Write: true}, {Key: "r", Desc: "refresh"}, {Key: "esc", Desc: "back"}}
 		body = m.incomingSummary()
 		if p.tab == 1 && p.review != nil {
 			body = "COMPLETE EXECUTABLE DIFF\n\n" + incomingDiffText(p.review.Diff)
@@ -512,19 +514,20 @@ func (m *Model) renderIncoming() string {
 		}
 	case "outcome":
 		body = m.incomingSummary()
-		footer = "up/down/pgup/pgdown scroll · r refresh · esc back"
+		shortcuts = []components.KeyDesc{{Key: "↑↓/pgup/pgdn", Desc: "scroll"}, {Key: "r", Desc: "refresh"}, {Key: "esc", Desc: "back"}}
 	case "edit":
 		body = "New value (replicas / container=image / revision): " + p.edit + "\n\n" + m.incomingSummary()
-		footer = "type/backspace edit · enter save immutable revision · esc cancel"
+		shortcuts = []components.KeyDesc{{Key: "↵", Desc: "save revision"}, {Key: "esc", Desc: "cancel"}}
 	case "approve":
 		body = "EXECUTE this exact reviewed change once?\nThe broker continues monitoring after Safina closes.\n\n" + m.incomingSummary()
-		footer = "y explicitly approve and execute · n return · esc cancel"
+		shortcuts = []components.KeyDesc{{Key: "y", Desc: "approve and execute", Write: true}, {Key: "n/esc", Desc: "cancel"}}
 	case "reject":
 		body = "Reject this proposal revision?\n\n" + m.incomingSummary()
-		footer = "y reject · n return · esc cancel"
+		shortcuts = []components.KeyDesc{{Key: "y", Desc: "reject", Write: true}, {Key: "n/esc", Desc: "cancel"}}
 	}
 	if p.busy {
-		footer = "Broker request in progress · esc close (approved execution continues)"
+		footerNote = "Broker request in progress; approved execution continues.\n"
+		shortcuts = []components.KeyDesc{{Key: "esc", Desc: "close"}}
 	}
 	if p.inboxErr != "" {
 		body = "Inbox unavailable: " + p.inboxErr + "\n\n" + body
@@ -535,9 +538,14 @@ func (m *Model) renderIncoming() string {
 	if len(p.inbox.Warnings) > 0 {
 		body = "Recording warnings: " + strings.Join(p.inbox.Warnings, "; ") + "\n\n" + body
 	}
-	foot := ansi.Hardwrap(incomingText(footer), max(1, w-2), true)
+	foot := ansi.Wrap(footerNote+components.RenderModalKeysRow(m.ctx.Theme, shortcuts), max(1, w-2), "")
 	p.viewport.SetWidth(max(1, w-2))
 	p.viewport.SetHeight(max(1, h-3-strings.Count(foot, "\n")))
 	p.viewport.SetContent(incomingText(body))
-	return m.ctx.Theme.CyanBold.Render(ansi.Truncate(title, w, "…")) + "\n" + p.viewport.View() + "\n" + foot
+	// A write waiting for its yes wears Barbarossa red, like every other.
+	titleStyle := m.ctx.Theme.CyanBold
+	if p.mode == "approve" {
+		titleStyle = m.ctx.Theme.Danger
+	}
+	return titleStyle.Render(ansi.Truncate(title, w, "…")) + "\n" + p.viewport.View() + "\n" + foot
 }

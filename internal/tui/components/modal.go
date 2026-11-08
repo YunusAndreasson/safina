@@ -59,14 +59,16 @@ func ModalBackdrop(t *theme.Theme) []lipgloss.WhitespaceOption {
 // area of a modal can be in. Exactly one boolean / non-zero field should be
 // set per call; the renderer picks the matching message.
 type BlockState struct {
-	Loading  bool   // initial fetch in flight
-	Err      error  // load failed
-	Empty    bool   // load succeeded but returned zero items
-	NoMatch  bool   // filter is non-empty and matches zero items
-	Loaded   bool   // none of the above — render vp.View()
-	Loading_ string // override for the spinner suffix (e.g. "establishing stream")
-	Empty_   string // override for the empty-state caption
-	NoMatch_ string // override for the no-match caption
+	Loading   bool     // initial fetch in flight
+	Err       error    // load failed
+	Empty     bool     // load succeeded but returned zero items
+	NoMatch   bool     // filter is non-empty and matches zero items
+	Loaded    bool     // none of the above — render vp.View()
+	Loading_  string   // override for the spinner suffix (e.g. "establishing stream")
+	Empty_    string   // override for the empty-state caption
+	EmptyArt  EmptyArt // optional artwork for settled empty views
+	EmptyHint string   // next step, always retained before decoration
+	NoMatch_  string   // override for the no-match caption
 }
 
 // CenteredViewportBlock returns either the viewport's view or a centered
@@ -94,6 +96,9 @@ func CenteredViewportBlock(t *theme.Theme, spinner string, vp viewport.Model, st
 	case st.Err != nil:
 		return box.Render(lipgloss.NewStyle().Foreground(t.P.Red).Render(st.Err.Error()))
 	case st.Empty:
+		if st.EmptyArt != NoEmptyArt {
+			return IllustratedEmpty(t, vp.Width(), vp.Height(), st.EmptyArt, defaultStr(st.Empty_, "no items"), st.EmptyHint)
+		}
 		return box.Render(t.Idle.Render(defaultStr(st.Empty_, "no items")))
 	case st.NoMatch:
 		return box.Render(t.Idle.Render(defaultStr(st.NoMatch_, "no matches")))
@@ -111,7 +116,21 @@ func defaultStr(s, fallback string) string {
 // KeyDesc is a single (key, description) entry for a modal keys row. Sections
 // build a slice of these and pass it to RenderModalKeysRow — the rendering is
 // identical everywhere so we lift it.
-type KeyDesc struct{ Key, Desc string }
+type KeyDesc struct {
+	Key, Desc string
+	// Write marks a key that changes the cluster (keys.Map.Writes): it is
+	// painted in the danger red of the confirmation it opens.
+	Write bool
+}
+
+// keyStyle is how a hint's key glyph is painted: the danger red for a write,
+// the help blue for everything else.
+func keyStyle(t *theme.Theme, p KeyDesc) lipgloss.Style {
+	if p.Write {
+		return t.Danger
+	}
+	return t.HelpKey
+}
 
 // RenderModalKeysRow renders the bottom-of-modal key hints in the same style
 // the global help bar uses (interpunct-separated, dim). Sections previously
@@ -123,7 +142,7 @@ func RenderModalKeysRow(t *theme.Theme, pairs []KeyDesc) string {
 	}
 	pieces := make([]string, len(pairs))
 	for i, p := range pairs {
-		pieces[i] = t.HelpKey.Render(p.Key) + " " + t.HelpDesc.Render(p.Desc)
+		pieces[i] = keyStyle(t, p).Render(p.Key) + " " + t.HelpDesc.Render(p.Desc)
 	}
 	return strings.Join(pieces, t.HelpDesc.Render(" · "))
 }
@@ -164,7 +183,7 @@ func RenderHintRow(t *theme.Theme, pairs []KeyDesc) string {
 	}
 	pieces := make([]string, len(pairs))
 	for i, p := range pairs {
-		pieces[i] = t.HelpKey.Render(p.Key) + t.HelpDesc.Render(" "+p.Desc)
+		pieces[i] = keyStyle(t, p).Render(p.Key) + t.HelpDesc.Render(" "+p.Desc)
 	}
 	return strings.Join(pieces, t.HelpDesc.Render("  ·  "))
 }
@@ -174,13 +193,13 @@ func RenderHintRow(t *theme.Theme, pairs []KeyDesc) string {
 //
 //	y <verb>  ·  n/esc cancel
 //
-// The "y" is painted green to signal "this is the go-ahead key"; the rest
-// stays dim so the row reads as a quiet affordance — the heavy lifting
-// (yellow verb / red subject) happens above it.
+// The "y" takes the danger red of the card around it (theme.ModalDanger):
+// it is the one key here that changes the cluster, so it must not read as
+// a safe green go-ahead. The rest stays dim, a quiet affordance under the
+// red verb above it.
 func RenderConfirmHint(t *theme.Theme, verb string) string {
-	green := lipgloss.NewStyle().Foreground(t.P.Green).Bold(true)
-	yes := green.Render("y") + t.HelpDesc.Render(" "+verb)
-	no := t.HelpDesc.Render("n/esc cancel")
+	yes := t.Danger.Render("y") + t.HelpDesc.Render(" "+verb)
+	no := t.HelpKey.Render("n/esc") + t.HelpDesc.Render(" cancel")
 	return yes + t.HelpDesc.Render("  ·  ") + no
 }
 

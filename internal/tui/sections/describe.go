@@ -4,11 +4,14 @@ import (
 	"fmt"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/runtime/schema"
+
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/yunus/safina/internal/k8s"
 	"github.com/yunus/safina/internal/tui/components"
 	"github.com/yunus/safina/internal/tui/theme"
 	"github.com/yunus/safina/internal/tui/tuictx"
@@ -41,8 +44,9 @@ type Describe struct {
 
 	theme *theme.Theme
 
-	modalW int
-	modalH int
+	sourceGVR schema.GroupVersionResource
+	modalW    int
+	modalH    int
 }
 
 // NewDescribe constructs the describe modal.
@@ -59,6 +63,7 @@ func NewDescribe(c *tuictx.Ctx) Describe {
 // Reset prepares for a new resource. Caller follows with LoadDescribe + SetYAML.
 func (s *Describe) Reset(kind, name, namespace string) {
 	s.kind = kind
+	s.sourceGVR = schema.GroupVersionResource{}
 	s.name = name
 	s.namespace = namespace
 	s.yaml = ""
@@ -73,6 +78,9 @@ func (s *Describe) Reset(kind, name, namespace string) {
 	s.vp.SetContent("")
 	s.vp.GotoTop()
 }
+
+// SetSourceGVR keeps refreshes on the API used to open a generic resource.
+func (s *Describe) SetSourceGVR(gvr schema.GroupVersionResource) { s.sourceGVR = gvr }
 
 // MarkRevealed flips the modal into "decoded" mode — the title leads with
 // "decoded" and a yellow banner above the YAML body warns that values are
@@ -115,7 +123,7 @@ func (s *Describe) SetYAML(yaml string, err error) {
 }
 
 func (s *Describe) Title() string {
-	verb := "describe"
+	verb := "YAML"
 	if s.revealed {
 		verb = "decoded"
 	}
@@ -163,7 +171,7 @@ func (s *Describe) Body(c *tuictx.Ctx) string {
 }
 
 // PaneTitle returns the workspace tab title.
-func (s *Describe) PaneTitle() string { return s.Title() }
+func (s *Describe) PaneTitle() string { return s.name }
 
 func (s *Describe) recomputeViewportSize() {
 	inner := components.PanelContentWidth(s.modalW)
@@ -249,6 +257,9 @@ func (s *Describe) Update(msg tea.Msg, c *tuictx.Ctx) (tea.Cmd, bool) {
 
 	case key.Matches(km, c.Keys.Refresh):
 		s.loading = true
+		if !s.sourceGVR.Empty() {
+			return LoadGenericDescribe(c.Background, c.Manager, c.ActiveContext, NodeRef{Kind: k8s.KindGenericResource, SubKind: s.kind, Namespace: s.namespace, Name: s.name, GVR: s.sourceGVR}), false
+		}
 		if s.revealed {
 			return LoadSecretReveal(c.Background, c.Manager, c.ActiveContext, s.namespace, s.name), false
 		}
@@ -335,6 +346,5 @@ func (s *Describe) renderKeysRow() string {
 		{Key: "j/k", Desc: "scroll"},
 		{Key: "g/G", Desc: "top/bot"},
 		{Key: "ctrl+l", Desc: "clear"},
-		{Key: "esc", Desc: "close"},
 	})
 }

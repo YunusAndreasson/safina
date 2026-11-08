@@ -5,6 +5,8 @@ import (
 	"io"
 	"sort"
 
+	"k8s.io/apimachinery/pkg/types"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -12,6 +14,8 @@ import (
 )
 
 type PodInfo struct {
+	UID       types.UID
+	Metrics   ResourceUsage
 	Name      string
 	Namespace string
 	Status    string
@@ -69,6 +73,7 @@ func podToInfo(p corev1.Pod) PodInfo {
 	age := HumanAge(p.CreationTimestamp.Time)
 
 	return PodInfo{
+		UID:       p.UID,
 		Name:      p.Name,
 		Namespace: p.Namespace,
 		Status:    status,
@@ -119,7 +124,7 @@ func ListHotPodsByCPU(ctx context.Context, cs kubernetes.Interface, limit int) (
 
 	out := make([]PodInfo, 0, len(pods.Items))
 	for _, p := range pods.Items {
-		u, ok := metrics[p.Namespace+"/"+p.Name]
+		u, ok := metrics[types.NamespacedName{Namespace: p.Namespace, Name: p.Name}]
 		if !ok {
 			continue
 		}
@@ -168,6 +173,14 @@ type PodLogEvent struct {
 // pod. Pass container == "" to let kubelet pick the default (first) container.
 func StreamPodContainerLogs(ctx context.Context, cs kubernetes.Interface, namespace, name, container string, previous bool, ch chan<- PodLogEvent) {
 	defer close(ch)
+	send := func(event PodLogEvent) bool {
+		select {
+		case ch <- event:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
 
 	req := cs.CoreV1().Pods(namespace).GetLogs(name, &corev1.PodLogOptions{
 		Container: container,
@@ -192,7 +205,7 @@ func StreamPodContainerLogs(ctx context.Context, cs kubernetes.Interface, namesp
 
 	stream, err := req.Stream(ctx)
 	if err != nil {
-		ch <- PodLogEvent{Err: err, Done: true}
+		send(PodLogEvent{Err: err, Done: true})
 		return
 	}
 	defer func() { _ = stream.Close() }()
@@ -201,20 +214,21 @@ func StreamPodContainerLogs(ctx context.Context, cs kubernetes.Interface, namesp
 	for {
 		select {
 		case <-ctx.Done():
-			ch <- PodLogEvent{Done: true}
 			return
 		default:
 		}
 		n, err := stream.Read(buf)
 		if n > 0 {
-			ch <- PodLogEvent{Line: string(buf[:n])}
+			if !send(PodLogEvent{Line: string(buf[:n])}) {
+				return
+			}
 		}
 		if err != nil {
 			if err == io.EOF {
-				ch <- PodLogEvent{Done: true}
+				send(PodLogEvent{Done: true})
 				return
 			}
-			ch <- PodLogEvent{Err: err, Done: true}
+			send(PodLogEvent{Err: err, Done: true})
 			return
 		}
 	}
@@ -256,7 +270,7 @@ func (c *Client) ListHotPodsByCPU(ctx context.Context, limit int) ([]PodInfo, er
 		if p.Status.Phase != corev1.PodRunning {
 			continue
 		}
-		u, ok := metrics[p.Namespace+"/"+p.Name]
+		u, ok := metrics[types.NamespacedName{Namespace: p.Namespace, Name: p.Name}]
 		if !ok {
 			continue
 		}

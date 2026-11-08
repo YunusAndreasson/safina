@@ -37,7 +37,7 @@ func TestTreeFilterFooterDoesNotAdvertiseActions(t *testing.T) {
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m.handleKey(keyMsg("/"))
 	footer := ansi.Strip(m.renderFooter())
-	require.Contains(t, footer, "enter apply")
+	require.Contains(t, footer, "↵ apply")
 	require.NotContains(t, footer, "quit")
 	m.handleKey(keyMsg("?"))
 	require.Equal(t, stateMain, m.state)

@@ -1,7 +1,10 @@
 package k8s
 
 import (
+	"errors"
 	"testing"
+
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	openapi_v2 "github.com/google/gnostic-models/openapiv2"
 	"github.com/stretchr/testify/assert"
@@ -19,10 +22,11 @@ import (
 // type satisfies the interface but return zero values.
 type stubDiscovery struct {
 	resources []*metav1.APIResourceList
+	err       error
 }
 
 func (s *stubDiscovery) ServerPreferredResources() ([]*metav1.APIResourceList, error) {
-	return s.resources, nil
+	return s.resources, s.err
 }
 
 // The remaining methods are unused in tests; they exist to satisfy
@@ -153,4 +157,13 @@ func TestListAvailableResources_SortsStable(t *testing.T) {
 	require.Len(t, got, 2)
 	assert.Equal(t, "a-group", got[0].Group)
 	assert.Equal(t, "z-group", got[1].Group)
+}
+
+func TestPartialDiscoveryKeepsKindsAndReportsIncompleteResult(t *testing.T) {
+	failure := &discovery.ErrGroupDiscoveryFailed{Groups: map[schema.GroupVersion]error{{Group: "example.io", Version: "v1"}: errors.New("unavailable")}}
+	disco := &stubDiscovery{err: failure, resources: []*metav1.APIResourceList{{GroupVersion: "v1", APIResources: []metav1.APIResource{{Name: "pods", Kind: "Pod", Verbs: metav1.Verbs{"list"}}}}}}
+	kinds, err := ListAvailableResources(disco)
+	require.ErrorIs(t, err, failure)
+	require.Len(t, kinds, 1)
+	require.Equal(t, "pods", kinds[0].Resource)
 }

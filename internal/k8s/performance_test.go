@@ -21,10 +21,10 @@ func BenchmarkAggregateForSelector(b *testing.B) {
 	for _, count := range []int{100, 10000} {
 		b.Run(strconv.Itoa(count), func(b *testing.B) {
 			pods := make([]corev1.Pod, count)
-			metrics := make(map[string]ResourceUsage, count)
+			metrics := make(map[types.NamespacedName]ResourceUsage, count)
 			for i := range pods {
 				pods[i].ObjectMeta = metav1.ObjectMeta{Name: fmt.Sprintf("pod-%d", i), Namespace: fmt.Sprintf("ns-%d", i%100), Labels: map[string]string{"app": "api"}}
-				metrics[pods[i].Namespace+"/"+pods[i].Name] = ResourceUsage{CPU: 10, Memory: 100}
+				metrics[types.NamespacedName{Namespace: pods[i].Namespace, Name: pods[i].Name}] = ResourceUsage{CPU: 10, Memory: 100}
 			}
 			selector := &metav1.LabelSelector{MatchLabels: map[string]string{"app": "api"}}
 			b.ReportAllocs()
@@ -43,13 +43,13 @@ func BenchmarkAggregateForSelector(b *testing.B) {
 // including snapshot allocations and ten workload aggregations per refresh.
 func BenchmarkWorkloadPodSnapshot(b *testing.B) {
 	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
-	metrics := make(map[string]ResourceUsage, 10000)
+	metrics := make(map[types.NamespacedName]ResourceUsage, 10000)
 	for i := range 10000 {
 		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("pod-%d", i), Namespace: fmt.Sprintf("ns-%d", i%100), Labels: map[string]string{"app": "api"}}}
 		if err := indexer.Add(pod); err != nil {
 			b.Fatal(err)
 		}
-		metrics[pod.Namespace+"/"+pod.Name] = ResourceUsage{CPU: 10, Memory: 100}
+		metrics[types.NamespacedName{Namespace: pod.Namespace, Name: pod.Name}] = ResourceUsage{CPU: 10, Memory: 100}
 	}
 	lister := corelisters.NewPodLister(indexer)
 	selector := &metav1.LabelSelector{MatchLabels: map[string]string{"app": "api"}}

@@ -22,10 +22,8 @@ type ContextSnapshot struct {
 	Block string
 }
 
-// ContextCrumb is one segment of the context strip — kind glyph + display
-// label, in the same family as the rest of the app's tree breadcrumb.
+// ContextCrumb is one named segment of the context strip.
 type ContextCrumb struct {
-	Glyph string
 	Label string
 }
 
@@ -47,7 +45,6 @@ func BuildContextSnapshot(t *Tree, activeContext string) ContextSnapshot {
 			continue
 		}
 		snap.Crumbs = append(snap.Crumbs, ContextCrumb{
-			Glyph: kindGlyph(ref.Kind, ref.SubKind),
 			Label: ref.Display,
 		})
 	}
@@ -56,7 +53,6 @@ func BuildContextSnapshot(t *Tree, activeContext string) ContextSnapshot {
 	sel := t.SelectedRef()
 	if sel.Kind != "" && sel.Kind != k8s.KindContextList {
 		snap.Crumbs = append(snap.Crumbs, ContextCrumb{
-			Glyph: kindGlyph(sel.Kind, sel.SubKind),
 			Label: sel.Display,
 		})
 	}

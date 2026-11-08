@@ -71,7 +71,12 @@ func (f *Forwards) Empty() bool { return len(f.rows) == 0 }
 // Body returns the inline unframed content for embedding in the workspace
 // tab area. Same content as View(w) — kept as an alias so the workspace's
 // tab dispatch reads consistently with other sections.
-func (f *Forwards) Body(w int) string { return f.View(w) }
+func (f *Forwards) Body(w int, height ...int) string {
+	if len(f.rows) == 0 && len(height) > 0 {
+		return components.IllustratedEmpty(f.theme, w, height[0], components.AnchorArt, "no active forwards", components.RenderModalKeysRow(f.theme, []components.KeyDesc{{Key: "f", Desc: "start on a Pod or Service"}}))
+	}
+	return f.View(w)
+}
 
 // PaneTitle returns the workspace tab title.
 func (f *Forwards) PaneTitle() string { return "port forwards" }
@@ -80,17 +85,16 @@ func (f *Forwards) PaneTitle() string { return "port forwards" }
 // frame and modalBackdrop — same as renderConfirmModal.
 func (f *Forwards) View(w int) string {
 	t := f.theme
-	title := t.Divider("port forwards", w)
 	if len(f.rows) == 0 {
 		body := lipgloss.NewStyle().Foreground(t.P.FGFade).Render("  (no active forwards)")
-		hint := t.Hint.Render("press f on a pod or service row to start one")
-		return lipgloss.JoinVertical(lipgloss.Left, title, "", body, "", hint)
+		hint := components.RenderModalKeysRow(t, []components.KeyDesc{{Key: "f", Desc: "start on a pod or service"}})
+		return lipgloss.JoinVertical(lipgloss.Left, body, "", hint)
 	}
 
 	header := lipgloss.NewStyle().Foreground(t.P.Dim).Render(
-		fmt.Sprintf("%-2s %-22s %-12s %-22s %-12s %s", "", "context/namespace", "kind", "name", "ports", "uptime"),
+		"  " + forwardColumns("context/namespace", "kind", "name", "ports", "uptime"),
 	)
-	lines := []string{title, ""}
+	var lines []string
 	compact := w < 90
 	if !compact {
 		lines = append(lines, header)
@@ -118,7 +122,7 @@ func (f *Forwards) View(w int) string {
 			)
 			continue
 		}
-		row := fmt.Sprintf("%-22s %-12s %-22s %-12s %s", ctxNs, kind, name, ports, up)
+		row := forwardColumns(ctxNs, kind, name, ports, up)
 		style := lipgloss.NewStyle().Foreground(t.P.FG)
 		if r.Stale {
 			row += "  " + lipgloss.NewStyle().Foreground(t.P.Red).Render("stale")
@@ -131,8 +135,7 @@ func (f *Forwards) View(w int) string {
 	// is no exception. Keeping lowercase `d` here would steal the global
 	// describe letter and break the "uppercase = mutator" convention.
 	lines = append(lines, components.RenderHintRow(t, []components.KeyDesc{
-		{Key: "K", Desc: "stop"},
-		{Key: "esc", Desc: "close"},
+		{Key: "K", Desc: "stop", Write: true},
 	}))
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
@@ -226,4 +229,9 @@ func StopPortForward(mgr *k8s.Manager, id string) tea.Cmd {
 		op.Finish(err, "disconnected")
 		return PortForwardStoppedMsg{ID: id, Err: err}
 	}
+}
+
+// Bound columns by terminal cells, including wide glyphs and long kind names.
+func forwardColumns(scope, kind, name, ports, uptime string) string {
+	return components.TruncPad(scope, 22) + " " + components.TruncPad(kind, 12) + " " + components.TruncPad(name, 22) + " " + components.TruncPad(ports, 12) + " " + uptime
 }

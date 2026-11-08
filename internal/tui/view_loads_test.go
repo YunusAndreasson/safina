@@ -1,0 +1,81 @@
+package tui
+
+import (
+	"testing"
+
+	tea "charm.land/bubbletea/v2"
+	"github.com/stretchr/testify/require"
+	"github.com/yunus/safina/internal/k8s"
+	"github.com/yunus/safina/internal/tui/sections"
+)
+
+func TestLateResourceViewRepliesCannotReplaceNewerSelectionOrRefresh(t *testing.T) {
+	for _, view := range []state{stateDescribeView, stateEventsView} {
+		m := shiftFooterModel(t)
+		m.state = view
+		makeReply := func(label string) tea.Cmd {
+			return func() tea.Msg {
+				if view == stateDescribeView {
+					return sections.DescribeLoadedMsg{YAML: "source: " + label}
+				}
+				return sections.EventsLoadedMsg{Events: []k8s.EventInfo{{Reason: "Started", Message: label}}}
+			}
+		}
+		m.describe.Reset("Deployment", "new", "shop")
+		m.events.Reset("Deployment", "new", "shop")
+		old := m.loadResourceView(view, makeReply("old selection"))()
+		newest := m.loadResourceView(view, makeReply("new selection"))()
+		m.Update(newest)
+		m.Update(old)
+		if view == stateDescribeView {
+			require.Contains(t, m.describe.YankPayload(), "new selection")
+			require.NotContains(t, m.describe.YankPayload(), "old selection")
+		} else {
+			require.Contains(t, m.events.YankPayload(), "new selection")
+			require.NotContains(t, m.events.YankPayload(), "old selection")
+		}
+		pending := m.loadResourceView(view, makeReply("during search"))()
+		m.handleKey(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
+		m.Update(pending)
+		require.Equal(t, statePalette, m.state)
+		m.handleKey(keyMsg("esc"))
+		require.Equal(t, view, m.state)
+		if view == stateDescribeView {
+			require.Contains(t, m.describe.YankPayload(), "during search")
+		} else {
+			require.Contains(t, m.events.YankPayload(), "during search")
+		}
+	}
+}
+
+func TestRefreshOnlySupersedesResourceLoadOutsideFilter(t *testing.T) {
+	for _, view := range []state{stateDescribeView, stateEventsView} {
+		m := shiftFooterModel(t)
+		m.state = view
+		m.describe.Reset("Deployment", "api", "shop")
+		m.events.Reset("Deployment", "api", "shop")
+		m.handleKey(keyMsg("r"))
+		require.Equal(t, uint64(1), m.viewRequests[view])
+		m.handleKey(keyMsg("/"))
+		m.handleKey(keyMsg("r"))
+		require.Equal(t, uint64(1), m.viewRequests[view], "typing r is not another load")
+	}
+}
+
+func TestShiftTabTogglesPaneFocusWithoutLosingView(t *testing.T) {
+	for _, st := range []state{stateMain, stateDescribeView, stateLogView, stateEventsView, stateChatView} {
+		m := shiftFooterModel(t)
+		m.state = st
+		if st == stateChatView {
+			m.chat.SetFocus(true)
+		}
+		before := m.workspaceOwnsFocus()
+		for range 200 {
+			m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+			require.Equal(t, !before, m.workspaceOwnsFocus())
+			m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+			require.Equal(t, before, m.workspaceOwnsFocus())
+			require.Equal(t, st, m.state)
+		}
+	}
+}

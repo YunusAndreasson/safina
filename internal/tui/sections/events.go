@@ -31,7 +31,7 @@ type Events struct {
 
 	vp     viewport.Model
 	filter components.Filter
-	// Full messages are the default; w switches to compact single-line rows.
+	// Compact rows are the default; w reveals full wrapped messages.
 	wrap bool
 
 	loading bool
@@ -48,10 +48,10 @@ type Events struct {
 func NewEvents(c *tuictx.Ctx) Events {
 	vp := viewport.New()
 	vp.MouseWheelEnabled = true
-	vp.SoftWrap = true
+	vp.SoftWrap = false
 	return Events{
 		vp:     vp,
-		wrap:   true,
+		wrap:   false,
 		filter: components.NewFilter(c.Theme),
 		theme:  c.Theme,
 	}
@@ -139,7 +139,7 @@ func (s *Events) Body(c *tuictx.Ctx) string {
 }
 
 // PaneTitle returns the workspace tab title.
-func (s *Events) PaneTitle() string { return s.Title() }
+func (s *Events) PaneTitle() string { return s.name }
 
 func (s *Events) recomputeViewportSize() {
 	inner := components.PanelContentWidth(s.modalW)
@@ -184,30 +184,51 @@ func (s *Events) refreshContent() {
 		return
 	}
 	inner := components.PanelContentWidth(s.modalW)
+	countW := 5
+	for _, idx := range s.filtered {
+		if s.items[idx].Count > 1 {
+			countW = max(countW, ansi.StringWidth(fmt.Sprintf(" ×%d", s.items[idx].Count)))
+		}
+	}
 	var b strings.Builder
 	for n, idx := range s.filtered {
 		if n > 0 {
 			b.WriteByte('\n')
 		}
-		b.WriteString(s.renderRow(s.items[idx], inner))
+		b.WriteString(s.renderRowWithCountWidth(s.items[idx], inner, countW))
 	}
 	s.vp.SetContent(b.String())
 }
 
 func (s *Events) renderRow(e k8s.EventInfo, w int) string {
+	return s.renderRowWithCountWidth(e, w, max(5, ansi.StringWidth(fmt.Sprintf(" ×%d", e.Count))))
+}
+
+func (s *Events) renderRowWithCountWidth(e k8s.EventInfo, w, countW int) string {
 	t := s.theme
 	typeStyle := t.Meta
 	if e.Type == "Warning" {
 		typeStyle = lipgloss.NewStyle().Foreground(t.P.Red).Bold(true)
 	}
-	meta := t.Meta.Render(e.Age+" ago") + "  " + typeStyle.Render(e.Type) + "  " + t.NameStrong.Render(e.Reason)
+	// HumanDuration uses at most five cells for compact Kubernetes ages.
+	age := lipgloss.NewStyle().Width(9).Align(lipgloss.Right).Render(e.Age + " ago")
+	meta := t.Meta.Render(age) + "  " + typeStyle.Render(lipgloss.NewStyle().Width(7).Render(e.Type)) + "  " + t.NameStrong.Render(e.Reason)
 	if e.Count > 1 {
 		meta += t.Meta.Render(fmt.Sprintf("  ×%d", e.Count))
 	}
+	message := strings.Join(strings.Fields(e.Message), " ")
 	if !s.wrap {
-		return ansi.Truncate(meta+"  "+e.Message, w, "…")
+		kind := lipgloss.NewStyle().Width(7).Render(e.Type)
+		reasonW := min(24, max(10, w/4))
+		reason := lipgloss.NewStyle().Width(reasonW).Render(ansi.Truncate(e.Reason, reasonW, "…"))
+		count := ""
+		if e.Count > 1 {
+			count = fmt.Sprintf(" ×%d", e.Count)
+		}
+		prefix := t.Meta.Render(age) + " " + typeStyle.Render(kind) + " " + t.NameStrong.Render(reason) + t.Meta.Render(lipgloss.NewStyle().Width(countW).Render(count)) + "  "
+		return ansi.Truncate(prefix+message, w, "…")
 	}
-	return ansi.Wrap(meta, w, "") + "\n" + indent(ansi.Wrap(e.Message, max(1, w-2), ""), "  ") + "\n"
+	return ansi.Wrap(meta, w, "") + "\n" + indent(ansi.Wrap(message, max(1, w-2), ""), "  ")
 }
 
 // Update returns (cmd, leave). leave=true closes the modal.
@@ -287,6 +308,8 @@ func (s *Events) viewportBlock(c *tuictx.Ctx) string {
 	case len(s.items) == 0:
 		st.Empty = true
 		st.Empty_ = "no events"
+		st.EmptyArt = components.BeaconArt
+		st.EmptyHint = components.RenderModalKeysRow(c.Theme, []components.KeyDesc{{Key: "r", Desc: "refresh"}})
 	case len(s.filtered) == 0 && s.filter.Value() != "":
 		st.NoMatch = true
 	default:
@@ -320,6 +343,5 @@ func (s *Events) renderKeysRow() string {
 		{Key: "w", Desc: wrapDesc},
 		{Key: "j/k", Desc: "scroll"},
 		{Key: "ctrl+l", Desc: "clear"},
-		{Key: "esc", Desc: "close"},
 	})
 }

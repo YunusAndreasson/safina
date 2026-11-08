@@ -47,7 +47,10 @@ func (m *Model) View() tea.View {
 		WindowTitle:   m.title,
 		ProgramStatus: m.programStatus(),
 		KeyboardEnhancements: tea.KeyboardEnhancements{
-			ReportAlternateKeys: true,
+			ReportAlternateKeys:        true,
+			ReportEventTypes:           m.state != stateShellView,
+			ReportAllKeysAsEscapeCodes: m.state != stateShellView,
+			ReportAssociatedText:       m.state != stateShellView,
 		},
 	}
 	// Hardware cursor is shown on the Chat tab and on the input-bearing
@@ -126,7 +129,7 @@ func (m *Model) modalInputCursor(cur *tea.Cursor) *tea.Cursor {
 func (m *Model) render() string {
 	w, h := m.ctx.Width, m.ctx.Height
 	if w < 50 || h < 14 {
-		return m.ctx.Theme.DimPad.Render(fmt.Sprintf("Resize terminal to at least 50 × 14.\nCurrent size: %d × %d. Ctrl+C quits.", w, h))
+		return m.ctx.Theme.DimPad.Render(fmt.Sprintf("Resize terminal to at least 50 × 14.\nCurrent size: %d × %d. ", w, h) + components.RenderModalKeysRow(m.ctx.Theme, []components.KeyDesc{{Key: "ctrl+c", Desc: "quit"}}))
 	}
 
 	// Shell takes the full screen — it owns a pty session, so the tree /
@@ -138,7 +141,10 @@ func (m *Model) render() string {
 	if m.state == stateIncoming {
 		return m.renderIncoming()
 	}
+	overlayState := m.state
+	m.state = m.baseState()
 	base := m.renderBase(w, h)
+	m.state = overlayState
 	if m.choices != nil {
 		return m.composeCard(base, m.choicesCard())
 	}
@@ -230,14 +236,14 @@ func (m *Model) renderBase(w, h int) string {
 	// Stamp the staleness flag on the shared Ctx before any section
 	// renders this frame — metric cells (sparklines + colored values)
 	// desaturate when this is true so the data carries its own age signal
-	// rather than only the topbar pill. Two triggers: refresh-age has
+	// directly. Two triggers: refresh-age has
 	// stretched past the auto-refresh cadence, OR the terminal lost OS
 	// focus and refreshes are paused.
 	m.ctx.Stale = m.dataLooksStale()
 	parts := []string{}
 	used := 1 // footer (reserved)
 
-	// Topbar: brand + breadcrumb (with brightness ramp) + clock / refresh /
+	// Topbar: brand + breadcrumb (with brightness ramp) +
 	// health on the right. No mode capsule — the focused border already
 	// answers "what surface owns my keystrokes".
 	fwdCount := 0
@@ -247,14 +253,13 @@ func (m *Model) renderBase(w, h int) string {
 	parts = append(parts, components.Topbar(
 		m.ctx.Theme, w,
 		m.tree.BreadcrumbCrumbs(),
-		m.refreshAge(),
-		m.now.Format("15:04"),
 		fwdCount,
 		m.topbarClusterHealth(),
+		m.overviewPreview,
 	))
 	used++
 	if m.incoming.inbox.Pending > 0 {
-		parts = append(parts, m.ctx.Theme.CyanBold.Render(fmt.Sprintf("Incoming proposals: %d · : → Incoming proposals", m.incoming.inbox.Pending)))
+		parts = append(parts, m.ctx.Theme.CyanBold.Render(fmt.Sprintf("Incoming proposals: %d · ", m.incoming.inbox.Pending))+components.RenderModalKeysRow(m.ctx.Theme, []components.KeyDesc{{Key: "ctrl+p", Desc: "search Incoming proposals"}}))
 		used++
 	}
 
@@ -282,6 +287,7 @@ func (m *Model) renderBase(w, h int) string {
 const minSplitWidth = 60
 
 func (m *Model) renderMainSplit(w, h int) string {
+	m.connected.Hide()
 	workspaceFocused := m.workspaceOwnsFocus()
 	treeW, wsW := theme.PhiSplit(w, 0, 28)
 	if wsW < 32 {
@@ -329,6 +335,9 @@ func (m *Model) renderMainSplit(w, h int) string {
 	availability := m.workspaceTabAvailability()
 	tabs := sections.AvailableTabs(availability)
 	m.tabHitboxes = sections.WorkspaceTabHitboxes(tabs, m.activeWorkspaceTab(), sections.WorkspaceBodyWidth(wsW))
+	if m.showWelcomeSail() {
+		m.tabHitboxes = nil
+	}
 
 	workspaceView := m.renderWorkspace(wsW, h, workspaceFocused)
 	if treeW == 0 {
@@ -344,7 +353,12 @@ func (m *Model) renderMainSplit(w, h int) string {
 // row (rather than the title bar) so per-tab styling survives.
 func (m *Model) renderWorkspace(w, h int, focused bool) string {
 	t := m.ctx.Theme
+	if m.showWelcomeSail() {
+		return components.PanelWithAccent(t, "", w, h,
+			sections.WelcomeSail(t, sections.WorkspaceBodyWidth(w), max(1, h-2)), focused, t.P.Cyan, t.P.Dim)
+	}
 	active := m.activeWorkspaceTab()
+	m.connected.Focused = focused && active == sections.WSTabInspector
 	availability := m.workspaceTabAvailability()
 	tabs := sections.AvailableTabs(availability)
 	if !containsTab(tabs, active) {
@@ -357,6 +371,10 @@ func (m *Model) renderWorkspace(w, h int, focused bool) string {
 	title := m.workspaceTitle(active)
 	body := m.renderTabBody(active, inner, bodyH)
 	return sections.RenderWorkspacePane(t, w, h, title, tabStrip, body, focused)
+}
+
+func (m *Model) showWelcomeSail() bool {
+	return m.tree.Focus().Kind == k8s.KindContextList && m.activeWorkspaceTab() == sections.WSTabInspector
 }
 
 func containsTab(tabs []sections.WorkspaceTab, want sections.WorkspaceTab) bool {
@@ -388,7 +406,7 @@ func (m *Model) workspaceOwnsFocus() bool {
 	// This feature applies only to the states listed; all others use the fallback.
 	//exhaustive:ignore
 	switch m.state {
-	case stateLogView, stateEventsView, stateDescribeView,
+	case stateMetricsView, stateLogView, stateEventsView, stateDescribeView,
 		stateHotView, stateForwardsList, stateDrainProgress,
 		stateChatView:
 		return true
@@ -405,6 +423,8 @@ func (m *Model) activeWorkspaceTab() sections.WorkspaceTab {
 	// This feature applies only to the states listed; all others use the fallback.
 	//exhaustive:ignore
 	switch m.state {
+	case stateMetricsView:
+		return sections.WSTabMetrics
 	case stateLogView:
 		return sections.WSTabLogs
 	case stateEventsView:
@@ -430,8 +450,10 @@ func (m *Model) activeWorkspaceTab() sections.WorkspaceTab {
 // pinned tabs (Hot / Forwards / Drain) appear only while their op is live.
 func (m *Model) workspaceTabAvailability() sections.WSTabAvailability {
 	ref := m.tree.SelectedRef()
-	av := sections.WSTabAvailability{}
+	av := sections.WSTabAvailability{Metrics: sections.MetricsSupported(ref) || m.state == stateMetricsView}
 	switch ref.Kind {
+	case k8s.KindGenericResource:
+		av.Events, av.Yaml = ref.SubKind != "", !ref.GVR.Empty()
 	case k8s.KindPod, k8s.KindContainer:
 		av.Logs, av.Events, av.Yaml = true, true, true
 	case k8s.KindApp:
@@ -448,27 +470,34 @@ func (m *Model) workspaceTabAvailability() sections.WSTabAvailability {
 	if m.ctx.ActiveContext != "" {
 		av.Chat = true
 	}
-	// Pinned tabs: appear only while their state is active. The user can
-	// switch back to Inspector by pressing 1 (or Esc on the tab).
-	// This feature applies only to the states listed; all others use the fallback.
+	// An open reading view stays visible while the tree moves to another
+	// resource or folder. The tab title continues to identify its own source.
 	//exhaustive:ignore
 	switch m.state {
+	case stateLogView:
+		av.Logs = true
+	case stateEventsView:
+		av.Events = true
+	case stateDescribeView:
+		av.Yaml = true
 	case stateHotView:
 		av.Hot = true
 	case stateForwardsList:
 		av.Forwards = true
 	case stateDrainProgress:
 		av.Drain = true
-	default:
-		// No pinned tab for non-immersive states.
 	}
+
 	return av
 }
 
-// Source identity must stay visible when tree focus moves while reading.
+// The tab names the view; the border names only its resource. Use the
+// section source while reading so tree navigation cannot mislabel old content.
 func (m *Model) workspaceTitle(tab sections.WorkspaceTab) string {
 	//exhaustive:ignore
 	switch tab {
+	case sections.WSTabMetrics:
+		return m.metrics.Ref.Name
 	case sections.WSTabLogs:
 		return m.logs.PaneTitle()
 	case sections.WSTabEvents:
@@ -476,18 +505,31 @@ func (m *Model) workspaceTitle(tab sections.WorkspaceTab) string {
 	case sections.WSTabYaml:
 		return m.describe.PaneTitle()
 	case sections.WSTabHot:
-		return m.hot.PaneTitle()
-	case sections.WSTabForwards:
-		return m.forwards.PaneTitle()
-	case sections.WSTabDrain:
-		return m.drain.PaneTitle()
-	default:
 		return ""
+	case sections.WSTabForwards:
+		return ""
+	case sections.WSTabDrain:
+		return strings.TrimPrefix(m.drain.PaneTitle(), "drain · ")
+	default:
+		if m.tree.Focus().Kind == k8s.KindContextList {
+			return ""
+		}
+		ref := m.tree.SelectedRef()
+		if ref.Kind == k8s.KindAllNamespacesFold {
+			return "All user namespaces"
+		}
+		if ref.Kind == k8s.KindSystemFold {
+			return "System namespaces"
+		}
+		return ref.Name
 	}
 }
 
 func (m *Model) canExpandWorkspace() bool {
-	return m.state == stateLogView || m.state == stateEventsView || m.state == stateDescribeView ||
+	if m.state == stateMain && m.peekWorkspace && !m.showWelcomeSail() {
+		return true
+	}
+	return m.state == stateMetricsView || m.state == stateLogView || m.state == stateEventsView || m.state == stateDescribeView ||
 		m.state == stateHotView || m.state == stateForwardsList
 }
 
@@ -498,6 +540,8 @@ func (m *Model) canExpandWorkspace() bool {
 func (m *Model) renderTabBody(tab sections.WorkspaceTab, w, h int) string {
 	t := m.ctx.Theme
 	switch tab {
+	case sections.WSTabMetrics:
+		return m.metrics.Body(t, w, h, time.Now())
 	case sections.WSTabLogs:
 		m.logs.SetPaneSize(w, h)
 		return m.logs.Body(m.ctx)
@@ -512,7 +556,7 @@ func (m *Model) renderTabBody(tab sections.WorkspaceTab, w, h int) string {
 	case sections.WSTabHot:
 		return m.hot.Body(m.ctx, w, h)
 	case sections.WSTabForwards:
-		return m.forwards.Body(w)
+		return m.forwards.Body(w, h)
 	case sections.WSTabDrain:
 		return m.drain.Body(w)
 	case sections.WSTabInspector:
@@ -520,10 +564,28 @@ func (m *Model) renderTabBody(tab sections.WorkspaceTab, w, h int) string {
 	default:
 	}
 	// Default: Inspector tab — selection summary stack.
-	if m.ctx.ActiveContext == "" {
+	if m.tree.Focus().Kind == k8s.KindContextList {
 		// At the cluster picker no selection exists yet; show a calm
 		// orientation block instead of an empty Inspector.
-		return sections.IdlePlaceholder(t, w, h, "pick a cluster on the left to begin")
+		return sections.WelcomeSail(t, w, h)
+	}
+	ref := m.tree.SelectedRef()
+	if ref.Kind == "" {
+		m.connected.Hide()
+		switch {
+		case m.tree.LoadErr != nil:
+			return components.IllustratedEmpty(t, w, h, components.NoEmptyArt, "Resource details unavailable", "Check the resource list for the error.")
+		case m.tree.Loading:
+			return components.IllustratedEmpty(t, w, h, components.NoEmptyArt, "Loading resources…", "")
+		case m.tree.FilterValue() != "":
+			return components.IllustratedEmpty(t, w, h, components.NoEmptyArt, "No matching resources", "Change or clear the filter.")
+		case m.tree.Children() != nil:
+			return components.IllustratedEmpty(t, w, h, components.BeaconArt, "No resources to inspect", "Choose another resource type or namespace.")
+		}
+	}
+	if body, ok := sections.ResourceOrientation(t, ref, w, h); ok {
+		m.connected.Hide()
+		return body
 	}
 	return sections.RenderInspectorTab(m.ctx, w, h, &m.inspector, &m.activity, &m.connected)
 }
@@ -545,7 +607,7 @@ func (m *Model) renderBanner(w int) string {
 		if m.bannerContext != "" && m.bannerContext != m.ctx.ActiveContext {
 			text = m.bannerContext + ": " + text
 		}
-		hints := "ctrl+d dismiss · ctrl+n history"
+		hints := components.RenderBoundedHints(t, []components.KeyDesc{{Key: "ctrl+d", Desc: "dismiss"}, {Key: "ctrl+n", Desc: "notifications"}}, max(0, w-2), components.KeyDesc{})
 		return t.ErrLine.Width(w).Render("  ✗  " + ansi.Truncate(strings.ReplaceAll(text, "\n", " "), max(1, w-5), "…") + "\n  " + hints)
 	}
 	return t.OkLine.Width(w).MaxHeight(3).Render("  ✓  " + m.bannerMsg)
@@ -586,7 +648,7 @@ func (m *Model) topbarClusterHealth() components.ClusterHealth {
 // auto-refresh cadence enough to warrant desaturating the metric cells.
 // Two triggers: terminal lost OS focus (refreshes are paused, so even a
 // freshly-loaded value will rot), OR last refresh is older than the
-// yellow-tier threshold the topbar pill uses. Sub-threshold values are
+// freshness threshold. Sub-threshold values are
 // considered fresh — desaturating "just refreshed" data would punish
 // every normal tick.
 func (m *Model) dataLooksStale() bool {
@@ -602,35 +664,8 @@ func (m *Model) dataLooksStale() bool {
 	if m.lastRefresh.IsZero() {
 		return false
 	}
-	// Yellow tier in refreshColor starts at 6s (just past the 5s auto-tick).
-	// Match that threshold here so the metric cells and the topbar pill
-	// shift register together.
+	// Desaturate data just past the 5s auto-refresh interval.
 	return m.now.Sub(m.lastRefresh) >= 6*time.Second
-}
-
-// refreshAge returns the "Ns" / "Nm" age of the last successful tree load,
-// or "" when there's nothing live to display (we're at the picker, or the
-// first load hasn't landed yet). The topbar uses this for the "↻ Ns" pill.
-func (m *Model) refreshAge() string {
-	if m.overviewPreview {
-		return "cached"
-	}
-	if m.lastRefresh.IsZero() {
-		return ""
-	}
-	d := m.now.Sub(m.lastRefresh)
-	if d < 0 {
-		d = 0
-	}
-	secs := int(d.Seconds())
-	if secs < 60 {
-		return fmt.Sprintf("%ds", secs)
-	}
-	mins := secs / 60
-	if mins < 60 {
-		return fmt.Sprintf("%dm", mins)
-	}
-	return fmt.Sprintf("%dh", mins/60)
 }
 
 func (m *Model) deployName() string {
@@ -670,28 +705,30 @@ func (m *Model) renderFooter() string {
 	t := m.ctx.Theme
 	if ((m.state == stateMain || m.treeFocusInImmersive) && m.tree.FilterActive()) ||
 		(m.state != stateChatView && m.sectionHasFilterFocus()) {
-		return t.Hint.Render(" type to filter · enter apply · esc cancel")
+		return t.HelpDesc.Render(" type to filter · ") + components.RenderBoundedHints(t, []components.KeyDesc{{Key: "↵", Desc: "apply"}, {Key: "esc", Desc: "cancel"}}, max(0, m.ctx.Width-20), components.KeyDesc{Key: "esc", Desc: "cancel"})
 	}
 	var view string
 	// This feature applies only to the states listed; all others use the fallback.
 	//exhaustive:ignore
 	switch {
-	case m.state == stateDrainProgress:
+	case m.state == stateDrainProgress && !m.treeFocusInImmersive:
 		view = m.renderDrainFooter()
 	case m.treeFocusInImmersive && m.isImmersiveState():
 		view = m.renderTreeFooter()
+	case m.state == stateMain && m.peekWorkspace && m.connected.Count() > 0 && m.connected.PanelHeight > 0:
+		view = components.RenderBoundedHints(t, []components.KeyDesc{{Key: "↑/↓", Desc: "links"}, {Key: "↵", Desc: "open"}, {Key: "←/tab", Desc: "tree"}, {Key: "→", Desc: "tabs"}, {Key: "esc", Desc: "back"}, {Key: "z", Desc: "expand"}}, m.ctx.Width-2, components.KeyDesc{Key: "?", Desc: "help"})
 	case m.state == stateMain && m.peekWorkspace:
-		view = components.RenderBoundedHints(t, []components.KeyDesc{{Key: "tab", Desc: "tree"}, {Key: "←/→", Desc: "tabs"}, {Key: "1", Desc: "back"}, {Key: "?", Desc: "help"}}, m.ctx.Width-2, components.KeyDesc{Key: "?", Desc: "help"})
+		view = components.RenderBoundedHints(t, []components.KeyDesc{{Key: "←/tab", Desc: "tree"}, {Key: "→", Desc: "tabs"}, {Key: "1", Desc: "back"}, {Key: "?", Desc: "help"}}, m.ctx.Width-2, components.KeyDesc{Key: "?", Desc: "help"})
 	case m.state == stateChatView:
 		view = m.renderChatFooter()
-	case m.state == stateLogView || m.state == stateEventsView || m.state == stateDescribeView ||
+	case m.state == stateMetricsView || m.state == stateLogView || m.state == stateEventsView || m.state == stateDescribeView ||
 		m.state == stateHotView || m.state == stateForwardsList:
 		view = m.renderImmersiveFooter()
 	default:
 		view = m.renderTreeFooter()
 	}
 	return lipgloss.NewStyle().
-		Background(t.P.BG2).
+		Background(t.P.BG).
 		Width(m.ctx.Width).
 		MaxHeight(1).
 		Padding(0, 1).
@@ -699,22 +736,6 @@ func (m *Model) renderFooter() string {
 }
 
 // renderTreeFooter follows the selected resource even while another tab stays open.
-func (m *Model) renderTreeFooter() string {
-	bindings := m.contextualShortHelp()
-	hints := make([]components.KeyDesc, 0, len(bindings)+1)
-	if m.ctx.Width < minSplitWidth || m.treeFocusInImmersive {
-		hints = append(hints, components.KeyDesc{Key: "tab", Desc: "pane"})
-	}
-	for _, binding := range bindings {
-		h := binding.Help()
-		if m.treeFocusInImmersive && h.Key == m.ctx.Keys.Quit.Help().Key {
-			h.Desc = "close view"
-		}
-		hints = append(hints, components.KeyDesc{Key: h.Key, Desc: h.Desc})
-	}
-	return components.RenderBoundedHints(m.ctx.Theme, hints, m.ctx.Width-2, components.KeyDesc{Key: "?", Desc: "all keys"})
-}
-
 func (m *Model) renderChatFooter() string {
 	action := components.KeyDesc{Key: "↵", Desc: "send"}
 	if m.chat.Streaming() {
@@ -742,15 +763,13 @@ func (m *Model) renderImmersiveFooter() string {
 	return components.RenderBoundedHints(m.ctx.Theme, hints, m.ctx.Width-2, components.KeyDesc{Key: "?", Desc: "help"})
 }
 
-// renderDrainFooter omits esc/help/quit — esc is intentionally a no-op
-// while a drain is in flight (the operator shouldn't be able to half-drain
-// a node by accident), and the only useful key is ctrl+c to cancel. The
-// body already labels the cancel chord; the footer reads as a dim echo so
-// the row isn't blank.
+// renderDrainFooter distinguishes leaving progress from cancelling work.
 func (m *Model) renderDrainFooter() string {
-	t := m.ctx.Theme
-	dim := lipgloss.NewStyle().Foreground(t.P.Dim)
-	return dim.Render("⌃c") + " " + dim.Render("cancel")
+	return components.RenderBoundedHints(m.ctx.Theme, []components.KeyDesc{
+		{Key: "esc", Desc: "leave running"},
+		{Key: "tab", Desc: "tree"},
+		{Key: "⌃c", Desc: "cancel", Write: true},
+	}, m.ctx.Width-2, components.KeyDesc{})
 }
 
 // contextualShortHelp builds the footer keymap from the current tree row.
@@ -765,24 +784,31 @@ func (m *Model) renderDrainFooter() string {
 //     so global affordances read as a separate visual register.
 func (m *Model) contextualShortHelp() []key.Binding {
 	k := m.ctx.Keys
-	tail := []key.Binding{k.Filter, k.Help, k.Quit}
+	tail := []key.Binding{k.Search, k.Filter, k.Help, k.Quit}
 	if m.tree.SelectedRef().Kind != "" && m.tree.SelectedRef().Kind != k8s.KindContainer {
 		tail = append([]key.Binding{key.NewBinding(key.WithKeys("enter"), key.WithHelp("↵", "open"))}, tail...)
 	}
 	if m.tree.Focus().Kind != k8s.KindContextList {
-		tail = append([]key.Binding{k.Refresh}, tail...)
+		tail = append([]key.Binding{k.Refresh, key.NewBinding(key.WithKeys("left"), key.WithHelp("←", "parent"))}, tail...)
 	}
 
 	ref := m.tree.SelectedRef()
 	reads := []key.Binding{}
 	mutators := []key.Binding{}
 	switch ref.Kind {
+	case k8s.KindGenericResource:
+		if !ref.GVR.Empty() {
+			reads = append(reads, k.Describe)
+		}
+		if ref.SubKind != "" {
+			reads = append(reads, k.Events)
+		}
 	case k8s.KindContext:
 		// Cluster picker: the inline "↵ open" hint in the tree body already
 		// teaches the drill verb. Don't restate Enter here — Jakob's rule.
 		return tail
 	case k8s.KindApp:
-		reads = append(reads, k.Describe, k.Logs, k.Events)
+		reads = append(reads, k.Describe, k.Logs, k.Events, k.Metrics)
 		if ref.SubKind == k8s.AppKindDeployment || ref.SubKind == k8s.AppKindStatefulSet {
 			mutators = append(mutators, k.Scale)
 		}
@@ -795,12 +821,12 @@ func (m *Model) contextualShortHelp() []key.Binding {
 			mutators = append(mutators, k.Restart)
 		}
 	case k8s.KindPod:
-		reads = append(reads, k.Describe, k.Logs, k.Events, k.Shell, k.PortForward)
+		reads = append(reads, k.Describe, k.Logs, k.Events, k.Metrics, k.Shell, k.PortForward)
 		mutators = append(mutators, k.Restart)
 	case k8s.KindContainer:
 		reads = append(reads, k.Describe, k.Logs, k.Events, k.Shell)
 	case k8s.KindNode:
-		reads = append(reads, k.Describe, k.Events)
+		reads = append(reads, k.Describe, k.Events, k.Metrics)
 		cordonVerb := k.Cordon
 		if info, ok := m.tree.SelectedNodeInfo(); ok && !info.Schedulable {
 			cordonVerb = key.NewBinding(
@@ -844,7 +870,7 @@ func (m *Model) renderScaleModal() string {
 		}
 	}
 	return m.renderInputDialog("Scale "+deploy, m.tree.SelectedRef().Namespace,
-		subtitle, m.scaleInput.View(), "0 stops all replicas", m.scaleError, "scale")
+		subtitle, m.scaleInput.View(), "0 stops all replicas", m.scaleError, "scale", true)
 }
 
 func currentDesiredReplicas(app k8s.AppInfo) int {
@@ -865,16 +891,21 @@ func currentDesiredReplicas(app k8s.AppInfo) int {
 func (m *Model) renderPortForwardModal() string {
 	subject := strings.ToLower(m.pfTarget.Kind) + " " + m.pfTarget.Name
 	return m.renderInputDialog("Port forward "+subject, m.pfTarget.Namespace,
-		"Ports · local:remote", m.pfInput.View(), "One port uses the same port on both sides", m.pfError, "start")
+		"Ports · local:remote", m.pfInput.View(), "One port uses the same port on both sides", m.pfError, "start", false)
 }
 
 // renderInputDialog owns form spacing, scope, feedback, and cursor placement.
 // Measure the rendered header so wrapped resource names cannot move the cursor
-// away from its input. Both forms share the same modal envelope.
-func (m *Model) renderInputDialog(title, namespace, label, input, help, validation, action string) string {
+// away from its input. Both forms share the same modal envelope; a write
+// (scale, not port-forward) takes the danger red, like every confirmation.
+func (m *Model) renderInputDialog(title, namespace, label, input, help, validation, action string, write bool) string {
 	t := m.ctx.Theme
 	w := max(1, min(66, m.ctx.Width-8))
-	parts := []string{t.CyanBold.Width(w).Render(title), t.DimTxt.Width(w).Render(m.actionScope(namespace))}
+	titleStyle, frame := t.CyanBold, t.Modal
+	if write {
+		titleStyle, frame = t.Danger, t.ModalDanger
+	}
+	parts := []string{titleStyle.Width(w).Render(title), t.DimTxt.Width(w).Render(m.actionScope(namespace))}
 	if label != "" {
 		parts = append(parts, t.DimTxt.Width(w).Render(label))
 	}
@@ -884,9 +915,9 @@ func (m *Model) renderInputDialog(title, namespace, label, input, help, validati
 		feedback = t.ErrLine.Width(w).Render(validation)
 	}
 	parts = append(parts, "", input, feedback, "", components.RenderHintRow(t, []components.KeyDesc{
-		{Key: "↵", Desc: action}, {Key: "esc", Desc: "cancel"},
+		{Key: "↵", Desc: action, Write: write}, {Key: "esc", Desc: "cancel"},
 	}))
-	return t.Modal.Width(w + 6).Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
+	return frame.Width(w + 6).Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
 }
 
 func (m *Model) renderEditConfirmModal() string {
@@ -911,10 +942,9 @@ func (m *Model) renderEditConfirmModal() string {
 	m.editViewport.SoftWrap = true
 	m.editViewport.SetContent(body)
 
-	yellow := lipgloss.NewStyle().Foreground(t.P.Yellow).Bold(true)
 	resourceStyle := lipgloss.NewStyle().Foreground(t.P.FG).Bold(true)
 	parts := []string{
-		yellow.Width(w).Render(subject),
+		t.Danger.Width(w).Render(subject),
 		"",
 		resourceStyle.Width(w).Render(resource),
 		t.DimTxt.Width(w).Render("cluster: " + m.ctx.ActiveContext),
@@ -924,25 +954,26 @@ func (m *Model) renderEditConfirmModal() string {
 	if body != "" {
 		parts = append(parts, "", m.editViewport.View())
 	}
-	parts = append(parts, "", components.RenderConfirmHint(t, "apply"), t.Hint.Render("↑/↓ · pgup/pgdown scroll diff"))
+	parts = append(parts, "", components.RenderConfirmHint(t, "apply"), components.RenderModalKeysRow(t, []components.KeyDesc{{Key: "↑/↓/pgup/pgdn", Desc: "scroll diff"}}))
 
 	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
-	return t.Modal.Render(content)
+	return t.ModalDanger.Render(content)
 }
 
+// renderConfirmModal is the y/n gate for every write but edit and scale:
+// delete, rollback, restart, cordon, drain. Framed in the danger red.
 func (m *Model) renderConfirmModal(action, resource string) string {
 	t := m.ctx.Theme
-	yellow := lipgloss.NewStyle().Foreground(t.P.Yellow).Bold(true)
 	resourceStyle := lipgloss.NewStyle().Foreground(t.P.FG).Bold(true)
 	content := lipgloss.JoinVertical(lipgloss.Left,
-		yellow.Render(action),
+		t.Danger.Render(action),
 		"",
 		resourceStyle.Render(resource),
 		t.DimTxt.Render(m.actionScope(m.tree.SelectedRef().Namespace)),
 		"",
 		components.RenderConfirmHint(t, strings.Fields(action)[0]),
 	)
-	return t.Modal.Width(max(20, min(72, m.ctx.Width-2))).Render(content)
+	return t.ModalDanger.Width(max(20, min(72, m.ctx.Width-2))).Render(content)
 }
 
 // actionScope makes the target explicit even when the dialog hides the header.
@@ -974,23 +1005,27 @@ func (m *Model) renderHelpModal() string {
 	m.helpViewport.SetContent(body)
 	content := lipgloss.JoinVertical(lipgloss.Left,
 		t.CyanBold.Render("Keyboard shortcuts"), "", m.helpViewport.View(), "",
-		t.Hint.Render("↑↓/pgup/pgdn scroll · esc/? close"))
+		components.RenderBoundedHints(t, []components.KeyDesc{{Key: "↑↓/pgup/pgdn", Desc: "scroll"}, {Key: "esc/?", Desc: "close"}}, w, components.KeyDesc{Key: "esc/?", Desc: "close"}))
 	return t.Modal.Padding(1, 2).Width(w + 6).Render(content)
 }
 
 func renderHelpGroup(t *theme.Theme, g keys.Group) string {
 	keyW := widestKey(g)
+	title, keyStyle := t.CyanBold, t.HelpKey
+	if g.Writes {
+		title, keyStyle = t.Danger, t.Danger
+	}
 	lines := make([]string, 0, 2+len(g.Pairs)+len(g.Bindings))
 	lines = append(lines,
-		t.CyanBold.Render(g.Title),
+		title.Render(g.Title),
 		t.DimTxt.Render(strings.Repeat("─", 8)),
 	)
 	for _, p := range g.Pairs {
-		lines = append(lines, helpRow(t, keyW, p.Key, p.Desc))
+		lines = append(lines, helpRow(t, keyStyle, keyW, p.Key, p.Desc))
 	}
 	for _, b := range g.Bindings {
 		h := b.Help()
-		lines = append(lines, helpRow(t, keyW, h.Key, h.Desc))
+		lines = append(lines, helpRow(t, keyStyle, keyW, h.Key, h.Desc))
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
@@ -1011,6 +1046,6 @@ func widestKey(g keys.Group) int {
 	return w
 }
 
-func helpRow(t *theme.Theme, keyW int, k, desc string) string {
-	return t.HelpKey.Width(keyW+2).Render(k) + t.HelpDesc.Render(desc)
+func helpRow(t *theme.Theme, keyStyle lipgloss.Style, keyW int, k, desc string) string {
+	return keyStyle.Width(keyW+2).Render(k) + t.HelpDesc.Render(desc)
 }

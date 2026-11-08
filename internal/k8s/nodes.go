@@ -148,20 +148,20 @@ func DrainNode(ctx context.Context, cs kubernetes.Interface, nodeName string, op
 		return err
 	}
 	pods = list.Pods()
-	uids := make(map[string]types.UID, len(pods))
+	uids := make(map[types.NamespacedName]types.UID, len(pods))
 	for _, pod := range pods {
-		uids[pod.Namespace+"/"+pod.Name] = pod.UID
+		uids[types.NamespacedName{Namespace: pod.Namespace, Name: pod.Name}] = pod.UID
 	}
 	helper.Client = drainClient{Interface: cs, uids: uids}
 	var mu sync.Mutex
-	remaining := make(map[string]bool, len(pods))
+	remaining := make(map[types.NamespacedName]bool, len(pods))
 	for _, p := range pods {
-		remaining[p.Namespace+"/"+p.Name] = true
+		remaining[types.NamespacedName{Namespace: p.Namespace, Name: p.Name}] = true
 	}
 	publish := func(phase string) {
 		names := make([]string, 0, len(remaining))
 		for name := range remaining {
-			names = append(names, name)
+			names = append(names, name.String())
 		}
 		emit(DrainEvent{Phase: phase, PodsTotal: len(pods), PodsEvicted: len(pods) - len(remaining), PodsRemaining: len(remaining), RemainingPods: names})
 	}
@@ -170,7 +170,7 @@ func DrainNode(ctx context.Context, cs kubernetes.Interface, nodeName string, op
 		mu.Lock()
 		defer mu.Unlock()
 		if err == nil {
-			delete(remaining, p.Namespace+"/"+p.Name)
+			delete(remaining, types.NamespacedName{Namespace: p.Namespace, Name: p.Name})
 		}
 		publish("waiting")
 	}

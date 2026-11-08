@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"github.com/stretchr/testify/assert"
 
 	"github.com/yunus/safina/internal/k8s"
@@ -129,5 +131,5 @@ func TestForwards_View_EmptyHasHelpfulHint(t *testing.T) {
 	f := Forwards{theme: theme.Default()}
 	body := f.View(80)
 	assert.Contains(t, body, "no active forwards")
-	assert.Contains(t, body, "press f on a pod or service row")
+	assert.Contains(t, ansi.Strip(body), "f start on a pod or service")
 }

@@ -3,6 +3,8 @@ package api
 import (
 	"time"
 
+	"k8s.io/apimachinery/pkg/types"
+
 	"github.com/yunus/safina/internal/history"
 	inv "github.com/yunus/safina/internal/investigation"
 )
@@ -22,9 +24,9 @@ type InspectRequest struct {
 	Name          string `json:"name"`
 }
 type EventsRequest struct {
-	Investigation string `json:"investigationId"`
-	Namespace     string `json:"namespace"`
-	UID           string `json:"uid"`
+	Investigation string    `json:"investigationId"`
+	Namespace     string    `json:"namespace"`
+	UID           types.UID `json:"uid"`
 }
 type LogsRequest struct {
 	Investigation string `json:"investigationId"`

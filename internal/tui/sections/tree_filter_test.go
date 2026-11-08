@@ -124,15 +124,44 @@ func TestTreeFilteredRowsPreserveRankingAndSelection(t *testing.T) {
 					for _, kind := range []string{k8s.KindApp, k8s.KindPod} {
 						tree.children.Kind = kind
 						for _, width := range []int{40, 100} {
-							tree.renderRows = &treeRenderRows{appsReady: true, podsReady: true, apps: wantApps, pods: wantPods}
+							tree.rowSnapshot = &treeRowSnapshot{children: tree.children, kind: kind, pathKey: tree.pathKey(), query: query, alphaSort: alpha, appsReady: true, podsReady: true, apps: wantApps, pods: wantPods}
 							wantFrame := tree.renderBody(c, width, 8)
-							tree.renderRows = &treeRenderRows{}
+							tree.rowSnapshot = nil
 							require.Equal(t, wantFrame, tree.renderBody(c, width, 8), "row rendering must be byte-identical")
-							tree.renderRows = nil
+							tree.rowSnapshot = nil
 						}
 					}
 				})
 			}
 		}
 	}
+}
+
+func TestCancellingFilterRestoresOriginalResourceSelection(t *testing.T) {
+	c := newEventsCtx()
+	tree := NewTree(c)
+	tree.Focused = true
+	tree.path = append(tree.path, NodeRef{Kind: k8s.KindWorkloadsFold, Name: "Workloads"})
+	tree.SetChildren(tree.path, &Children{Kind: k8s.KindApp, Apps: []k8s.AppInfo{{Kind: "Deployment", Name: "alpha"}, {Kind: "Deployment", Name: "beta"}, {Kind: "Deployment", Name: "gamma"}}})
+	tree.cursor = 2
+	original := tree.SelectedRef()
+	tree.Update(tea.KeyPressMsg{Code: '/', Text: "/"}, c)
+	tree.Update(tea.KeyPressMsg{Code: 'a', Text: "a"}, c)
+	tree.Update(tea.KeyPressMsg{Code: tea.KeyEscape}, c)
+	require.Equal(t, original, tree.SelectedRef(), "Esc cancels the query edit, not the original selection")
+}
+
+func TestClearingCommittedFilterKeepsTheSelectedResource(t *testing.T) {
+	c := newEventsCtx()
+	tree := NewTree(c)
+	tree.Focused = true
+	tree.path = append(tree.path, NodeRef{Kind: k8s.KindWorkloadsFold, Name: "Workloads"})
+	tree.SetChildren(tree.path, &Children{Kind: k8s.KindApp, Apps: []k8s.AppInfo{{Kind: "Deployment", Name: "alpha"}, {Kind: "Deployment", Name: "beta"}, {Kind: "Deployment", Name: "gamma"}}})
+	tree.Update(tea.KeyPressMsg{Code: '/', Text: "/"}, c)
+	tree.Update(tea.PasteMsg{Content: "gamma"}, c)
+	tree.Update(tea.KeyPressMsg{Code: tea.KeyEnter}, c)
+	require.Equal(t, "gamma", tree.SelectedRef().Name)
+	tree.Update(tea.KeyPressMsg{Code: tea.KeyEscape}, c)
+	require.Empty(t, tree.FilterValue())
+	require.Equal(t, "gamma", tree.SelectedRef().Name, "clearing a filter must not jump to row zero")
 }

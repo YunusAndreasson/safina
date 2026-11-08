@@ -217,8 +217,16 @@ func decode(data []byte, value any) error {
 }
 
 func writeJSON(w http.ResponseWriter, value any) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		http.Error(w, "Could not encode response", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(value)
+	// Once headers are sent, a disconnected client cannot receive an error response.
+	if _, err := w.Write(append(data, '\n')); err != nil {
+		return
+	}
 }
 
 func (s *server) investigation(w http.ResponseWriter, r *http.Request) {

@@ -45,21 +45,21 @@ func TestIncomingReviewRequiresDiffOverrideAndFinalApproval(t *testing.T) {
 	m.openIncoming()
 	m.incoming.mode = "review"
 	m.incoming.review = &inv.Review{Before: 2, After: 3, RequiredOverrides: []string{"hpa"}, Diff: "- replicas: 2\n+ replicas: 3"}
-	m.handleIncoming(keyMsg("a"))
+	m.handleIncoming(keyMsg("A"))
 	require.Equal(t, "review", m.incoming.mode)
 	require.Contains(t, m.incoming.err, "diff")
 	m.handleIncoming(keyMsg("d"))
-	m.handleIncoming(keyMsg("a"))
+	m.handleIncoming(keyMsg("A"))
 	require.Equal(t, "review", m.incoming.mode)
 	require.Contains(t, m.incoming.err, "override")
 	m.handleIncoming(keyMsg("o"))
-	_, cmd := m.handleIncoming(keyMsg("a"))
+	_, cmd := m.handleIncoming(keyMsg("A"))
 	require.Nil(t, cmd)
 	require.Equal(t, "approve", m.incoming.mode)
 	m.handleIncoming(keyMsg("n"))
 	require.Equal(t, "review", m.incoming.mode)
 	m.incoming.review.Noop = true
-	m.handleIncoming(keyMsg("a"))
+	m.handleIncoming(keyMsg("A"))
 	require.Equal(t, "review", m.incoming.mode)
 	m.incoming.review.Noop = false
 	m.handleIncoming(keyMsg("e"))
@@ -195,7 +195,7 @@ func incomingApprovalScenario(t *testing.T, kind string) {
 	}
 	first.handleIncoming(keyMsg("d"))
 	require.Contains(t, first.renderIncoming(), "COMPLETE EXECUTABLE DIFF")
-	first.handleIncoming(keyMsg("a"))
+	first.handleIncoming(keyMsg("A"))
 	require.Equal(t, "approve", first.incoming.mode)
 	_, cmd = first.handleIncoming(keyMsg("y"))
 	require.NotNil(t, cmd)
@@ -271,7 +271,7 @@ func incomingMCPCall[Out any](t *testing.T, session *mcp.ClientSession, name str
 func TestIncomingPromptsRemainVisibleAboveLongSummary(t *testing.T) {
 	for _, tc := range []struct{ key, text string }{
 		{"e", "revision): 4"},
-		{"a", "EXECUTE this exact reviewed change once?"},
+		{"A", "EXECUTE this exact reviewed change once?"},
 		{"x", "Reject this proposal revision?"},
 	} {
 		t.Run(tc.key, func(t *testing.T) {
@@ -367,4 +367,19 @@ type failedDetail struct{ operatorAPI }
 
 func (*failedDetail) Investigation(context.Context, string) (inv.Investigation, error) {
 	return inv.Investigation{}, errors.New("detail unavailable")
+}
+
+// Approval writes to the cluster, so like every other write it takes a
+// capital (Barbarossa mode): a slipped lowercase a must never approve.
+func TestIncomingApprovalNeedsCapitalA(t *testing.T) {
+	m := incomingModel(t)
+	m.openIncoming()
+	m.incoming.mode = "review"
+	m.incoming.review = &inv.Review{Before: 2, After: 3, Diff: "- replicas: 2\n+ replicas: 3"}
+	m.handleIncoming(keyMsg("d"))
+	m.handleIncoming(keyMsg("a"))
+	require.Equal(t, "review", m.incoming.mode)
+	m.handleIncoming(keyMsg("A"))
+	require.Equal(t, "approve", m.incoming.mode)
+	require.Contains(t, m.renderIncoming(), "EXECUTE this exact reviewed change once?")
 }

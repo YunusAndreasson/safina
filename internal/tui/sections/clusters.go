@@ -136,7 +136,7 @@ func (s *ClusterSwitcher) Card(c *tuictx.Ctx, termW, termH int, activeContext st
 		t.CyanBold.Render("Switch cluster · ● current"),
 		ansi.Truncate(prompt, inner, "…"), "",
 		s.renderList(t, inner, listH, activeContext), "",
-		t.Hint.Render("↑↓ select · ↵ switch · esc cancel"))
+		components.RenderBoundedHints(t, []components.KeyDesc{{Key: "↑↓", Desc: "select"}, {Key: "↵", Desc: "switch"}, {Key: "esc", Desc: "cancel"}}, inner, components.KeyDesc{Key: "esc", Desc: "cancel"}))
 	panel := t.Modal.Padding(1, 2).Width(inner + 6).Render(stack)
 	return panel
 }

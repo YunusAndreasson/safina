@@ -1,6 +1,10 @@
 package investigation
 
-import "time"
+import (
+	"time"
+
+	"k8s.io/apimachinery/pkg/types"
+)
 
 // Review is broker-computed. Approval journals the complete executable change,
 // not just an opaque digest, so recovery never needs an agent's explanation.
@@ -10,7 +14,7 @@ type Review struct {
 	MutationDigest      string    `json:"mutationDigest,omitempty"`
 	TemplateDigest      string    `json:"templateDigest,omitempty"`
 	RestartAt           string    `json:"restartAt,omitempty"`
-	RollbackUID         string    `json:"rollbackUID,omitempty"`
+	RollbackUID         types.UID `json:"rollbackUID,omitempty"`
 	RollbackVersion     string    `json:"rollbackVersion,omitempty"`
 	History             string    `json:"history,omitempty"`
 	ID                  string    `json:"id"`

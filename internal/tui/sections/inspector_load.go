@@ -19,6 +19,7 @@ import (
 // stale result when the user navigated to a different selection between
 // fetch dispatch and arrival.
 type InspectorDetailMsg struct {
+	Context               string
 	Kind, Namespace, Name string
 	// SubKind matches AppInfo.Kind for App rows (Deployment, StatefulSet,
 	// CronJob, …); empty for any other kind. Lets the inspector pick the
@@ -52,7 +53,7 @@ type InspectorDetailMsg struct {
 func LoadInspectorDetail(ctx context.Context, mgr *k8s.Manager, contextName, kind, subKind, namespace, name string) tea.Cmd {
 	return func() tea.Msg {
 		defer debug.Track("k8s.inspect", "context", contextName, "kind", kind, "name", name)()
-		out := InspectorDetailMsg{Kind: kind, SubKind: subKind, Namespace: namespace, Name: name}
+		out := InspectorDetailMsg{Context: contextName, Kind: kind, SubKind: subKind, Namespace: namespace, Name: name}
 		client, ok := mgr.GetClient(contextName)
 		if !ok {
 			out.Err = errContextNotFound

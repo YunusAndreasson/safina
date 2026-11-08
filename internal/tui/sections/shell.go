@@ -382,8 +382,7 @@ func (s *Shell) bodyForPhase(c *tuictx.Ctx) string {
 			t.DimTxt.Render("Attach a debug container with "+k8s.DefaultDebugImage+"?"),
 			t.Hint.Render("(includes curl, dig, tcpdump, jq, vim, …)"),
 			"",
-			t.GreenTxt.Render("↵")+t.DimTxt.Render(" debug  ")+
-				t.DimTxt.Render("esc cancel"),
+			components.RenderModalKeysRow(t, []components.KeyDesc{{Key: "↵", Desc: "attach debug", Write: true}, {Key: "esc", Desc: "cancel"}}),
 		)
 	case phaseError:
 		red := lipgloss.NewStyle().Foreground(t.P.Red).Bold(true)
@@ -396,7 +395,7 @@ func (s *Shell) bodyForPhase(c *tuictx.Ctx) string {
 			"",
 			t.Meta.Render(emsg),
 			"",
-			t.DimTxt.Render("press esc to close"),
+			components.RenderModalKeysRow(t, []components.KeyDesc{{Key: "esc", Desc: "close"}}),
 		)
 	case phaseLive:
 		return s.renderTerminal(t)
@@ -449,7 +448,7 @@ func (s *Shell) keysRow(t *theme.Theme) string {
 	var hints []components.KeyDesc
 	switch s.phase {
 	case phaseNoShell:
-		hints = []components.KeyDesc{{Key: "↵", Desc: "attach debug"}, {Key: "esc", Desc: "cancel"}}
+		hints = []components.KeyDesc{{Key: "↵", Desc: "attach debug", Write: true}, {Key: "esc", Desc: "cancel"}}
 	case phaseConnect, phaseDebug:
 		hints = []components.KeyDesc{{Key: "esc", Desc: "cancel"}}
 	case phaseError:

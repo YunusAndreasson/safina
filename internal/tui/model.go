@@ -30,6 +30,7 @@ type state int
 
 const (
 	stateMain state = iota
+	stateMetricsView
 	stateIncoming
 	// stateLogView / stateEventsView / stateDescribeView / stateHotView /
 	// stateForwardsList / stateDrainProgress are kept as drivers of *which*
@@ -127,26 +128,32 @@ type Model struct {
 	historyFilter      history.Filter
 	historySelection   *history.Record
 	ctx                *tuictx.Ctx
+	configWriter       func(*config.AppConfig) error
 
 	cacheWarmTarget cacheWarmTarget
 	cacheWarmEpoch  uint64
 	cacheWarmCancel context.CancelFunc
 
-	tree      sections.Tree
-	chat      sections.Chat
-	logs      sections.Logs
-	events    sections.Events
-	describe  sections.Describe
-	shell     sections.Shell
-	palette   sections.Palette
-	browser   sections.Browser
-	forwards  sections.Forwards
-	drain     sections.Drain
-	inspector sections.Inspector
-	activity  sections.Activity
-	connected sections.Connected
-	hot       sections.Hot
-	clusters  sections.ClusterSwitcher
+	metrics               sections.Metrics
+	metricsHistoryRequest uint64
+	metricsHistoryPending bool
+	metricsHistoryAt      time.Time
+	tree                  sections.Tree
+	chat                  sections.Chat
+	logs                  sections.Logs
+	events                sections.Events
+	describe              sections.Describe
+	shell                 sections.Shell
+	palette               sections.Palette
+	browser               sections.Browser
+	forwards              sections.Forwards
+	drain                 sections.Drain
+	inspector             sections.Inspector
+	activity              sections.Activity
+	connected             sections.Connected
+	connectedBack         []sections.PaletteEntry
+	hot                   sections.Hot
+	clusters              sections.ClusterSwitcher
 
 	// allContexts caches the kube-context list for the Ctrl+K switcher.
 	// Seeded by SetContexts at startup.
@@ -166,12 +173,13 @@ type Model struct {
 	// cancelled turns. Only the update loop replaces it.
 	chatStreamCh <-chan claude.Event
 
-	workspaceExpanded bool
-	helpReturnState   state
-	helpViewport      viewport.Model
-	state             state
-	paletteTarget     *sections.PaletteEntry
-	paletteAction     string
+	workspaceExpanded     bool
+	helpReturnState       state
+	navigationReturnState state
+	helpViewport          viewport.Model
+	state                 state
+	paletteTarget         *sections.PaletteEntry
+	paletteAction         string
 
 	scaleInput textinput.Model
 	scaleError string
@@ -227,6 +235,7 @@ type Model struct {
 	logTarget        logTarget
 	logSource        sections.NodeRef
 	logRequest       uint64
+	viewRequests     map[state]uint64
 	logPickerRequest uint64
 	logCancel        context.CancelFunc
 	searchRequest    uint64
@@ -283,7 +292,10 @@ type Model struct {
 	// FocusMsg / BlurMsg in update.go flip it. Starts true because a
 	// program that never sees a focus report (xterm without focus events)
 	// must still refresh; tea.View.ReportFocus opts us in to the reports.
-	focused bool
+	focused             bool
+	shiftHintsSupported bool
+	shiftHeld           bool
+	shiftKeys           uint8 // independently held left/right Shift keys
 
 	// lightBgWarned latches the one-shot banner raised when
 	// BackgroundColorMsg reports a light terminal. TokyoNight is designed
@@ -447,6 +459,7 @@ func (m *Model) syncChatContext() {
 // optional events fetch). Returns a batched Cmd the caller plumbs into
 // the outer Update return; nil when there's nothing to load.
 func (m *Model) syncSelection() tea.Cmd {
+	metricCmd := m.syncMetrics(false)
 	warmCmd := m.scheduleCacheWarm()
 	m.syncChatContext()
 	// Inspector rebuilds its base snapshot synchronously and may
@@ -455,16 +468,16 @@ func (m *Model) syncSelection() tea.Cmd {
 	connCmd := m.connected.SetSelection(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext, &m.tree)
 
 	if m.ctx.ActiveContext == "" || m.ctx.Manager == nil {
-		return tea.Batch(inspectCmd, connCmd, warmCmd)
+		return tea.Batch(inspectCmd, connCmd, warmCmd, metricCmd)
 	}
 	ref := m.tree.SelectedRef()
 	kind, ns, name := activityTarget(ref, &m.tree)
 	if kind == "" {
 		m.activity.Clear()
-		return tea.Batch(inspectCmd, connCmd, warmCmd)
+		return tea.Batch(inspectCmd, connCmd, warmCmd, metricCmd)
 	}
 	actCmd := m.activity.SetSelection(m.ctx.Background, m.ctx.Manager, m.ctx.ActiveContext, kind, name, ns)
-	return tea.Batch(inspectCmd, actCmd, connCmd, warmCmd)
+	return tea.Batch(inspectCmd, actCmd, connCmd, warmCmd, metricCmd)
 }
 
 // activityTarget maps a tree NodeRef to the involvedObject triple the
@@ -529,6 +542,15 @@ func (m *Model) SetStartupBanner(msg string) {
 	m.startupBanner = msg
 }
 
+// persistAppConfig centralizes the UI's preference writes. Tests can supply
+// an in-memory writer without changing the user's home or application paths.
+func (m *Model) persistAppConfig(cfg *config.AppConfig) error {
+	if m.configWriter != nil {
+		return m.configWriter(cfg)
+	}
+	return config.Save(cfg)
+}
+
 // saveConfig persists the app config. Called on context switch (to record
 // LastCluster) as well as from the quit paths — it must have NO teardown
 // side effects: forwards and informers survive a cluster switch by design
@@ -545,7 +567,7 @@ func (m *Model) saveConfig() {
 	}
 	cfg.LastCluster = m.ctx.ActiveContext
 	cfg.LastNamespace = m.ctx.ActiveNamespace
-	_ = config.Save(cfg)
+	_ = m.persistAppConfig(cfg)
 }
 
 // shutdown persists config and releases process-lifetime resources. Called

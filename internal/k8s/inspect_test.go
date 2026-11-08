@@ -57,7 +57,7 @@ func TestInspectPod_ProjectsKeyFields(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "10.4.0.12", d.PodIP)
 	assert.Equal(t, "10.0.0.5", d.HostIP)
-	assert.Equal(t, "Burstable", d.QoS)
+	assert.Equal(t, corev1.PodQOSBurstable, d.QoS)
 	assert.Equal(t, "ReplicaSet", d.OwnerKind)
 	assert.Equal(t, "p1-7d9f", d.OwnerName)
 	require.Len(t, d.Containers, 1)
@@ -200,8 +200,42 @@ func TestInspectNode_TaintsAndPressure(t *testing.T) {
 	assert.Equal(t, "5.15.0", d.KernelVersion)
 	assert.Equal(t, "Ubuntu 22.04", d.OSImage)
 	require.Len(t, d.Taints, 1)
-	assert.Equal(t, "NoSchedule", d.Taints[0].Effect)
+	assert.Equal(t, corev1.TaintEffectNoSchedule, d.Taints[0].Effect)
 	// Only abnormal non-Ready conditions whose Status is True surface.
 	require.Len(t, d.Conditions, 1)
-	assert.Equal(t, "MemoryPressure", d.Conditions[0].Type)
+	assert.Equal(t, corev1.NodeMemoryPressure, d.Conditions[0].Type)
+}
+
+func TestInspectIngressPreservesNamedAndNumericBackendPorts(t *testing.T) {
+	named := networkingv1.ServiceBackendPort{Name: "http"}
+	numeric := networkingv1.ServiceBackendPort{Number: 8080}
+	ingress := &networkingv1.Ingress{
+		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "shop"},
+		Spec: networkingv1.IngressSpec{
+			Rules: []networkingv1.IngressRule{{Host: "shop.example.com", IngressRuleValue: networkingv1.IngressRuleValue{
+				HTTP: &networkingv1.HTTPIngressRuleValue{Paths: []networkingv1.HTTPIngressPath{{Path: "/", Backend: networkingv1.IngressBackend{
+					Service: &networkingv1.IngressServiceBackend{Name: "web", Port: named},
+				}}}},
+			}}},
+			DefaultBackend: &networkingv1.IngressBackend{Service: &networkingv1.IngressServiceBackend{Name: "fallback", Port: numeric}},
+		},
+	}
+	client := fake.NewSimpleClientset(ingress)
+	detail, err := InspectIngress(t.Context(), client, "shop", "web")
+	require.NoError(t, err)
+	require.Len(t, detail.Backends, 2)
+	require.Equal(t, named, detail.Backends[0].Port)
+	require.Equal(t, numeric, detail.Backends[1].Port)
+}
+
+func TestSelectorFormattingRetainsMatchExpressions(t *testing.T) {
+	selector := &metav1.LabelSelector{
+		MatchLabels:      map[string]string{"app": "web"},
+		MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "tier", Operator: metav1.LabelSelectorOpIn, Values: []string{"frontend", "edge"}}},
+	}
+	require.Equal(t, "app=web,tier in (edge,frontend)", formatLabelSelector(selector))
+	require.Empty(t, formatLabelSelector(nil))
+	require.Empty(t, formatLabelSelector(&metav1.LabelSelector{}))
+	selector.MatchExpressions[0].Operator = "unsupported"
+	require.Equal(t, "<invalid selector>", formatLabelSelector(selector))
 }
