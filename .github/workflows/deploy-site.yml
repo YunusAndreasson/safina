@@ -1,0 +1,53 @@
+# Puts site/ live on every push to main that touches it, or by hand from the
+# Actions tab: the same gate as lint.yml's site job (`pnpm verify`, which
+# builds dist/), then `pnpm ship`, which guards the Worker name, uploads,
+# checks the edge serves exactly this build and rolls back if it doesn't.
+# The Worker is static files only (site/wrangler.jsonc); site/README.md
+# §Deploy has the setup.
+name: deploy-site
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - '.github/workflows/deploy-site.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+# One deploy at a time, and never cut off half way: a newer push waits for
+# the running one, so the last push is the one that ends up live.
+concurrency:
+  group: deploy-site
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check the Cloudflare secrets
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::Set CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID in the repository's Actions secrets (site/README.md §Deploy)."
+            exit 1
+          fi
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '26.13.0'
+      - name: Install pinned package manager
+        working-directory: site
+        run: npm install --global "$(node -p 'require("./package.json").packageManager')"
+      - run: pnpm install --frozen-lockfile
+        working-directory: site
+      - run: pnpm verify
+        working-directory: site
+      - name: Ship
+        working-directory: site
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_SEND_METRICS: 'false'
+        run: pnpm ship

@@ -2,3 +2,9 @@
 # crashes its WASM type-checker. Keep the pair on matching versions.
 overrides:
   "@emnapi/runtime": 1.11.3
+
+# wrangler (the deploy, `pnpm ship`) brings esbuild and workerd, which ship
+# their native binaries through install scripts.
+allowBuilds:
+  esbuild: true
+  workerd: true

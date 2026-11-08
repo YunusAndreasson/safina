@@ -34,3 +34,9 @@ jobs:
         working-directory: site
       - run: pnpm verify
         working-directory: site
+      # The deploy without the upload: Cloudflare's asset server, run here,
+      # serves dist/ and the same checks as deploy-site.yml run against it.
+      - run: pnpm ship:dry
+        working-directory: site
+        env:
+          WRANGLER_SEND_METRICS: 'false'

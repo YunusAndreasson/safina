@@ -18,16 +18,56 @@ pnpm verify     # strict typed ESLint + astro check + production build
 pnpm lint       # TypeScript, Astro, accessibility, and JS tooling checks
 pnpm build      # astro check + astro build into dist/
 pnpm preview
+pnpm ship:dry   # after verify: the deploy without the upload (see Deploy)
 ```
 
 Use the Node versions declared in `package.json`; `packageManager` pins pnpm.
-CI installs from the frozen lockfile and runs `pnpm verify`. TypeScript extends
+CI installs from the frozen lockfile and runs `pnpm verify` and `pnpm ship:dry`. TypeScript extends
 Astro's strictest preset. Browser scripts belong in `src/scripts/` and are
 referenced with `<script src="…">` so ESLint can analyze their complete types.
 The root `make verify-all` also runs these checks.
 
 Dev mode encodes AVIF on demand, so the first load of each screenshot is
 slow. `build` pre-encodes everything and caches it in `node_modules/.astro`.
+
+## Deploy
+
+The site is static files on a Cloudflare Worker, `safina-site`
+(`wrangler.jsonc`: no Worker code, Cloudflare's asset server answers every
+request). Every push to `main` that touches `site/` deploys it
+(`.github/workflows/deploy-site.yml`), and the Actions tab can run that
+workflow by hand. The job runs `pnpm verify`, then `pnpm ship`
+(`scripts/ship.mjs`):
+
+1. **Guard**: `wrangler.jsonc` names `safina-site`, has no `main` and no
+   route, and `dist/` is built. Any other Worker name is refused, so a
+   copied config can't overwrite another Worker on the account.
+2. **Upload** with `wrangler deploy`, the commit in the version's message.
+3. **Smoke** at the edge, retried for 90 s while the version spreads: `/` and
+   the 404 page are this build's bytes, `_headers` isn't served, hashed
+   `/_astro/*` files are cached as immutable and nothing else is, the
+   recordings come as `text/plain` (so the edge compresses them, about
+   500 KB to 38 KB), and the preview carries `X-Robots-Tag: noindex`.
+4. **Roll back** to the version that was live before if the smoke fails.
+
+`pnpm ship:dry` runs the same guard and checks with no upload: wrangler
+validates the files, then serves `dist/` through Cloudflare's asset server
+on this machine, as the preview host, and the checks run against it. The
+`verify` workflow runs it on every pull request. Headers live in
+`public/_headers`; change a rule and its check together.
+
+**No domain yet.** safina.dev is parked at Afternic (Nov 2026), so the site
+lives at `safina-site.<account>.workers.dev`, noindexed by `_headers`, and
+`site` in `astro.config.mjs` still says safina.dev for canonical and social
+URLs. At launch: add the domain to `wrangler.jsonc` as a custom domain, set
+`site`, and change the guard and the noindex check in `ship.mjs` in the same
+commit.
+
+**Setup, once.** Two repository secrets under Settings, Secrets and
+variables, Actions: `CLOUDFLARE_ACCOUNT_ID`, and `CLOUDFLARE_API_TOKEN`, a
+token from the dashboard (My Profile, API Tokens) made from the "Edit
+Cloudflare Workers" template and limited to this account. Locally,
+`pnpm ship` uses `wrangler login` instead; CI is the normal way to deploy.
 
 ## Launch switch
 

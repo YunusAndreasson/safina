@@ -34,3 +34,4 @@ debug.log
 /site/.astro/
 /site/.demo/
 /site/.frames/
+/site/.wrangler/

@@ -1,0 +1,26 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  // The one Worker this site ships to. scripts/ship.mjs refuses any other
+  // name, so a copied config can't overwrite another Worker on the account
+  // (openarabic.io's live Worker shares it).
+  "name": "safina-site",
+
+  // No newer than the workerd that wrangler installs, or `wrangler dev` won't start.
+  "compatibility_date": "2026-10-23",
+
+  // Static files only: no `main`, so no Worker code runs and every request is
+  // the asset server's. public/_headers sets caching and the preview's noindex.
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "404-page",
+    // astro.config.mjs `trailingSlash: "never"`.
+    "html_handling": "drop-trailing-slash"
+  },
+
+  // Preview only, until a domain is bought: safina.dev is parked at Afternic
+  // (Nov 2026). The site lives at safina-site.<account>.workers.dev, noindexed.
+  // At launch, add the domain here as a custom domain and update ship.mjs's
+  // guard and README §Deploy in the same change.
+  "workers_dev": true,
+  "preview_urls": false
+}

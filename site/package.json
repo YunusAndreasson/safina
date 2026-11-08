@@ -12,7 +12,9 @@
     "demo:stop": "scripts/demo-cluster.sh stop",
     "capture": "scripts/capture.sh",
     "lint": "eslint . --max-warnings 0",
-    "verify": "pnpm lint && pnpm build"
+    "verify": "pnpm lint && pnpm build",
+    "ship": "node scripts/ship.mjs",
+    "ship:dry": "node scripts/ship.mjs --dry-run"
   },
   "engines": {
     "node": "^22.22.3 || ^24.16.0 || >=26.3.0"
@@ -35,7 +37,8 @@
     "eslint-plugin-jsx-a11y-x": "0.2.0",
     "globals": "17.14.0",
     "typescript": "^6.0.3",
-    "typescript-eslint": "8.72.1"
+    "typescript-eslint": "8.72.1",
+    "wrangler": "4.156.0"
   },
   "packageManager": "pnpm@11.28.4"
 }
