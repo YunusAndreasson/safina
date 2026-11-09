@@ -1,0 +1,29 @@
+internal/terminal/terminal.go
+  s_e4fba5c61a87db::t_7c43d806e82f90 150-154
+README.md
+  s_e4fba5c61a87db::t_2a80cf309bc598 35-43
+.github/workflows/lint.yml
+  s_e4fba5c61a87db::t_c5a0dc10a7e05e 22-28
+  s_e4fba5c61a87db::t_859dc23a0fcf7a 19-21
+  s_e4fba5c61a87db::t_0896da5613c44d 18
+docs/development.md
+  s_e4fba5c61a87db::t_2a80cf309bc598 27-28
+.github/workflows/release.yml
+  s_e4fba5c61a87db::t_cadb26d42023c7 1-3,5-12,25-28,35-36,38-39,41-46,65-70,79-95,97-98,101-106,109-110,128,131,138
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "398a02af94fb58dad70e350dd5c8e030b772c77a",
+  "prompts": {},
+  "sessions": {
+    "s_e4fba5c61a87db": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "df5c136d-3b61-4233-b362-54c5fd7b33d3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Yunus Andreasson <yunus@edenmind.com>"
+    }
+  }
+}
