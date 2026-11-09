@@ -1,7 +1,7 @@
 ---
 // The page's parts in the words every product site uses (Jakob's law), in
 // page order, each lit while you're in it (src/scripts/nav.ts). The page
-// shows the same word for each: the hero's "Deep dive" button, Features
+// shows the same word for each: the Deep dive label under the tour, Features
 // for the named features from Chat to Also on board, and the eyebrows over
 // Compare's and FAQ's titles. The button lights up at Get safina.
 const links = [
@@ -64,9 +64,9 @@ const links = [
     color: var(--beacon);
   }
   /* The button stays put from the first frame, as the primary action in the
-     best product bars does: the hero repeats it a size larger, which ranks
-     them without moving either. At Get safina the button is where you are:
-     it holds its lit, hovered state. */
+     best product bars does; on wide screens the hero ends on the line it
+     leads to. At Get safina the button is where you are: it holds its lit,
+     hovered state. */
   .nav__cta[aria-current] {
     --lift: 0.035;
     box-shadow:

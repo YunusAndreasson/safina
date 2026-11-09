@@ -2,16 +2,10 @@
 import { getImage } from "astro:assets";
 import firstLight from "../assets/img/first-light.jpg";
 import { release, downloadUrl } from "../data/release";
+import Command from "./Command.astro";
 
 const widths = [960, 1280, 1672];
-// Shown one command per line; copied as the single line it is. A line too
-// long for its column may break in one place only, between a URL's host and
-// its path, so `owner/repo` never splits and no word is left alone.
 const command = release.available ? release.install : release.fromSource;
-const steps = command.split(" && ").map((line) => {
-  const m = /^(.*?:\/\/[^/]+\/)(.+)$/.exec(line);
-  return m ? { head: m[1] ?? line, tail: m[2] ?? "" } : { head: line, tail: "" };
-});
 const [avif, fallback] = await Promise.all([
   getImage({ src: firstLight, format: "avif", widths, quality: 60 }),
   getImage({ src: firstLight, format: "webp", width: 1672, quality: 74 }),
@@ -43,16 +37,7 @@ const [avif, fallback] = await Promise.all([
           <p class="lede">Binaries for macOS and Linux come with the first release, <i>in&nbsp;sha&nbsp;Allah</i>. Until then, build&nbsp;from&nbsp;source:</p>
         )
       }
-      <div class="command">
-        <pre class="command__code" id="cmd" data-text={command}><code>{steps.map(({ head, tail }) => <span class="command__line">{head}{tail && <><wbr />{tail}</>}</span>)}</code></pre>
-        <button class="command__copy" type="button" data-copy="cmd">
-          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
-            <rect x="5.25" y="5.25" width="8.5" height="8.5" rx="1.75" fill="none" stroke="currentColor" stroke-width="1.4" />
-            <path d="M10.5 3.2v-.45A1.75 1.75 0 0 0 8.75 1H3.25A1.75 1.75 0 0 0 1.5 2.75v5.5A1.75 1.75 0 0 0 3.25 10h.45" fill="none" stroke="currentColor" stroke-width="1.4" />
-          </svg>
-          <span data-copy-label>Copy</span>
-        </button>
-      </div>
+      <Command id="cmd" text={command} />
       {
         release.available ? (
           <div class="downloads" data-downloads>
@@ -87,8 +72,6 @@ const [avif, fallback] = await Promise.all([
   </div>
   <p class="visually-hidden" aria-live="polite" data-copy-status></p>
 </section>
-
-<script src="../scripts/install.ts"></script>
 
 <style>
   /* The same ship in calm water: the stage the install block rises from. */
@@ -171,71 +154,8 @@ const [avif, fallback] = await Promise.all([
     text-wrap: balance;
   }
 
-  .command {
-    position: relative;
+  .install__main > :global(.command) {
     margin-top: var(--s2);
-    border-radius: var(--radius-frame);
-    background: var(--tn-bg);
-    box-shadow:
-      0 0 0 1px rgb(from var(--tn-fg) r g b / 11%),
-      0 1px 0 0 var(--tn-edge) inset,
-      0 30px 80px -40px rgb(from var(--tn-blue) r g b / 25%);
-  }
-  .command__code {
-    margin: 0;
-    padding: 18px 120px 18px 22px;
-    overflow-x: auto;
-    /* A line too long for its column wraps after a slash, hanging under
-       the prompt, rather than scrolling. */
-    white-space: pre-wrap;
-    font-family: var(--mono);
-    font-size: var(--t-ui);
-    line-height: 1.8;
-    color: var(--tn-fg);
-    scrollbar-width: thin;
-    scrollbar-color: rgb(from var(--tn-fg) r g b / 25%) transparent;
-  }
-  .command__code code {
-    font-size: inherit;
-  }
-  .command__line {
-    display: block;
-    padding-left: 2.2ch;
-    text-indent: -2.2ch;
-  }
-  .command__line::before {
-    content: "$";
-    margin-right: 1.2ch;
-    /* The app's dim, lifted just enough to clear 3:1 on the terminal ground. */
-    color: oklch(from var(--tn-dim) calc(l + 0.06) c h);
-    user-select: none;
-  }
-  .command__copy {
-    position: absolute;
-    top: 12px;
-    right: 12px;
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    height: 36px;
-    padding: 0 12px;
-    border-radius: 9px;
-    border: 1px solid var(--tn-edge);
-    background: var(--tn-bg2);
-    color: var(--tn-fg);
-    font-size: var(--t-micro);
-    font-weight: var(--w-ui);
-    cursor: pointer;
-    transition:
-      border-color 160ms,
-      color 160ms;
-  }
-  .command__copy:hover {
-    border-color: rgb(from var(--tn-fg) r g b / 36%);
-  }
-  .command__copy[data-state="done"] {
-    color: var(--tn-green);
-    border-color: rgb(from var(--tn-green) r g b / 40%);
   }
 
   .downloads__list {
@@ -274,17 +194,6 @@ const [avif, fallback] = await Promise.all([
   @media (width <= 640px) {
     .band {
       aspect-ratio: 4 / 3;
-    }
-    /* Long lines wrap after a slash, hanging under the prompt. */
-    .command__code {
-      padding: 16px 16px 64px;
-      font-size: var(--t-micro);
-    }
-    .command__copy {
-      top: auto;
-      bottom: 12px;
-      left: 12px;
-      right: auto;
     }
   }
   /* What the download is, in the terminal's face, the way a release page

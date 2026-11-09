@@ -117,15 +117,21 @@
     --s5: clamp(72px, 11.3svh, 102px);
     /* How much of the product window shows on the first screen: whatever
        height the nav and the hero copy leave over. The copy is the headline
-       (1.02 of --t-mark a line) plus about 170px of pitch (it once held
-       buttons too; their room now goes to the storm above the headline, not
-       to the window, so the ship keeps its frame), sitting clamp(24px, 6svh,
-       72px) above the window; 116px covers the nav and the space under it. */
+       (1.02 of --t-mark a line) plus about 250px of pitch and install line
+       (170px on phones and portrait screens, which leave the line out),
+       sitting clamp(24px, 6svh, 72px) above the window; 116px covers the
+       nav and the space under it.
+       At most 46% of the storm's frame: the bow ends just above that line.
+       A screen taller than 16:10 gets the 16:10 frame, and the window takes
+       the extra height, which would otherwise be empty sky over the copy. */
     --peek: clamp(
       88px,
-      100svh - 285px - var(--head-lines) * 1.02 * var(--t-mark) - clamp(24px, 6svh, 72px),
-      46svh
+      100svh - 366px - var(--head-lines) * 1.02 * var(--t-mark) - clamp(24px, 6svh, 72px),
+      100svh - 0.54 * min(100svh, 100vw / 1.6)
     );
+    /* The height the storm photograph is framed to: the space above the
+       window is 54% of it. The whole screen, unless the window takes more. */
+    --frame: min(100svh, (100svh - var(--peek)) / 0.54);
     /* Corners: windows (frames and the command block) share one radius,
        controls another. A tray holding controls takes the control radius
        plus its padding, so nested corners stay concentric. */
@@ -208,8 +214,14 @@
     line-height: 1.55;
     font-kerning: normal;
     font-optical-sizing: auto;
-    -webkit-font-smoothing: antialiased;
     overflow-x: clip;
+
+    /* Unsmoothed glyphs keep light text from thickening on the dark page,
+       but only a Retina screen has the pixels for them: at 1x they leave
+       the light weights a ragged pixel wide, so there macOS smooths. */
+    @media (resolution >= 2x) {
+      -webkit-font-smoothing: antialiased;
+    }
   }
 
   /* Two kinds of term in running text, both in the brightest ink so they
@@ -455,6 +467,9 @@
       oklch(from var(--beacon-hi) calc(l + var(--lift)) c h),
       oklch(from var(--beacon) calc(l + var(--lift)) c h)
     );
+    /* Under .btn's transparent border the gradient would otherwise tile
+       again: a 1px line of its dark end on top, its light end below. */
+    background-origin: border-box;
     color: var(--beacon-ink);
     box-shadow:
       0 1px 0 0 rgb(from var(--foam) r g b / 60%) inset,

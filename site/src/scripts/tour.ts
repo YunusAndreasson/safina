@@ -148,7 +148,11 @@ function setupTour(root: HTMLElement) {
   let hovering = false;
   let focusWithin = false;
   let reeling = false;
-  const canReel = () => !paused && keysInView && !hovering && !focusWithin && document.visibilityState === "visible";
+  // A screen tall enough to show the keys in the first frame would start the
+  // reel during the opening; there it waits for the visitor's first scroll.
+  let scrolled = window.scrollY > 0;
+  const canReel = () =>
+    !paused && scrolled && keysInView && !hovering && !focusWithin && document.visibilityState === "visible";
   const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
   const reel = async () => {
     if (reeling) return;
@@ -195,6 +199,16 @@ function setupTour(root: HTMLElement) {
       kick();
     });
     document.addEventListener("visibilitychange", kick);
+    if (!scrolled) {
+      addEventListener(
+        "scroll",
+        () => {
+          scrolled = true;
+          kick();
+        },
+        { once: true, passive: true },
+      );
+    }
     if (controls) {
       new IntersectionObserver(
         ([entry]) => {

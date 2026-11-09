@@ -2,6 +2,8 @@
 import { getImage } from "astro:assets";
 import storm from "../assets/img/storm-landscape.jpg";
 import stormPortrait from "../assets/img/storm-portrait.jpg";
+import { release } from "../data/release";
+import Command from "./Command.astro";
 
 // Art direction: a recomposed portrait frame for phones, the wide IMAX frame
 // everywhere else. AVIF for every current browser, WebP for the bare <img>.
@@ -44,6 +46,16 @@ const portraitMedia = "(aspect-ratio <= 4/5)";
         lazy <code>client-&#8288;go</code> informers, with session history in SQLite and an MCP server for
         your&nbsp;agent.
       </p>
+      {
+        release.available && (
+          <div class="get">
+            <Command id="cmd-hero" text={release.install} />
+            <p class="get__note">
+              Linux x86-64 and ARM64. On a Mac, <a href="#install">build from source</a>.
+            </p>
+          </div>
+        )
+      }
     </div>
   </div>
 </section>
@@ -73,6 +85,11 @@ const portraitMedia = "(aspect-ratio <= 4/5)";
     width: 100%;
     height: 100%;
   }
+  /* The storm is framed for the space above the window (--frame), so the
+     window always starts just under the bow, however tall the screen. */
+  .stage__photo {
+    height: var(--frame);
+  }
   /* A backdrop, not the subject: muted so the product is the brightest thing
      on the first screen. */
   .stage__photo img {
@@ -90,7 +107,7 @@ const portraitMedia = "(aspect-ratio <= 4/5)";
     inset: 0;
     background:
       linear-gradient(90deg, rgb(from var(--abyss) r g b / 82%) 0%, rgb(from var(--abyss) r g b / 55%) 34%, rgb(from var(--abyss) r g b / 0%) 62%),
-      linear-gradient(0deg, var(--abyss) 0, var(--abyss) calc(var(--peek) - 8px), rgb(from var(--abyss) r g b / 0%) calc(var(--peek) + 26svh)),
+      linear-gradient(0deg, var(--abyss) 0, var(--abyss) calc(var(--peek) - 8px), rgb(from var(--abyss) r g b / 0%) calc(var(--peek) + 0.26 * var(--frame))),
       linear-gradient(180deg, rgb(from var(--abyss) r g b / 55%) 0%, rgb(from var(--abyss) r g b / 0%) 18%);
   }
   /* The storm recedes as the window takes the frame. */
@@ -137,10 +154,50 @@ const portraitMedia = "(aspect-ratio <= 4/5)";
     bottom: calc(var(--peek) + clamp(24px, 6svh, 72px));
     z-index: 1;
   }
+  /* Beside the ship, the copy and its buttons sit as one block in the middle
+     of the sky between the bar and the window. The window can't rise past
+     the bow, so on a big screen a block anchored to the window would leave
+     the sky above it empty. Never closer to the window than the usual gap.
+     Portrait frames keep the anchor: their ship sits above the copy. */
+  @media (width > 640px) and (aspect-ratio > 4/5) and (height > 520px) {
+    .stage__copy {
+      top: var(--nav-h);
+      bottom: var(--peek);
+      display: flex;
+      flex-direction: column;
 
-  /* What it is, ending on the tagline, then the sentence under it. Wide and
-     light, like a title card. No buttons: the bar holds Get safina and Deep
-     dive from the first frame, and the window below is the deep dive. */
+      &::before,
+      &::after {
+        content: "";
+        flex: 1 0 0;
+      }
+      &::after {
+        min-height: clamp(24px, 6svh, 72px);
+      }
+    }
+  }
+
+  /* What it is, ending on the tagline, then the sentence under it and the
+     line that installs it, at the lede's measure. Get safina stays in the
+     bar. Phones, portrait frames and very short windows leave the line to
+     the bar's button, so the ship above the copy stays clear. */
+  .get {
+    margin-top: clamp(20px, 3.4svh, 36px);
+    max-width: 49ch;
+    font-size: var(--t-pitch);
+
+    @media (width <= 1100px) {
+      max-width: var(--measure);
+    }
+    @media (width <= 640px), (aspect-ratio <= 4/5), (height <= 520px) {
+      display: none;
+    }
+  }
+  .get__note {
+    margin-top: 10px;
+    font-size: var(--t-micro);
+    color: var(--fog);
+  }
   /* The hero's first stroke is the T's bar, and right below it is the
      button's hard edge. Against a filled edge a hung bar reads as an
      overshoot, so here the ink sits flush: 0.021em is the T's own side

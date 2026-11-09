@@ -286,7 +286,10 @@ lights up in cyan while you're in its part (`aria-current`,
 label under the tour window, the feature names, and the eyebrows over
 Compare's and FAQ's titles. `copy-tells.mjs` fails the build's copy check
 when a nav word has no match on the page. The hero holds no buttons: the
-bar has both, and the window under the headline is the deep dive.
+bar has both. On wide screens it ends on the install line instead, the
+same command block as Get safina, as one block centred in the sky over the
+window; phones and portrait screens leave it to the bar's button, so the
+ship above the copy stays clear.
 
 The name is Arabic, and the copy carries a few Arabic and Islamic touches,
 kept subtle enough that a reader who has never met them loses nothing.
