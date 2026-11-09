@@ -32,11 +32,15 @@
 curl -fsSL https://safina.run/install.sh | sh
 ```
 
-Linux on x86-64 or ARM64, with glibc 2.34 or newer. The
-[script](site/public/install.sh) checks the archive against the release's
-SHA-256 sums and puts `safina` in `~/.local/bin` (`SAFINA_INSTALL_DIR` and
-`SAFINA_VERSION` change where and which). The archives are on the
-[releases page](https://github.com/YunusAndreasson/safina/releases); on macOS,
+Linux on x86-64 or ARM64 with glibc 2.34 or newer, or macOS 13 or newer on
+Apple silicon or Intel. The [script](site/public/install.sh) checks the
+archive against the release's SHA-256 sums and puts `safina` in
+`~/.local/bin` (`SAFINA_INSTALL_DIR` and `SAFINA_VERSION` change where and
+which). The archives are on the
+[releases page](https://github.com/YunusAndreasson/safina/releases). The macOS
+binaries aren't notarized, so an archive saved from a browser needs
+`xattr -d com.apple.quarantine safina` before macOS runs it; the script's
+download doesn't. Anywhere else,
 [build from source](docs/development.md#build-from-source).
 
 Run `safina`. It reads your kubeconfig, asks which cluster, and `?` shows the

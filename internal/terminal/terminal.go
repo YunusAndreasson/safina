@@ -147,7 +147,11 @@ func (t *Terminal) Key(key tea.KeyPressMsg) ([]byte, error) {
 	if key.Mod.Contains(tea.ModMeta) || key.Mod.Contains(tea.ModSuper) {
 		mods |= g.ModSuper
 	}
-	err = errors.Join(event.SetAction(g.KeyActionPress), event.SetKey(logical), event.SetMods(mods), event.SetUTF8(text), t.encoder.SetFromTerminal(t.native))
+	// SetFromTerminal turns option-as-alt off, and on macOS that sent Alt+x
+	// as a bare "x". The host terminal has already decided what Option
+	// means: an Alt here is one it reported, and Option text arrives as text.
+	err = errors.Join(event.SetAction(g.KeyActionPress), event.SetKey(logical), event.SetMods(mods), event.SetUTF8(text),
+		t.encoder.SetFromTerminal(t.native), t.encoder.SetOptionAsAlt(g.OptionAsAltTrue))
 	if err != nil {
 		return nil, err
 	}

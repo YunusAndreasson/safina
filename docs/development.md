@@ -24,7 +24,8 @@ cp bin/safina /usr/local/bin/
 - For source builds: Python 3.12+, a C compiler, and pkg-config; CGO must be enabled.
   `make` downloads checksum-verified Zig and Ghostty sources into `.build/libghostty`
   and builds the static terminal library. The first build can take several minutes.
-  The bootstrap supports Linux/macOS on x86-64/ARM64; CI builds Linux on both.
+  The bootstrap supports Linux/macOS on x86-64/ARM64. CI verifies on Linux and macOS,
+  and releases build each platform on its own runner.
   Installed binaries do not require Zig or a separate libghostty shared library.
 - `make lint` / `make fmt` download and run golangci-lint 2.15.0
 - Access to a Kubernetes cluster (via kubeconfig)

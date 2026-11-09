@@ -1,10 +1,15 @@
-# Builds the Linux binaries and publishes them as a GitHub release when a
-# version tag is pushed (`git tag v0.1.0 && git push origin v0.1.0`). Run it
-# by hand from the Actions tab to build and test without publishing.
+# Builds the Linux and macOS binaries and publishes them as a GitHub release
+# when a version tag is pushed (`git tag v0.1.0 && git push origin v0.1.0`).
+# Run it by hand from the Actions tab to build and test without publishing.
 #
-# Each binary is built natively, on Ubuntu 22.04 for x86-64 and ARM64, and
-# must need nothing newer than glibc 2.34 (Ubuntu 22.04, Debian 12, RHEL 9,
-# Fedora 35 and later), which install.sh checks for.
+# Each binary is built natively on its own platform's runner:
+# - Linux on Ubuntu 22.04, for x86-64 and ARM64. It must need nothing newer
+#   than glibc 2.34 (Ubuntu 22.04, Debian 12, RHEL 9, Fedora 35 and later),
+#   which install.sh checks for.
+# - macOS on macOS runners, for Apple silicon and Intel. It must run on
+#   macOS 13 or later and link nothing beyond the system's own libraries.
+#   It carries the linker's ad-hoc signature, which Apple silicon requires,
+#   and is not notarized.
 # libghostty is linked in statically; the archive names are the ones
 # site/src/data/release.ts and site/public/install.sh download.
 name: release
@@ -17,16 +22,28 @@ permissions:
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
+env:
+  # The oldest macOS the binaries support. Only Apple's toolchain reads it;
+  # libghostty targets 13.0 too.
+  MACOSX_DEPLOYMENT_TARGET: '13.0'
 jobs:
   build:
     strategy:
       fail-fast: true
       matrix:
         include:
-          - arch: amd64
+          - os: linux
+            arch: amd64
             runner: ubuntu-22.04
-          - arch: arm64
+          - os: linux
+            arch: arm64
             runner: ubuntu-22.04-arm
+          - os: darwin
+            arch: arm64
+            runner: macos-26
+          - os: darwin
+            arch: amd64
+            runner: macos-26-intel
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 40
     steps:
@@ -45,11 +62,13 @@ jobs:
             go build -trimpath -ldflags "-s -w -X github.com/YunusAndreasson/safina/internal/version.Version=$version" \
             -o out/safina ./cmd/safina
           echo "VERSION=$version" >> "$GITHUB_ENV"
-      # The binary must run, report the tag, and need nothing newer than the
-      # glibc the install script promises.
-      - name: Check the binary
+      - name: Check the version
+        run: ./out/safina --version | tee /dev/stderr | grep -qx "safina version $VERSION"
+      # The binary must need nothing newer than the glibc the install script
+      # promises.
+      - name: Check the Linux binary
+        if: runner.os == 'Linux'
         run: |
-          ./out/safina --version | tee /dev/stderr | grep -qx "safina version $VERSION"
           ldd out/safina
           if ldd out/safina | grep -v -E 'linux-vdso|ld-linux|libc\.so|libresolv\.so|libm\.so|libpthread\.so|libdl\.so' | grep -q '=>'; then
             echo "::error::safina links a shared library beyond glibc"; exit 1
@@ -57,14 +76,38 @@ jobs:
           floor=$(objdump -T out/safina | grep -o 'GLIBC_[0-9.]*' | sort -V -u | tail -1)
           echo "needs $floor"
           [ "$(printf '%s\n' "$floor" GLIBC_2.34 | sort -V | tail -1)" = GLIBC_2.34 ] || { echo "::error::needs $floor, newer than 2.34"; exit 1; }
+      # Without the deployment target, the binary would need the runner's own
+      # macOS version.
+      - name: Check the macOS binary
+        if: runner.os == 'macOS'
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          otool -L out/safina
+          if otool -L out/safina | tail -n +2 | grep -v -E '^[[:space:]]+/(usr/lib|System/Library)/' | grep -q .; then
+            echo "::error::safina links a library outside macOS"; exit 1
+          fi
+          minos=$(otool -l out/safina | awk '/LC_BUILD_VERSION/{f=1} f && $1=="minos"{print $2; exit}')
+          echo "needs macOS $minos"
+          [ "$minos" = "$MACOSX_DEPLOYMENT_TARGET" ] || { echo "::error::needs macOS $minos, not $MACOSX_DEPLOYMENT_TARGET"; exit 1; }
+          want=arm64; [ "$ARCH" = amd64 ] && want=x86_64
+          [ "$(lipo -archs out/safina)" = "$want" ] || { echo "::error::built for $(lipo -archs out/safina), not $want"; exit 1; }
+          codesign --verify --strict out/safina
       - name: Package
+        env:
+          ARCHIVE: safina_${{ matrix.os }}_${{ matrix.arch }}.tar.gz
         run: |
           cp LICENSE README.md out/
-          tar -czf "safina_linux_${{ matrix.arch }}.tar.gz" -C out safina LICENSE README.md
+          if [ "$RUNNER_OS" = macOS ]; then
+            # bsdtar would add AppleDouble ._ entries and the files' xattrs.
+            tar --no-mac-metadata --no-xattrs -czf "$ARCHIVE" -C out safina LICENSE README.md
+          else
+            tar -czf "$ARCHIVE" -C out safina LICENSE README.md
+          fi
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: safina_linux_${{ matrix.arch }}
-          path: safina_linux_${{ matrix.arch }}.tar.gz
+          name: safina_${{ matrix.os }}_${{ matrix.arch }}
+          path: safina_${{ matrix.os }}_${{ matrix.arch }}.tar.gz
           if-no-files-found: error
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -82,14 +125,14 @@ jobs:
         with:
           merge-multiple: true
       - name: Checksums
-        run: sha256sum safina_linux_*.tar.gz | tee checksums.txt
+        run: sha256sum safina_*.tar.gz | tee checksums.txt
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: safina_linux_*.tar.gz
+          subject-path: safina_*.tar.gz
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "safina $TAG" --generate-notes --verify-tag \
-            safina_linux_amd64.tar.gz safina_linux_arm64.tar.gz checksums.txt
+            safina_linux_amd64.tar.gz safina_linux_arm64.tar.gz safina_darwin_arm64.tar.gz safina_darwin_amd64.tar.gz checksums.txt
