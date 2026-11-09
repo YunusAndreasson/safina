@@ -1,0 +1,31 @@
+site/src/scripts/install.ts
+  s_e4fba5c61a87db::t_b4b1baf47c7edd 43-45
+site/src/components/Install.astro
+  s_e4fba5c61a87db::t_052009b1502182 35,47-48,61
+site/public/install.sh
+  s_e4fba5c61a87db::t_188f9e07570cb5 6-9,28-31,40-60,85
+site/src/components/Opening.astro
+  s_e4fba5c61a87db::t_052009b1502182 54
+site/AGENTS.md
+  s_e4fba5c61a87db::t_052009b1502182 153
+site/src/data/release.ts
+  s_e4fba5c61a87db::t_f6ba5034a6aab1 26,32-33
+site/README.md
+  s_e4fba5c61a87db::t_052009b1502182 81-92,97-99
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5ff28097b8f9251d0ec323e35dc09d75da0eb506",
+  "prompts": {},
+  "sessions": {
+    "s_e4fba5c61a87db": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "df5c136d-3b61-4233-b362-54c5fd7b33d3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Yunus Andreasson <yunus@edenmind.com>"
+    }
+  }
+}
