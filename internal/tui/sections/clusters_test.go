@@ -120,3 +120,18 @@ func TestClusterSwitcher_QueryRoundTrips(t *testing.T) {
 	s.SetQuery("hello")
 	assert.Equal(t, "hello", s.Query())
 }
+
+// Typing part of a name means that name. Fuzzy scores alone ranked a long
+// GKE-style context (e…k…s across separators) above the EKS one for "eks",
+// so Enter opened the wrong cluster.
+func TestClusterSwitcher_LiteralMatchOutranksScatteredOne(t *testing.T) {
+	s := NewClusterSwitcher()
+	items := clusterItems("gke_acme-services-000000_asia-south1-b_gke-shop", "lab", "deploy_bot@eks-main.eu-north-1.eksctl.io")
+	s.Open(items, "lab")
+
+	s.SetQuery("eks")
+	sel, ok := s.Selected()
+	require.True(t, ok)
+	assert.Equal(t, "deploy_bot@eks-main.eu-north-1.eksctl.io", sel.Name)
+	require.Len(t, s.matches, 2, "scattered matches still follow")
+}

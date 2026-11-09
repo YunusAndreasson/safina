@@ -74,7 +74,7 @@ func (m *Model) loadLogTargets(ref sections.NodeRef, automatic bool) tea.Cmd {
 			}
 		}
 		for _, pod := range pods {
-			containers, err := client.ListContainersForPod(loadCtx, pod.Namespace, pod.Name)
+			containers, err := client.PodContainers(loadCtx, pod.Namespace, pod.Name)
 			if err != nil {
 				result.err = err
 				return result
@@ -110,7 +110,7 @@ func (m *Model) setLogTargets(msg logTargetsMsg) tea.Cmd {
 			return nil
 		}
 		if len(msg.targets) == 0 {
-			m.logs.EndStream(errors.New("no containers available for logs"))
+			m.logs.EndStream(errors.New("no pods to read logs from"))
 			return nil
 		}
 		original, treeFocus := m.state, m.treeFocusInImmersive

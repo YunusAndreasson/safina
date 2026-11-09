@@ -1,10 +1,12 @@
 package sections
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
 
 	"github.com/YunusAndreasson/safina/internal/tui/theme"
@@ -26,6 +28,20 @@ func TestLogsPreserveStreamAcrossReadBoundaries(t *testing.T) {
 		l.Append("stream\n")
 		require.Equal(t, "fresh\nstream\n", l.YankPayload())
 	}
+}
+
+// zap's console encoder separates fields with tabs. Each record must still
+// take one row, or follow scrolls to a bottom the pane never shows.
+func TestLogsFollowTabbedRecordsToTheNewest(t *testing.T) {
+	ctx := &tuictx.Ctx{Theme: theme.Default()}
+	l := NewLogs(ctx)
+	l.SetPaneSize(60, 12)
+	for i := range 30 {
+		l.Append(fmt.Sprintf("2026-11-09T16:%02d:00.000Z\tinfo\tMetrics\t{\"resource\": {\"host.name\": \"node-a-workers-0f3c9b2e71d45a86\"}}\n", i))
+	}
+	rows := strings.Split(ansi.Strip(l.Body(ctx)), "\n")
+	require.Len(t, rows, 12)
+	require.Contains(t, strings.Join(rows, "\n"), "16:29:00")
 }
 
 func TestLogsStartWithoutWrapping(t *testing.T) {

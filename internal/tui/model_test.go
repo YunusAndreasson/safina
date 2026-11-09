@@ -113,13 +113,15 @@ func TestActionSuccessMsg(t *testing.T) {
 	assert.Equal(t, "restarted · nginx/default", actionSuccessMsg("restarted", "nginx/default"))
 }
 
-func TestIsCtxDone(t *testing.T) {
-	assert.True(t, isCtxDone(context.Canceled))
-	assert.True(t, isCtxDone(context.DeadlineExceeded))
-	assert.True(t, isCtxDone(fmt.Errorf("wrap: %w", context.Canceled)))
-	assert.False(t, isCtxDone(errors.New("context canceled")))
-	assert.False(t, isCtxDone(errors.New("some random error")))
-	assert.False(t, isCtxDone(nil))
+func TestIsCanceled(t *testing.T) {
+	assert.True(t, isCanceled(context.Canceled))
+	assert.True(t, isCanceled(fmt.Errorf("wrap: %w", context.Canceled)))
+	// A timeout is the cluster not answering, not the user moving on.
+	assert.False(t, isCanceled(context.DeadlineExceeded))
+	assert.False(t, isCanceled(fmt.Errorf("dial tcp 34.91.196.24:443: %w", context.DeadlineExceeded)))
+	assert.False(t, isCanceled(errors.New("context canceled")))
+	assert.False(t, isCanceled(errors.New("some random error")))
+	assert.False(t, isCanceled(nil))
 }
 
 // ── Banner system ────────────────────────────────────────────────────

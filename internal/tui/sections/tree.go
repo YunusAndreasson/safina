@@ -1,6 +1,7 @@
 package sections
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -1268,10 +1269,19 @@ func (t *Tree) renderBody(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	if t.children == nil && t.LoadErr != nil {
 		message := t.LoadErr.Error()
 		hint := components.RenderModalKeysRow(th, []components.KeyDesc{{Key: "r", Desc: "retry"}, {Key: "esc", Desc: "back"}})
-		if apierrors.IsForbidden(t.LoadErr) || apierrors.IsUnauthorized(t.LoadErr) {
+		switch {
+		case apierrors.IsUnauthorized(t.LoadErr):
+			// 401: the cluster didn't accept the credentials at all, which a
+			// fresh login fixes; RBAC has no say yet.
+			message = "Credentials rejected: " + message
+			hint = th.Hint.Render("Log in again, then retry · ") + hint
+		case namespacesDenied(t.LoadErr):
+			message = "Permission denied: " + message
+			hint = th.Hint.Render("Scoped to one namespace? Start with --namespace NAME · ") + components.RenderModalKeysRow(th, []components.KeyDesc{{Key: "esc", Desc: "back"}})
+		case apierrors.IsForbidden(t.LoadErr):
 			message = "Permission denied: " + message
 			hint = th.Hint.Render("Check Kubernetes access · ") + components.RenderModalKeysRow(th, []components.KeyDesc{{Key: "esc", Desc: "back"}})
-		} else if apierrors.IsNotFound(t.LoadErr) {
+		case apierrors.IsNotFound(t.LoadErr):
 			message = "Resource unavailable: " + message
 		}
 		return lipgloss.JoinVertical(lipgloss.Left,
@@ -1774,7 +1784,7 @@ func (t *Tree) renderAppRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 				hpaCell = th.MetaOn(hpaText, bg)
 			}
 		}
-		nameCell := th.NameStrongOn(components.TruncPad(a.Name, nW), bg)
+		nameCell := th.NameStrongOn(components.TruncMiddlePad(a.Name, nW), bg)
 		ageCell := th.Age(a.Age, bg)
 
 		vals := []string{nameCell}
@@ -2280,23 +2290,30 @@ func (t *Tree) renderNodeRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	// btop's temperature column plays for hardware throttling.
 	const (
 		hW   = 1
-		stW  = 12
 		prW  = 4
 		cpuW = sparkWidth + 1 + 4 // sparkline + space + 4-char "100%"
 		memW = sparkWidth + 1 + 4
 		podW = 9
+		// Generated node names share a long pool prefix; below this the
+		// rows can't be told apart.
+		nameMin = 16
 	)
 	gaps := components.GapTotal(7)
+	stW, stLabel := 12, "STATUS"
 	nW := tableW - hW - stW - prW - cpuW - memW - podW - gaps
-	if nW < 10 {
-		nW = 10
+	if nW < nameMin {
+		// STATUS collapses to its dot, as in the Pods table; the health
+		// glyph and the Inspector still say what is wrong.
+		nW += stW - 1
+		stW, stLabel = 1, ""
 	}
+	nW = max(nW, 10)
 	cols := []int{hW, nW, stW, prW, cpuW, memW, podW}
 	aligns := []components.Align{
 		components.AlignLeft, components.AlignLeft, components.AlignLeft,
 		components.AlignLeft, components.AlignRight, components.AlignRight, components.AlignRight,
 	}
-	header := components.Header(th, []string{"", "NAME", "STATUS", "PRES", "CPU%", "MEM%", "PODS"}, cols, aligns)
+	header := components.Header(th, []string{"", "NAME", stLabel, "PRES", "CPU%", "MEM%", "PODS"}, cols, aligns)
 
 	start, end := components.VisibleRange(t.cursor, len(nodes), rowsAvail-1)
 	out := []string{header}
@@ -2305,7 +2322,7 @@ func (t *Tree) renderNodeRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 		selected := i == t.cursor && t.Focused
 		bg := th.RowBgFor(i, selected)
 		health := healthGlyphColored(th, n.Health, bg)
-		nameCell := th.NameStrongOn(components.TruncPad(n.Name, nW), bg)
+		nameCell := th.NameStrongOn(components.TruncMiddlePad(n.Name, nW), bg)
 		statusCell := th.StatusGlyph(n.Status, stW, bg)
 		pressureCell := renderPressureCell(th, n.Pressures, prW, bg)
 		cpuBuf, memBuf := t.metricSeriesFor(k8s.KindNode, "", n.Name)
@@ -3599,4 +3616,16 @@ func (t *Tree) rememberResourceFilter() {
 		}
 		t.resourceFilters[t.pathKey()] = t.filter.Value()
 	}
+}
+
+// namespacesDenied reports a 403 on listing namespaces across the cluster.
+// The account may still read a namespace of its own, which safina opens
+// when the context or --namespace names it.
+func namespacesDenied(err error) bool {
+	var status apierrors.APIStatus
+	if !apierrors.IsForbidden(err) || !errors.As(err, &status) {
+		return false
+	}
+	d := status.Status().Details
+	return d != nil && d.Kind == "namespaces" && d.Name == ""
 }

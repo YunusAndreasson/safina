@@ -9,6 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
 	"github.com/YunusAndreasson/safina/internal/broker"
 	"github.com/YunusAndreasson/safina/internal/config"
@@ -88,6 +89,7 @@ color-coded status, and perform actions like scaling, rollback, and log viewing.
 				fmt.Fprintf(os.Stderr, "Error creating Kubernetes client: %v\n", err)
 				os.Exit(1)
 			}
+			mgr.SetKubeconfigLoader(func() (*clientcmdapi.Config, error) { return config.LoadKubeConfig(kubeconfig) })
 			skipNames := make([]string, len(mgr.Skipped))
 			for i, s := range mgr.Skipped {
 				skipNames[i] = s.Name
@@ -125,6 +127,7 @@ color-coded status, and perform actions like scaling, rollback, and log viewing.
 
 			if namespace != "" {
 				model.SetActiveNamespace(namespace)
+				mgr.SetNamespace(namespace)
 			}
 
 			// Bubble Tea v2 moves AltScreen + MouseMode into declarative

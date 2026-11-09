@@ -228,3 +228,10 @@ func (m *Model) raiseReadError(text string, retry func() tea.Cmd) tea.Cmd {
 	}
 	return cmd
 }
+
+// recordReadError files a failed read, with its retry, in the notifications
+// without raising the banner: for a view that already shows the error.
+func (m *Model) recordReadError(text string, retry func() tea.Cmd) {
+	m.recordNotification(text, true)
+	m.notifications[len(m.notifications)-1].retry = retry
+}

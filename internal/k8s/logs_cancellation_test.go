@@ -24,7 +24,7 @@ func TestLogProducerExitsWhenCanceledWithoutAnyReceiver(t *testing.T) {
 				<-r.Context().Done()
 			}))
 			defer server.Close()
-			cs, err := newStreamingClient(&rest.Config{Host: server.URL})
+			cs, err := newStreamingClient(&rest.Config{Host: server.URL}, nil)
 			require.NoError(t, err)
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()

@@ -1,6 +1,8 @@
 package sections
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -328,11 +330,15 @@ func (l *Logs) renderContent(prefix logRenderCheckpoint) {
 				}
 			}
 		}
-		if q == "" {
-			b.WriteString(colorizeLogLine(line, l.theme))
-		} else {
-			b.WriteString(highlight(line, q, caseSensitive, hl))
+		out := colorizeLogLine(line, l.theme)
+		if q != "" {
+			out = highlight(line, q, caseSensitive, hl)
 		}
+		// The viewport cuts a line at the pane edge counting a tab as no
+		// width, then lipgloss draws the tab as four spaces. The overflow
+		// wrapped onto a row the viewport never counted, so follow stopped
+		// half a screen short of the newest record.
+		b.WriteString(strings.ReplaceAll(out, "\t", "    "))
 	}
 	// If the unfinished line did not match, the whole render is reusable.
 	if len(l.filtered) == 0 || l.filtered[len(l.filtered)-1] != len(l.lines)-1 {
@@ -508,6 +514,10 @@ func (l *Logs) viewportBlock(c *tuictx.Ctx) string {
 	switch {
 	case l.jq.err != nil:
 		st.Err = l.jq.err
+	case len(l.lines) == 0 && l.streamErr != nil && !errors.Is(l.streamErr, context.Canceled):
+		// Why the stream never started (no pods left, access denied) is the
+		// answer here; "no log output" only sent the reader to retry.
+		st.Err = l.streamErr
 	case len(l.lines) == 0 && l.streamEnded:
 		st.Empty = true
 		st.Empty_ = "No log output. Press l to reopen logs."

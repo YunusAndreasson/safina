@@ -38,7 +38,7 @@ func TestStartInformers_SyncsAndExposesListers(t *testing.T) {
 		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "d1", Namespace: "ns"}},
 		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "s1", Namespace: "ns"}},
 	)
-	set := startInformers(cs)
+	set := startInformers(cs, "")
 	require.NotNil(t, set)
 	t.Cleanup(set.close)
 
@@ -67,7 +67,7 @@ func TestStartInformers_SyncsAndExposesListers(t *testing.T) {
 
 func TestInformerSet_CloseIdempotent(t *testing.T) {
 	cs := fake.NewSimpleClientset()
-	set := startInformers(cs)
+	set := startInformers(cs, "")
 	require.NotNil(t, set)
 	// Two closes must not panic on a closed channel.
 	set.close()
@@ -165,7 +165,7 @@ func TestInformers_TransformStripsSecretValues(t *testing.T) {
 			"password": []byte("hunter2"),
 		},
 	})
-	set := startInformers(cs)
+	set := startInformers(cs, "")
 	require.NotNil(t, set)
 	t.Cleanup(set.close)
 
@@ -188,7 +188,7 @@ func TestInformers_TransformStripsConfigMapValues(t *testing.T) {
 		Data:       map[string]string{"config.yaml": "verbose: true"},
 		BinaryData: map[string][]byte{"blob.bin": {0x01, 0x02}},
 	})
-	set := startInformers(cs)
+	set := startInformers(cs, "")
 	require.NotNil(t, set)
 	t.Cleanup(set.close)
 
@@ -214,7 +214,7 @@ func TestInformers_TransformStripsManagedFieldsAndLastApplied(t *testing.T) {
 			ManagedFields: []metav1.ManagedFieldsEntry{{Manager: "kubectl"}},
 		},
 	})
-	set := startInformers(cs)
+	set := startInformers(cs, "")
 	require.NotNil(t, set)
 	t.Cleanup(set.close)
 
@@ -236,7 +236,7 @@ func TestInformers_TransformStripsManagedFieldsAndLastApplied(t *testing.T) {
 
 func TestInformerSet_PropagatesPodCreate(t *testing.T) {
 	cs := fake.NewSimpleClientset() // empty cluster at sync time
-	set := startInformers(cs)
+	set := startInformers(cs, "")
 	require.NotNil(t, set)
 	t.Cleanup(set.close)
 
@@ -264,7 +264,7 @@ func TestInformerSet_PropagatesPodDelete(t *testing.T) {
 	cs := fake.NewSimpleClientset(
 		&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "doomed", Namespace: "ns"}},
 	)
-	set := startInformers(cs)
+	set := startInformers(cs, "")
 	require.NotNil(t, set)
 	t.Cleanup(set.close)
 
@@ -292,7 +292,7 @@ func TestInformerSet_PropagatesPodDelete(t *testing.T) {
 func TestInformerSet_PropagatesNodeCreate(t *testing.T) {
 	// Same contract for nodes — ClusterHealth iterates this lister.
 	cs := fake.NewSimpleClientset()
-	set := startInformers(cs)
+	set := startInformers(cs, "")
 	require.NotNil(t, set)
 	t.Cleanup(set.close)
 

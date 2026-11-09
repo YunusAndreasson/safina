@@ -29,7 +29,7 @@ func TestLogStreamOutlivesOrdinaryRequestTimeout(t *testing.T) {
 	}))
 	defer server.Close()
 	cfg := &rest.Config{Host: server.URL, Timeout: 20 * time.Millisecond}
-	client, err := newStreamingClient(cfg)
+	client, err := newStreamingClient(cfg, nil)
 	require.NoError(t, err)
 	require.Equal(t, 20*time.Millisecond, cfg.Timeout, "one-shot client keeps its timeout")
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

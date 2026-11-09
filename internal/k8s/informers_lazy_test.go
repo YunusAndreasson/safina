@@ -15,7 +15,7 @@ import (
 
 func TestInformersStartAuxiliaryKindsOnlyOnDemand(t *testing.T) {
 	cs := fake.NewSimpleClientset(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "ns"}, Data: map[string][]byte{"key": []byte("private")}})
-	set := startInformers(cs)
+	set := startInformers(cs, "")
 	t.Cleanup(set.close)
 	eager := []string{"pods", "nodes", "namespaces", "deployments", "replicasets", "statefulsets", "daemonsets", "jobs", "cronjobs", "horizontalpodautoscalers"}
 	watchCounts := func() map[string]int {
@@ -62,7 +62,7 @@ func TestInformersStartAuxiliaryKindsOnlyOnDemand(t *testing.T) {
 }
 
 func TestInformerCloseIsConcurrentSafe(t *testing.T) {
-	set := startInformers(fake.NewSimpleClientset())
+	set := startInformers(fake.NewSimpleClientset(), "")
 	var closers sync.WaitGroup
 	for range 32 {
 		closers.Go(set.close)

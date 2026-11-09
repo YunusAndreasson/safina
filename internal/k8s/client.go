@@ -3,6 +3,7 @@ package k8s
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"sort"
 	"sync"
@@ -52,6 +53,18 @@ type Client struct {
 	// and the dynamic/CRD client must stay JSON. Falls back to Clientset
 	// when construction failed.
 	informerCS kubernetes.Interface
+	// namespace is the one namespace a namespace-scoped account can read,
+	// used when listing namespaces across the cluster is forbidden.
+	namespace atomic.Pointer[string]
+	// namespacesForbidden records a 403 on the cluster-wide namespace list,
+	// so later reads go straight to the namespace instead of asking again.
+	namespacesForbidden atomic.Bool
+	// namespaceCreated is that namespace's creation time, for its Age;
+	// namespaceAgeAsked makes sure it is asked for once.
+	namespaceCreated  atomic.Pointer[time.Time]
+	namespaceAgeAsked atomic.Bool
+	// reads remembers the kinds this account can't list per namespace.
+	reads readGate
 }
 
 // Informers returns the running informer set for this context, or nil when
@@ -76,11 +89,33 @@ func (c *Client) StartInformers() {
 	if cs == nil {
 		cs = c.Clientset
 	}
-	set := startInformers(cs)
+	set := startInformers(cs, c.scopedNamespace())
 	// A concurrent activation may have won the race — keep theirs, drop ours.
 	if !c.informers.CompareAndSwap(nil, set) {
 		set.close()
 	}
+}
+
+// scopedNamespace returns the namespace this context is confined to: its
+// own, once listing namespaces across the cluster came back forbidden.
+// Empty for an account that reads the whole cluster.
+func (c *Client) scopedNamespace() string {
+	if !c.namespacesForbidden.Load() {
+		return ""
+	}
+	return c.Namespace()
+}
+
+// rescopeInformers replaces a running cluster-wide set with one scoped to
+// the namespace, whose watches the account is allowed. A set that was
+// stopped or swapped meanwhile is left to whoever did that.
+func (c *Client) rescopeInformers() {
+	old := c.informers.Load()
+	if old == nil || !c.informers.CompareAndSwap(old, nil) {
+		return
+	}
+	old.close()
+	c.StartInformers()
 }
 
 // StopInformers tears down this context's watch streams. Idempotent.
@@ -114,7 +149,18 @@ type Manager struct {
 	// user drills into a different cluster — `↯ N fwd` in the topbar is
 	// process-global, not view-local.
 	Forwards *ForwardManager
+
+	// mu guards Clients and built once Reload can swap a client while
+	// background reads look theirs up.
+	mu        sync.RWMutex
+	load      func() (*clientcmdapi.Config, error)
+	built     map[string]string // context → kubeconfigEntries its client was built from
+	namespace string
 }
+
+// connectTimeout bounds the TCP connect to an apiserver: well past any real
+// handshake, and a third of the request timeout.
+const connectTimeout = 10 * time.Second
 
 func NewClient(rawCfg *clientcmdapi.Config, ctxName string) (*Client, error) {
 	clientCfg := clientcmd.NewNonInteractiveClientConfig(
@@ -159,22 +205,36 @@ func NewClient(rawCfg *clientcmdapi.Config, ctxName string) (*Client, error) {
 		return debug.WrapTransport(rt)
 	}
 
-	cs, err := kubernetes.NewForConfig(restCfg)
+	// The 30s timeout is for a slow answer. A server that doesn't accept the
+	// connection at all is gone or firewalled, and should say so in seconds.
+	restCfg.Dial = (&net.Dialer{Timeout: connectTimeout, KeepAlive: 30 * time.Second}).DialContext
+
+	// One transport for every client of this context. client-go shares
+	// transports between equal configs on its own, but not once Dial is set
+	// (each config gets its own dial holder, so its own connections). The
+	// stream and informer clients reuse it without the whole-request timeout.
+	httpClient, err := rest.HTTPClientFor(restCfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create transport for %q: %w", ctxName, err)
+	}
+	untimed := &http.Client{Transport: httpClient.Transport}
+
+	cs, err := kubernetes.NewForConfigAndClient(restCfg, httpClient)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create clientset for %q: %w", ctxName, err)
 	}
 
-	streamCS, err := newStreamingClient(restCfg)
+	streamCS, err := newStreamingClient(restCfg, untimed)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create streaming client: %w", err)
 	}
 
-	disco, err := discovery.NewDiscoveryClientForConfig(restCfg)
+	disco, err := discovery.NewDiscoveryClientForConfigAndClient(restCfg, httpClient)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create discovery client for %q: %w", ctxName, err)
 	}
 
-	dyn, err := dynamic.NewForConfig(restCfg)
+	dyn, err := dynamic.NewForConfigAndClient(restCfg, httpClient)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create dynamic client for %q: %w", ctxName, err)
 	}
@@ -196,7 +256,7 @@ func NewClient(rawCfg *clientcmdapi.Config, ctxName string) (*Client, error) {
 	// pure churn. Reflectors set their own server-side per-watch timeout
 	// (~5-10 min randomized), so the informer client runs without one.
 	protoCfg.Timeout = 0
-	protoCS, err := kubernetes.NewForConfig(protoCfg)
+	protoCS, err := kubernetes.NewForConfigAndClient(protoCfg, &http.Client{Transport: &quietDenied{next: httpClient.Transport}})
 	if err != nil {
 		debug.Errf("client.proto_clientset_failed", "context", ctxName, "err", err.Error())
 		protoCS = nil
@@ -207,14 +267,36 @@ func NewClient(rawCfg *clientcmdapi.Config, ctxName string) (*Client, error) {
 	// production clusters the operator never enters this session would be
 	// pure apiserver load. Manager.ActivateContext starts them when the
 	// user actually drills into this context.
-	return &Client{
+	c := &Client{
 		Clientset:       cs,
 		StreamClientset: streamCS,
 		RESTConfig:      restCfg,
 		Discovery:       disco,
 		Dynamic:         dyn,
 		informerCS:      protoCS,
-	}, nil
+	}
+	if kc := rawCfg.Contexts[ctxName]; kc != nil {
+		c.SetNamespace(kc.Namespace)
+	}
+	return c, nil
+}
+
+// SetNamespace sets the namespace this context is scoped to: the kubeconfig
+// context's own, or --namespace, which overrides it as it does for kubectl.
+// Empty means none.
+func (c *Client) SetNamespace(ns string) {
+	c.namespace.Store(&ns)
+}
+
+// Namespace returns the namespace set by SetNamespace, or "".
+func (c *Client) Namespace() string {
+	if c == nil {
+		return ""
+	}
+	if ns := c.namespace.Load(); ns != nil {
+		return *ns
+	}
+	return ""
 }
 
 // Close releases the informer watch streams. Idempotent; safe on a Client
@@ -260,12 +342,14 @@ func NewManager(rawCfg *clientcmdapi.Config) (*Manager, error) {
 	}
 	wg.Wait()
 
+	m.built = make(map[string]string, len(names))
 	for _, r := range results {
 		if r.err != nil {
 			m.Skipped = append(m.Skipped, SkippedContext{Name: r.name, Err: r.err})
 			continue
 		}
 		m.Clients[r.name] = r.client
+		m.built[r.name] = kubeconfigEntries(rawCfg, r.name)
 	}
 
 	if len(m.Clients) == 0 {
@@ -282,6 +366,8 @@ func (m *Manager) Close() {
 	if m == nil {
 		return
 	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	for _, c := range m.Clients {
 		c.Close()
 	}
@@ -296,6 +382,8 @@ func (m *Manager) ActivateContext(name string) {
 	if m == nil {
 		return
 	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	for n, c := range m.Clients {
 		if n == name {
 			c.StartInformers()
@@ -312,18 +400,27 @@ func (m *Manager) DeactivateAll() {
 	if m == nil {
 		return
 	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	for _, c := range m.Clients {
 		c.StopInformers()
 	}
 }
 
 func (m *Manager) GetClient(contextName string) (*Client, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	c, ok := m.Clients[contextName]
 	return c, ok
 }
 
-func newStreamingClient(cfg *rest.Config) (kubernetes.Interface, error) {
+// newStreamingClient builds the clientset for log streams, which run until
+// their caller cancels. hc, when given, must carry no Timeout either.
+func newStreamingClient(cfg *rest.Config, hc *http.Client) (kubernetes.Interface, error) {
 	streamCfg := rest.CopyConfig(cfg)
 	streamCfg.Timeout = 0
+	if hc != nil {
+		return kubernetes.NewForConfigAndClient(streamCfg, hc)
+	}
 	return kubernetes.NewForConfig(streamCfg)
 }

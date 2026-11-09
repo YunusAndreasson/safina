@@ -6,6 +6,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	appsv1listers "k8s.io/client-go/listers/apps/v1"
@@ -252,10 +253,16 @@ func stripCacheObject(obj any) (any, error) {
 // Accessors return nil until
 // then — callers fall back to direct API reads, so entering a cluster renders
 // immediately while the cache warms behind the first paint.
-func startInformers(cs kubernetes.Interface) *informerSet {
-	factory := informers.NewSharedInformerFactoryWithOptions(
-		cs, 0, informers.WithTransform(stripCacheObject),
-	)
+//
+// A non-empty namespace scopes every watch to it, for an account that may
+// read only that namespace. Nodes and Namespaces are cluster-scoped, so such
+// a set has no cache for them and those reads stay direct.
+func startInformers(cs kubernetes.Interface, namespace string) *informerSet {
+	opts := []informers.SharedInformerOption{informers.WithTransform(stripCacheObject)}
+	if namespace != "" {
+		opts = append(opts, informers.WithNamespace(namespace))
+	}
+	factory := informers.NewSharedInformerFactoryWithOptions(cs, 0, opts...)
 	set := &informerSet{factory: factory, stop: make(chan struct{})}
 
 	pods := factory.Core().V1().Pods()
@@ -267,10 +274,6 @@ func startInformers(cs kubernetes.Interface) *informerSet {
 	} else {
 		set.podIndex = typedPods.GetTypedIndexer()
 	}
-	nodes := factory.Core().V1().Nodes()
-	set.nodes.lister = nodes.Lister()
-	namespaces := factory.Core().V1().Namespaces()
-	set.namespaces.lister = namespaces.Lister()
 	deferInformer(set, &set.services, "Service", func() (corev1listers.ServiceLister, toolscache.SharedIndexInformer) {
 		informer := factory.Core().V1().Services()
 		return informer.Lister(), informer.Informer()
@@ -299,30 +302,33 @@ func startInformers(cs kubernetes.Interface) *informerSet {
 	set.daemonsets.lister = daemonsets.Lister()
 	jobs := factory.Batch().V1().Jobs()
 	set.jobs.lister = jobs.Lister()
-	cronjobs := factory.Batch().V1().CronJobs()
-	set.cronjobs.lister = cronjobs.Lister()
-	hpas := factory.Autoscaling().V2().HorizontalPodAutoscalers()
-	set.hpas.lister = hpas.Lister()
 	deferInformer(set, &set.ingresses, "Ingress", func() (networkingv1listers.IngressLister, toolscache.SharedIndexInformer) {
 		informer := factory.Networking().V1().Ingresses()
 		return informer.Lister(), informer.Informer()
 	})
 
-	regs := []struct {
+	type reg struct {
 		kind   string
 		inf    toolscache.SharedIndexInformer
 		synced *atomic.Bool
-	}{
+	}
+	regs := []reg{
 		{"Pod", pods.Informer(), &set.pods.synced},
-		{"Node", nodes.Informer(), &set.nodes.synced},
-		{"Namespace", namespaces.Informer(), &set.namespaces.synced},
 		{"Deployment", deployments.Informer(), &set.deployments.synced},
 		{"ReplicaSet", replicasets.Informer(), &set.replicasets.synced},
 		{"StatefulSet", statefulsets.Informer(), &set.statefulsets.synced},
 		{"DaemonSet", daemonsets.Informer(), &set.daemonsets.synced},
 		{"Job", jobs.Informer(), &set.jobs.synced},
-		{"CronJob", cronjobs.Informer(), &set.cronjobs.synced},
-		{"HorizontalPodAutoscaler", hpas.Informer(), &set.hpas.synced},
+	}
+	if namespace == "" {
+		nodes := factory.Core().V1().Nodes()
+		set.nodes.lister = nodes.Lister()
+		namespaces := factory.Core().V1().Namespaces()
+		set.namespaces.lister = namespaces.Lister()
+		regs = append(regs,
+			reg{"Node", nodes.Informer(), &set.nodes.synced},
+			reg{"Namespace", namespaces.Informer(), &set.namespaces.synced},
+		)
 	}
 
 	// Route watch failures (RBAC Forbidden, apiserver timeouts) to the debug
@@ -345,7 +351,57 @@ func startInformers(cs kubernetes.Interface) *informerSet {
 			}
 		}()
 	}
+	go set.startVersioned(cs.Discovery())
 	return set
+}
+
+// startVersioned starts the CronJob and HPA watches once discovery says
+// which version of each this server serves (legacy_versions.go). Until they
+// sync, both kinds serve direct reads, as every kind does before its first
+// sync.
+func (s *informerSet) startVersioned(d discovery.DiscoveryInterface) {
+	oldCronJobs := olderOnly(d, "batch/v1", "batch/v1beta1", "cronjobs")
+	oldHPAs := olderOnly(d, "autoscaling/v2", "autoscaling/v1", "horizontalpodautoscalers")
+
+	s.startMu.Lock()
+	defer s.startMu.Unlock()
+	select {
+	case <-s.stop:
+		return
+	default:
+	}
+	var cronJobs, hpas toolscache.SharedIndexInformer
+	if oldCronJobs {
+		informer := s.factory.Batch().V1beta1().CronJobs()
+		s.cronjobs.lister = cronJobsFromV1beta1{informer.Lister()}
+		cronJobs = informer.Informer()
+	} else {
+		informer := s.factory.Batch().V1().CronJobs()
+		s.cronjobs.lister = informer.Lister()
+		cronJobs = informer.Informer()
+	}
+	if oldHPAs {
+		informer := s.factory.Autoscaling().V1().HorizontalPodAutoscalers()
+		s.hpas.lister = hpasFromV1{informer.Lister()}
+		hpas = informer.Informer()
+	} else {
+		informer := s.factory.Autoscaling().V2().HorizontalPodAutoscalers()
+		s.hpas.lister = informer.Lister()
+		hpas = informer.Informer()
+	}
+	configureWatchErrors(cronJobs, "CronJob")
+	configureWatchErrors(hpas, "HorizontalPodAutoscaler")
+	s.factory.Start(s.stop)
+	for _, k := range []struct {
+		inf    toolscache.SharedIndexInformer
+		synced *atomic.Bool
+	}{{cronJobs, &s.cronjobs.synced}, {hpas, &s.hpas.synced}} {
+		go func() {
+			if toolscache.WaitForCacheSync(s.stop, k.inf.HasSynced) {
+				k.synced.Store(true)
+			}
+		}()
+	}
 }
 
 // close shuts down the watch streams. Safe to call on a nil set or twice.

@@ -5,10 +5,12 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/YunusAndreasson/safina/internal/k8s"
 	"github.com/YunusAndreasson/safina/internal/tui/keys"
 	"github.com/YunusAndreasson/safina/internal/tui/theme"
 	"github.com/YunusAndreasson/safina/internal/tui/tuictx"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
 )
 
@@ -49,4 +51,42 @@ func TestTreePreparedRowsTrackSortFilterAndPublishedData(t *testing.T) {
 			require.NotContains(t, after, "charlie")
 		})
 	}
+}
+
+// Node names share a long pool prefix. In the default split the Nodes table
+// used to cut every name to the same "pool-a-wo…" and push PODS off the edge.
+func TestNodeRowsTellLongNamesApartInTheDefaultSplit(t *testing.T) {
+	c := tuictx.New(theme.Default(), keys.Default(), nil, nil)
+	tree := NewTree(c)
+	tree.path = append(tree.path, NodeRef{Kind: k8s.KindNode, Display: "Nodes"})
+	names := []string{"pool-a-workers-3f9c0e1d2b4a", "pool-a-workers-8e7d6c5b4a39", "pool-a-master1"}
+	nodes := make([]k8s.NodeInfo, 0, len(names))
+	for _, n := range names {
+		nodes = append(nodes, k8s.NodeInfo{Name: n, Status: "Ready", Schedulable: true, PodsCurrent: 14, PodsMax: 110})
+	}
+	tree.children = &Children{Kind: k8s.KindNode, Nodes: nodes}
+	view := ansi.Strip(tree.View(c, 59, 12))
+	for _, row := range strings.Split(view, "\n") {
+		require.LessOrEqual(t, lipgloss.Width(row), 59, row)
+	}
+	for _, suffix := range []string{"d2b4a", "b4a39", "master1"} {
+		require.Contains(t, view, suffix)
+	}
+	require.Equal(t, len(names), strings.Count(view, "14/110"))
+}
+
+// Helm releases name workloads release-chart-component, so they differ at
+// the end; cutting from the right left rows that all read "checkout-ap…".
+func TestWorkloadRowsKeepTheDistinguishingSuffix(t *testing.T) {
+	c := tuictx.New(theme.Default(), keys.Default(), nil, nil)
+	tree := NewTree(c)
+	tree.path = append(tree.path, NodeRef{Kind: k8s.KindWorkloadsFold})
+	tree.children = &Children{Kind: k8s.KindApp, Apps: []k8s.AppInfo{
+		{Name: "checkout-api-eu-canary", Namespace: "storefront", Kind: "Deployment"},
+		{Name: "checkout-api-eu-stable", Namespace: "storefront", Kind: "Deployment"},
+		{Name: "gateway", Namespace: "edge", Kind: "Deployment"},
+	}}
+	view := ansi.Strip(tree.View(c, 59, 10))
+	require.Contains(t, view, "anary")
+	require.Contains(t, view, "table")
 }

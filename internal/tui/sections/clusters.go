@@ -114,8 +114,17 @@ func (s *ClusterSwitcher) recomputeMatches() {
 	for i, it := range s.items {
 		corpus[i] = it.Name
 	}
-	for _, m := range fuzzy.Find(s.input.Value(), corpus) {
-		s.matches = append(s.matches, m.Index)
+	// Names that contain what was typed come first. Fuzzy scores alone can
+	// rank a long GKE-style name, matched letter by letter across its
+	// separators, above the one EKS name that contains "eks".
+	found := fuzzy.Find(s.input.Value(), corpus)
+	q := strings.ToLower(s.input.Value())
+	for _, literal := range []bool{true, false} {
+		for _, m := range found {
+			if strings.Contains(strings.ToLower(m.Str), q) == literal {
+				s.matches = append(s.matches, m.Index)
+			}
+		}
 	}
 }
 

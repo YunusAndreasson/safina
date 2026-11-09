@@ -25,11 +25,14 @@ import (
 	"github.com/YunusAndreasson/safina/internal/tui/sections"
 )
 
-// isCtxDone reports whether err is the kind of cancellation we expect during
+// isCanceled reports whether err is the kind of cancellation we expect during
 // normal flow — switching contexts or rapid drill+pop races against in-flight
 // loaders. We suppress those cleanly so they don't surface as an error banner.
-func isCtxDone(err error) bool {
-	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+// A timeout is not one of them: the client's 30s deadline (and a dial that
+// times out, which Go also reports as context.DeadlineExceeded) means the
+// cluster didn't answer, and the operator has to see that.
+func isCanceled(err error) bool {
+	return errors.Is(err, context.Canceled)
 }
 
 // Register the stream in the update loop before scheduling any reads. Send
@@ -236,6 +239,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// streams only ever target the cluster on screen. Idempotent and
 			// non-blocking, so calling it on every context focus is free;
 			// the first paint renders from direct reads while the cache warms.
+			m.rereadKubeconfig(focus.Name)
 			m.ctx.Manager.ActivateContext(focus.Name)
 		}
 		if focus.Kind == k8s.KindContext && m.ctx.ActiveContext != focus.Name {
@@ -268,6 +272,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Popped back to the picker — parked there, no cluster deserves
 			// open watch streams, so every context's informers shut down.
 			m.ctx.Manager.DeactivateAll()
+			m.rereadKubeconfig("")
 			// There's no "data" to be stale, so hide the refresh indicator
 			// until the user picks again.
 			m.lastRefresh = time.Time{}
@@ -318,26 +323,32 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.tree.FinishLoad()
 		focus := msg.Path[len(msg.Path)-1]
 		if msg.Err != nil {
-			if isCtxDone(msg.Err) {
+			if isCanceled(msg.Err) {
 				debug.Log("tree.load_canceled", "kind", focus.Kind, "name", focus.Name)
 				return m, nil
 			}
 			debug.Errf("tree.load_failed", "kind", focus.Kind, "name", focus.Name, "err", msg.Err.Error())
 			// Record on the tree so the body can show a retry hint inline
-			// (P4.5: distinguish "load failed" from "API returned empty"),
-			// AND raise the global banner so an error during a background
-			// auto-refresh — when stale rows are still on screen — isn't
-			// invisible.
+			// (P4.5: distinguish "load failed" from "API returned empty").
+			// The global banner is only for an error during a background
+			// auto-refresh, when stale rows are still on screen and would
+			// hide it; with no rows the body already says it.
 			m.tree.LoadErr = msg.Err
 			path := append([]sections.NodeRef(nil), msg.Path...)
 			cluster := m.ctx.ActiveContext
-			return m, m.raiseReadError(msg.Err.Error(), func() tea.Cmd {
+			retry := func() tea.Cmd {
 				if m.ctx.ActiveContext != cluster || !slices.Equal(m.tree.Path(), path) {
 					return m.raiseError("Return to the original resource view to retry this read")
 				}
 				m.dismissBanner()
+				m.rereadKubeconfig(cluster)
 				return m.loadTreeFocus()
-			})
+			}
+			if m.tree.Children() == nil {
+				m.recordReadError(msg.Err.Error(), retry)
+				return m, nil
+			}
+			return m, m.raiseReadError(msg.Err.Error(), retry)
 		}
 		m.tree.SetChildren(msg.Path, msg.Children)
 		m.overviewPreview = false
@@ -407,7 +418,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Connected-tile fetch landed. Same shape as InspectorDetailMsg:
 		// stale results are kept in the cache for future visits but don't
 		// disturb the live render.
-		if msg.Err != nil && isCtxDone(msg.Err) {
+		if msg.Err != nil && isCanceled(msg.Err) {
 			return m, nil
 		}
 		m.connected.Apply(msg)
@@ -422,7 +433,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sections.ActionDoneMsg:
 		if msg.Err != nil {
-			if isCtxDone(msg.Err) {
+			if isCanceled(msg.Err) {
 				debug.Log("action.canceled", "action", msg.Action, "subject", msg.Subject)
 				return m, nil
 			}
@@ -590,14 +601,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case sections.EventsLoadedMsg:
-		if msg.Err != nil && isCtxDone(msg.Err) {
+		if msg.Err != nil && isCanceled(msg.Err) {
 			return m, nil
 		}
 		m.events.SetItems(msg.Events, msg.Err)
 		return m, nil
 
 	case sections.DescribeLoadedMsg:
-		if msg.Err != nil && isCtxDone(msg.Err) {
+		if msg.Err != nil && isCanceled(msg.Err) {
 			return m, nil
 		}
 		m.describe.SetYAML(msg.YAML, msg.Err)
@@ -605,7 +616,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sections.EditYAMLLoadedMsg:
 		if msg.Err != nil {
-			if isCtxDone(msg.Err) {
+			if isCanceled(msg.Err) {
 				return m, nil
 			}
 			return m, m.raiseError(fmt.Sprintf("edit: %v", msg.Err))
@@ -624,17 +635,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case k8s.PodLogEvent:
 		if msg.Done {
 			m.logs.EndStream(msg.Err)
-			if msg.Err != nil && !isCtxDone(msg.Err) {
-				return m, m.raiseError(fmt.Sprintf("log: %v", msg.Err))
+			if msg.Err != nil && !isCanceled(msg.Err) {
+				return m, m.logStreamFailed(msg.Err)
 			}
 			return m, nil
 		}
 		if msg.Err != nil {
 			m.logs.EndStream(msg.Err)
-			if isCtxDone(msg.Err) {
+			if isCanceled(msg.Err) {
 				return m, nil
 			}
-			return m, m.raiseError(fmt.Sprintf("log: %v", msg.Err))
+			return m, m.logStreamFailed(msg.Err)
 		}
 		if msg.Line != "" {
 			m.logs.Append(msg.Line)
@@ -660,8 +671,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// quiet "data is updating" cue. Cleared on TreeChildrenLoadedMsg.
 		var actCmd tea.Cmd
 		var healthCmd tea.Cmd
-		if m.focused && (m.state == stateMain || m.state == stateMetricsView) && !m.tree.Refreshing && m.ctx.ActiveContext != "" &&
-			m.tree.Focus().Kind != k8s.KindContextList {
+		// Not while the first load is still in flight either: loadTreeFocus
+		// would cancel it and start over, throwing away the first five
+		// seconds of every cluster slower than one tick. Nor after a first
+		// load failed: the body shows the error with r retry, and asking a
+		// cluster that rejected the login every 5s (re-running its exec
+		// credential plugin each time) can't succeed until someone logs in.
+		firstLoadFailed := m.tree.LoadErr != nil && m.tree.Children() == nil
+		if m.focused && refreshesTree(m.state) && !m.tree.Refreshing && !m.tree.Loading && !firstLoadFailed &&
+			m.ctx.ActiveContext != "" && m.tree.Focus().Kind != k8s.KindContextList {
 			m.tree.StartRefresh()
 			cmd = m.loadTreeFocus()
 			debug.Log("refresh.tick", "context", m.ctx.ActiveContext, "focus", m.tree.Focus().Kind)
@@ -720,9 +738,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.browser.Refresh(m.tree.DiscoveredKinds(), m.tree.EnabledResources())
 		}
-		if msg.Err != nil && !isCtxDone(msg.Err) {
+		if msg.Err != nil && !isCanceled(msg.Err) {
 			m.discoveryByContext[m.ctx.ActiveContext] = false
 			debug.Errf("k8s.discovery_failed", "err", msg.Err.Error())
+			// No kinds at all means the cluster didn't answer or refused the
+			// credentials, which the tree's own load reports where it failed.
+			// Kinds with an error mean one API group is down: discovery's own
+			// news, so it gets the banner.
+			if len(msg.Kinds) == 0 {
+				m.recordNotification("discovery: "+msg.Err.Error(), true)
+				return m, nil
+			}
 			return m, m.raiseError("discovery: " + msg.Err.Error())
 		}
 		return m, nil
@@ -1230,6 +1256,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m.openResourceSearch()
 		case key.Matches(msg, m.ctx.Keys.ClusterSwitch):
 			m.navigationReturnState = m.state
+			m.rereadKubeconfig("")
 			m.clusters.Open(m.allContexts, m.ctx.ActiveContext)
 			m.state = stateClusters
 			return m, nil
@@ -1603,6 +1630,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.ctx.Keys.Refresh):
 		m.recordSelection("refresh")
 		if m.ctx.ActiveContext != "" && m.tree.Focus().Kind != k8s.KindContextList {
+			m.rereadKubeconfig(m.ctx.ActiveContext)
 			m.tree.InvalidateFocus()
 			m.tree.Loading = true
 			m.tree.StartRefresh()
@@ -1627,6 +1655,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// Ctrl+K cluster-switcher overlay. Pre-populate with the list we
 		// cached at startup; the overlay positions its cursor on the active
 		// context so "you are here" is the default.
+		m.rereadKubeconfig("")
 		m.clusters.Open(m.allContexts, m.ctx.ActiveContext)
 		m.state = stateClusters
 		return m, nil
@@ -2561,6 +2590,24 @@ func (m *Model) nextShellEvent() tea.Cmd {
 		}
 		return sections.ShellOutputMsg{Bytes: buf}
 	}
+}
+
+// logStreamFailed reports a log stream that stopped on an error. Before the
+// first line the pane itself shows the reason, so the banner stays away.
+func (m *Model) logStreamFailed(err error) tea.Cmd {
+	text := fmt.Sprintf("log: %v", err)
+	if len(m.logs.Lines()) == 0 {
+		m.recordNotification(text, true)
+		return nil
+	}
+	return m.raiseError(text)
+}
+
+// refreshesTree reports the states whose screen keeps the tree and the topbar
+// in view. The Logs, Events and YAML tabs sit beside the tree, so it must stay
+// live there: an on-caller tailing logs reads pod status from it.
+func refreshesTree(s state) bool {
+	return s == stateMain || s == stateMetricsView || s == stateLogView || s == stateEventsView || s == stateDescribeView
 }
 
 func (m *Model) autoRefreshTick() tea.Cmd {

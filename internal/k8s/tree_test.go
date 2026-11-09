@@ -597,6 +597,21 @@ func TestSumPodRequests(t *testing.T) {
 		assert.Equal(t, int64(0), cpu)
 	})
 
+	t.Run("finished_job_pods_skipped", func(t *testing.T) {
+		pod := func(phase corev1.PodPhase) *corev1.Pod {
+			return &corev1.Pod{
+				Spec: corev1.PodSpec{Containers: []corev1.Container{{
+					Name:      "run",
+					Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("750m")}},
+				}}},
+				Status: corev1.PodStatus{Phase: phase},
+			}
+		}
+		cpu, _, count := sumPodRequests([]*corev1.Pod{pod(corev1.PodSucceeded), pod(corev1.PodFailed), pod(corev1.PodRunning)})
+		assert.Equal(t, int64(750), cpu, "a finished pod kept after its Job holds no slot")
+		assert.Equal(t, int32(1), count)
+	})
+
 	t.Run("terminating_running_still_counted", func(t *testing.T) {
 		now := metav1.Now()
 		pods := []*corev1.Pod{

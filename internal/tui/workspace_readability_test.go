@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -8,6 +9,7 @@ import (
 	"github.com/YunusAndreasson/safina/internal/config"
 	"github.com/YunusAndreasson/safina/internal/k8s"
 	"github.com/YunusAndreasson/safina/internal/tui/sections"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
 )
 
@@ -67,4 +69,28 @@ func TestNarrowTerminalShowsFocusedPaneWithoutClipping(t *testing.T) {
 			m.handleKey(keyMsg("tab"))
 		}
 	}
+}
+
+// A stream that fails before its first line says why in the pane, once. It
+// used to read "No log output. Press l to reopen logs." for a Job whose pods
+// were long gone, where reopening can never help.
+func TestLogFailureBeforeFirstLineShowsTheReasonInThePane(t *testing.T) {
+	m := NewModel(&k8s.Manager{}, &config.AppConfig{})
+	ch := make(chan k8s.PodLogEvent)
+	m.logCh = ch
+	m.logs.SetPaneSize(80, 12)
+	denied := errors.New(`pods "web-1" is forbidden: User "dev" cannot get resource "pods/log"`)
+	m.Update(logEventMsg{channel: ch, event: k8s.PodLogEvent{Err: denied}})
+	body := ansi.Strip(m.logs.Body(m.ctx))
+	require.Contains(t, body, "cannot get resource")
+	require.NotContains(t, body, "No log output")
+	require.Empty(t, m.bannerMsg, "the pane already says it")
+	require.Contains(t, m.notifications[len(m.notifications)-1].text, "cannot get resource")
+
+	m = NewModel(&k8s.Manager{}, &config.AppConfig{})
+	m.logCh = ch
+	m.logs.SetPaneSize(80, 12)
+	m.logs.Append("served a while\n")
+	m.Update(logEventMsg{channel: ch, event: k8s.PodLogEvent{Err: denied}})
+	require.NotEmpty(t, m.bannerMsg, "behind output the banner is the only place the error shows")
 }

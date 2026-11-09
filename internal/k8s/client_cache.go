@@ -8,6 +8,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
@@ -31,9 +32,20 @@ import (
 // ListAndClassifyNamespaces is the cache-aware variant of the package-level
 // function.
 func (c *Client) ListAndClassifyNamespaces(ctx context.Context, cfgUser, cfgSystem []string) (user, system []NamespaceInfo, err error) {
+	if ns := c.scopedNamespace(); ns != "" {
+		return c.scopedNamespaceRow(ctx, ns, cfgUser, cfgSystem)
+	}
 	nsLister := c.Informers().Namespaces()
 	if nsLister == nil {
-		return ListAndClassifyNamespaces(ctx, c.Clientset, cfgUser, cfgSystem)
+		user, system, err = ListAndClassifyNamespaces(ctx, c.Clientset, cfgUser, cfgSystem)
+		if ns := c.Namespace(); ns != "" && apierrors.IsForbidden(err) {
+			// From here on, reads and watches stay inside the namespace.
+			if c.namespacesForbidden.CompareAndSwap(false, true) {
+				c.rescopeInformers()
+			}
+			return c.scopedNamespaceRow(ctx, ns, cfgUser, cfgSystem)
+		}
+		return user, system, err
 	}
 	list, err := nsLister.List(labels.Everything())
 	if err != nil {
@@ -49,87 +61,41 @@ func (c *Client) ListAndClassifyNamespaces(ctx context.Context, cfgUser, cfgSyst
 	return u, s, nil
 }
 
+// scopedNamespaceRow stands in for the cluster-wide list on an account that may
+// read only its own namespace: that namespace is the cluster's one row, and
+// every read below it is namespaced. Its age needs one Get, asked once: the
+// account may not have that either, and then the age stays blank.
+func (c *Client) scopedNamespaceRow(ctx context.Context, ns string, cfgUser, cfgSystem []string) (user, system []NamespaceInfo, err error) {
+	if c.namespaceAgeAsked.CompareAndSwap(false, true) {
+		if n, getErr := c.Clientset.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{}); getErr == nil {
+			created := n.CreationTimestamp.Time
+			c.namespaceCreated.Store(&created)
+		}
+	}
+	ageBy := map[string]string{}
+	if created := c.namespaceCreated.Load(); created != nil {
+		ageBy[ns] = HumanAge(*created)
+	}
+	u, s := classifyNamespacesWithAge([]string{ns}, ageBy, cfgUser, cfgSystem)
+	return u, s, nil
+}
+
 // ListAppsInNamespaces is the cache-aware variant of the package-level
-// function. The direct path's per-namespace × kind goroutine fan-out (6 List
-// calls per namespace per tick) collapses to in-memory lister reads; only
-// pod metrics still hit the network.
+// function. Each kind with a synced cache is read from memory; the rest go
+// direct, and a kind this account can't list (or the server doesn't serve)
+// stops being asked for on every tick. Pod metrics always hit the network.
 func (c *Client) ListAppsInNamespaces(ctx context.Context, namespaces []string) ([]AppInfo, error) {
 	inf := c.Informers()
-	depL := inf.Deployments()
-	stsL := inf.StatefulSets()
-	dsL := inf.DaemonSets()
-	jobL := inf.Jobs()
-	cjL := inf.CronJobs()
-	podL := inf.Pods()
-	if depL == nil || stsL == nil || dsL == nil || jobL == nil || cjL == nil || podL == nil {
-		return ListAppsInNamespaces(ctx, c.Clientset, namespaces)
-	}
-	if len(namespaces) == 0 {
-		return nil, nil
-	}
-
-	// Metrics aren't watchable — direct call, same as the direct path.
-	metrics, metricsErr := ListPodMetrics(ctx, c.Clientset, namespaceScope(namespaces))
-
-	var out []AppInfo
-	hpaIdx := make(map[string]*HPABadge)
-	hpaL := inf.HPAs()
-	for _, ns := range namespaces {
-		// Use the informer's namespace index so each workload only scans
-		// pods in its namespace. Copy once per namespace, not per workload.
-		cachedPods, err := podL.Pods(ns).List(labels.Everything())
-		if err != nil {
-			return nil, err
-		}
-		podsAll := derefPods(cachedPods)
-		if items, err := depL.Deployments(ns).List(labels.Everything()); err == nil {
-			for _, d := range items {
-				out = append(out, deploymentToApp(*d, podsAll, metrics))
-			}
-		}
-		if items, err := stsL.StatefulSets(ns).List(labels.Everything()); err == nil {
-			for _, s := range items {
-				out = append(out, statefulSetToApp(*s, podsAll, metrics))
-			}
-		}
-		if items, err := dsL.DaemonSets(ns).List(labels.Everything()); err == nil {
-			for _, d := range items {
-				out = append(out, daemonSetToApp(*d, podsAll, metrics))
-			}
-		}
-		if items, err := cjL.CronJobs(ns).List(labels.Everything()); err == nil {
-			for _, cj := range items {
-				out = append(out, cronJobToApp(*cj))
-			}
-		}
-		if items, err := jobL.Jobs(ns).List(labels.Everything()); err == nil {
-			for _, j := range items {
-				// Skip jobs owned by a CronJob — they appear when drilling
-				// into the CronJob, not as top-level Apps.
-				if jobOwnedByCronJob(*j) {
-					continue
-				}
-				out = append(out, jobToApp(*j, podsAll, metrics))
-			}
-		}
-		// HPA badges: lister when synced, direct otherwise (an RBAC-denied
-		// HPA watch shouldn't force the whole apps view off the cache — the
-		// direct helper already degrades to an empty map on error).
-		if hpaL != nil {
-			if items, err := hpaL.HorizontalPodAutoscalers(ns).List(labels.Everything()); err == nil {
-				for _, h := range items {
-					key := h.Namespace + "/" + h.Spec.ScaleTargetRef.Kind + "/" + h.Spec.ScaleTargetRef.Name
-					hpaIdx[key] = hpaV2ToBadge(*h)
-				}
-			}
-		} else {
-			for k, v := range listHPABadges(ctx, c.Clientset, ns) {
-				hpaIdx[k] = v
-			}
-		}
-	}
-
-	return finishApps(out, hpaIdx, metricsErr), nil
+	return listApps(ctx, c.Clientset, namespaces, appSources{
+		pods:         inf.Pods(),
+		deployments:  inf.Deployments(),
+		statefulSets: inf.StatefulSets(),
+		daemonSets:   inf.DaemonSets(),
+		jobs:         inf.Jobs(),
+		cronJobs:     inf.CronJobs(),
+		hpas:         inf.HPAs(),
+		gate:         &c.reads,
+	})
 }
 
 // ListNodesAndPools is the cache-aware variant of the package-level function.
@@ -248,6 +214,23 @@ func (c *Client) ListContainersForPod(ctx context.Context, namespace, name strin
 	}
 	byCtr, metricsErr := ListPodMetricsByContainer(ctx, c.Clientset, namespace)
 	return containersForPod(p, byCtr[types.NamespacedName{Namespace: namespace, Name: name}], metricsErr), nil
+}
+
+// PodContainers lists a pod's containers with states and restarts but no
+// metrics. The log target picker reads every pod of a workload in turn, and a
+// namespace-wide metrics request for each kept a 50-replica Deployment's logs
+// waiting on 50 serial calls.
+func (c *Client) PodContainers(ctx context.Context, namespace, name string) ([]ContainerInfo, error) {
+	if podL := c.Informers().Pods(); podL != nil {
+		if p, err := podL.Pods(namespace).Get(name); err == nil {
+			return containersForPod(p, nil), nil
+		}
+	}
+	p, err := c.Clientset.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return containersForPod(p, nil), nil
 }
 
 // ListConfigMapsAcrossNamespaces is the cache-aware variant of the

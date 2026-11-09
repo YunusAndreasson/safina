@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -522,6 +523,25 @@ func activityTarget(ref sections.NodeRef, tr *sections.Tree) (kind, ns, name str
 func (m *Model) SetContexts(items []config.ContextInfo) {
 	m.tree.SeedContexts(items)
 	m.allContexts = items
+}
+
+// rereadKubeconfig picks up kubeconfig edits made while safina runs: the
+// named cluster gets a new client if its entries changed (a fresh login),
+// and the picker lists the contexts as they are now. An empty name only
+// refreshes the list.
+func (m *Model) rereadKubeconfig(name string) {
+	raw, err := m.ctx.Manager.Reload(name)
+	if err != nil {
+		debug.Errf("kubeconfig.reload_failed", "context", name, "err", err.Error())
+		m.recordNotification("kubeconfig: "+err.Error(), true)
+	}
+	if raw == nil {
+		return
+	}
+	items := config.ListContexts(raw)
+	if !slices.Equal(items, m.allContexts) {
+		m.SetContexts(items)
+	}
 }
 
 // SetActiveContext queues an explicit CLI choice (--context). The drill-in

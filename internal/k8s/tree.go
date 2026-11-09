@@ -16,11 +16,16 @@ import (
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
+	appsv1listers "k8s.io/client-go/listers/apps/v1"
+	autoscalingv2listers "k8s.io/client-go/listers/autoscaling/v2"
+	batchv1listers "k8s.io/client-go/listers/batch/v1"
+	corev1listers "k8s.io/client-go/listers/core/v1"
 	resourcehelper "k8s.io/component-helpers/resource"
 )
 
@@ -454,6 +459,26 @@ func classifyNamespacesWithAge(names []string, ageBy map[string]string, cfgUser,
 // any individual list error is silently dropped (the surviving lists still
 // render). Returns rows sorted by Health (worst first), then by name.
 func ListAppsInNamespaces(ctx context.Context, cs kubernetes.Interface, namespaces []string) ([]AppInfo, error) {
+	return listApps(ctx, cs, namespaces, appSources{})
+}
+
+// appSources says, per kind, where workload rows come from: a synced cache,
+// or (nil) a direct List per namespace. Each kind decides on its own, so one
+// kind an account can't read or a server doesn't serve no longer sends every
+// other kind back to the network. gate, when set, is asked before each direct
+// List and told how it went.
+type appSources struct {
+	pods         corev1listers.PodLister
+	deployments  appsv1listers.DeploymentLister
+	statefulSets appsv1listers.StatefulSetLister
+	daemonSets   appsv1listers.DaemonSetLister
+	jobs         batchv1listers.JobLister
+	cronJobs     batchv1listers.CronJobLister
+	hpas         autoscalingv2listers.HorizontalPodAutoscalerLister
+	gate         *readGate
+}
+
+func listApps(ctx context.Context, cs kubernetes.Interface, namespaces []string, src appSources) ([]AppInfo, error) {
 	if len(namespaces) == 0 {
 		return nil, nil
 	}
@@ -466,122 +491,200 @@ func ListAppsInNamespaces(ctx context.Context, cs kubernetes.Interface, namespac
 		metrics    map[types.NamespacedName]ResourceUsage
 		metricsErr error
 	)
+	add := func(rows []AppInfo) {
+		mu.Lock()
+		out = append(out, rows...)
+		mu.Unlock()
+	}
 
 	// Pre-pull enrichment once, scoped to the namespace when browsing one.
-	// This also works with namespace-only RBAC.
+	// This also works with namespace-only RBAC. Metrics aren't watchable, so
+	// they are always read direct.
+	scope := namespaceScope(namespaces)
 	var wgEnrich sync.WaitGroup
-	wgEnrich.Add(2)
-	go func() {
-		defer wgEnrich.Done()
-		list, err := cs.CoreV1().Pods(namespaceScope(namespaces)).List(ctx, metav1.ListOptions{})
-		if err == nil {
-			podsAll = list.Items
-		}
-	}()
-	go func() {
-		defer wgEnrich.Done()
-		metrics, metricsErr = ListPodMetrics(ctx, cs, namespaceScope(namespaces))
-	}()
+	if src.pods == nil && !src.gate.skip("Pod", scope) {
+		wgEnrich.Go(func() {
+			list, err := cs.CoreV1().Pods(scope).List(ctx, metav1.ListOptions{})
+			src.gate.record("Pod", scope, err)
+			if err == nil {
+				podsAll = list.Items
+			}
+		})
+	}
+	wgEnrich.Go(func() {
+		metrics, metricsErr = ListPodMetrics(ctx, cs, scope)
+	})
 	wgEnrich.Wait()
 
-	// Fan out one goroutine per namespace × kind.
 	var wg sync.WaitGroup
 	for _, ns := range namespaces {
-		wg.Add(6)
+		pods := podsAll
+		if src.pods != nil {
+			// The informer's namespace index: each workload only scans pods
+			// in its namespace. Copy once per namespace, not per workload.
+			cached, err := src.pods.Pods(ns).List(labels.Everything())
+			if err != nil {
+				return nil, err
+			}
+			pods = derefPods(cached)
+		}
 
-		go func() {
-			defer wg.Done()
+		var cachedDeployments func() ([]*appsv1.Deployment, error)
+		if src.deployments != nil {
+			cachedDeployments = func() ([]*appsv1.Deployment, error) { return src.deployments.Deployments(ns).List(labels.Everything()) }
+		}
+		gatherApps(&wg, src.gate, "Deployment", ns, cachedDeployments, func() ([]appsv1.Deployment, error) {
 			list, err := cs.AppsV1().Deployments(ns).List(ctx, metav1.ListOptions{})
 			if err != nil {
-				return
+				return nil, err
 			}
-			rows := make([]AppInfo, 0, len(list.Items))
-			for _, d := range list.Items {
-				rows = append(rows, deploymentToApp(d, podsAll, metrics))
-			}
-			mu.Lock()
-			out = append(out, rows...)
-			mu.Unlock()
-		}()
+			return list.Items, nil
+		}, func(d appsv1.Deployment) (AppInfo, bool) { return deploymentToApp(d, pods, metrics), true }, add)
 
-		go func() {
-			defer wg.Done()
+		var cachedStatefulSets func() ([]*appsv1.StatefulSet, error)
+		if src.statefulSets != nil {
+			cachedStatefulSets = func() ([]*appsv1.StatefulSet, error) {
+				return src.statefulSets.StatefulSets(ns).List(labels.Everything())
+			}
+		}
+		gatherApps(&wg, src.gate, "StatefulSet", ns, cachedStatefulSets, func() ([]appsv1.StatefulSet, error) {
 			list, err := cs.AppsV1().StatefulSets(ns).List(ctx, metav1.ListOptions{})
 			if err != nil {
-				return
+				return nil, err
 			}
-			rows := make([]AppInfo, 0, len(list.Items))
-			for _, s := range list.Items {
-				rows = append(rows, statefulSetToApp(s, podsAll, metrics))
-			}
-			mu.Lock()
-			out = append(out, rows...)
-			mu.Unlock()
-		}()
+			return list.Items, nil
+		}, func(s appsv1.StatefulSet) (AppInfo, bool) { return statefulSetToApp(s, pods, metrics), true }, add)
 
-		go func() {
-			defer wg.Done()
+		var cachedDaemonSets func() ([]*appsv1.DaemonSet, error)
+		if src.daemonSets != nil {
+			cachedDaemonSets = func() ([]*appsv1.DaemonSet, error) { return src.daemonSets.DaemonSets(ns).List(labels.Everything()) }
+		}
+		gatherApps(&wg, src.gate, "DaemonSet", ns, cachedDaemonSets, func() ([]appsv1.DaemonSet, error) {
 			list, err := cs.AppsV1().DaemonSets(ns).List(ctx, metav1.ListOptions{})
 			if err != nil {
-				return
+				return nil, err
 			}
-			rows := make([]AppInfo, 0, len(list.Items))
-			for _, d := range list.Items {
-				rows = append(rows, daemonSetToApp(d, podsAll, metrics))
-			}
-			mu.Lock()
-			out = append(out, rows...)
-			mu.Unlock()
-		}()
+			return list.Items, nil
+		}, func(d appsv1.DaemonSet) (AppInfo, bool) { return daemonSetToApp(d, pods, metrics), true }, add)
 
-		go func() {
-			defer wg.Done()
-			list, err := cs.BatchV1().CronJobs(ns).List(ctx, metav1.ListOptions{})
-			if err != nil {
-				return
-			}
-			rows := make([]AppInfo, 0, len(list.Items))
-			for _, c := range list.Items {
-				rows = append(rows, cronJobToApp(c))
-			}
-			mu.Lock()
-			out = append(out, rows...)
-			mu.Unlock()
-		}()
+		var cachedCronJobs func() ([]*batchv1.CronJob, error)
+		if src.cronJobs != nil {
+			cachedCronJobs = func() ([]*batchv1.CronJob, error) { return src.cronJobs.CronJobs(ns).List(labels.Everything()) }
+		}
+		gatherApps(&wg, src.gate, "CronJob", ns, cachedCronJobs, func() ([]batchv1.CronJob, error) {
+			return listCronJobs(ctx, cs, ns)
+		}, func(c batchv1.CronJob) (AppInfo, bool) { return cronJobToApp(c), true }, add)
 
-		go func() {
-			defer wg.Done()
+		var cachedJobs func() ([]*batchv1.Job, error)
+		if src.jobs != nil {
+			cachedJobs = func() ([]*batchv1.Job, error) { return src.jobs.Jobs(ns).List(labels.Everything()) }
+		}
+		gatherApps(&wg, src.gate, "Job", ns, cachedJobs, func() ([]batchv1.Job, error) {
 			list, err := cs.BatchV1().Jobs(ns).List(ctx, metav1.ListOptions{})
 			if err != nil {
-				return
+				return nil, err
 			}
-			rows := make([]AppInfo, 0, len(list.Items))
-			for _, j := range list.Items {
-				// Skip jobs owned by a CronJob — they appear when drilling
-				// into the CronJob, not as top-level Apps.
-				if jobOwnedByCronJob(j) {
-					continue
-				}
-				rows = append(rows, jobToApp(j, podsAll, metrics))
-			}
-			mu.Lock()
-			out = append(out, rows...)
-			mu.Unlock()
-		}()
+			return list.Items, nil
+		}, func(j batchv1.Job) (AppInfo, bool) {
+			// Skip jobs owned by a CronJob — they appear when drilling
+			// into the CronJob, not as top-level Apps.
+			return jobToApp(j, pods, metrics), !jobOwnedByCronJob(j)
+		}, add)
 
-		go func() {
-			defer wg.Done()
-			badges := listHPABadges(ctx, cs, ns)
-			mu.Lock()
-			for k, v := range badges {
-				hpaIdx[k] = v
+		switch {
+		case src.hpas != nil:
+			if items, err := src.hpas.HorizontalPodAutoscalers(ns).List(labels.Everything()); err == nil {
+				mu.Lock()
+				for _, h := range items {
+					hpaIdx[h.Namespace+"/"+h.Spec.ScaleTargetRef.Kind+"/"+h.Spec.ScaleTargetRef.Name] = hpaV2ToBadge(*h)
+				}
+				mu.Unlock()
 			}
-			mu.Unlock()
-		}()
+		case !src.gate.skip("HorizontalPodAutoscaler", ns):
+			wg.Go(func() {
+				badges, err := hpaBadges(ctx, cs, ns)
+				src.gate.record("HorizontalPodAutoscaler", ns, err)
+				mu.Lock()
+				for k, v := range badges {
+					hpaIdx[k] = v
+				}
+				mu.Unlock()
+			})
+		}
 	}
 	wg.Wait()
 
 	return finishApps(out, hpaIdx, metricsErr), nil
+}
+
+// gatherApps adds one kind's rows in one namespace: from the cache when
+// cached is set, otherwise from a direct List on wg, unless gate says this
+// account can't have them. toApp's bool drops rows that aren't top-level.
+func gatherApps[T any](wg *sync.WaitGroup, gate *readGate, kind, ns string,
+	cached func() ([]*T, error), direct func() ([]T, error), toApp func(T) (AppInfo, bool), add func([]AppInfo),
+) {
+	rows := func(items []T) []AppInfo {
+		out := make([]AppInfo, 0, len(items))
+		for _, it := range items {
+			if a, ok := toApp(it); ok {
+				out = append(out, a)
+			}
+		}
+		return out
+	}
+	if cached != nil {
+		items, err := cached()
+		if err != nil {
+			return
+		}
+		values := make([]T, len(items))
+		for i, it := range items {
+			values[i] = *it
+		}
+		add(rows(values))
+		return
+	}
+	if gate.skip(kind, ns) {
+		return
+	}
+	wg.Go(func() {
+		items, err := direct()
+		gate.record(kind, ns, err)
+		if err == nil {
+			add(rows(items))
+		}
+	})
+}
+
+// readGate remembers the kinds an account may not list in a namespace (403)
+// and those the server doesn't serve (404), so the 5s tick stops asking for
+// them. It asks again after unavailableFor, in case RBAC or the server
+// changed. A nil gate remembers nothing.
+type readGate struct {
+	until sync.Map // "Kind/namespace" → time.Time
+}
+
+const unavailableFor = 5 * time.Minute
+
+func (g *readGate) skip(kind, ns string) bool {
+	if g == nil {
+		return false
+	}
+	v, ok := g.until.Load(kind + "/" + ns)
+	if !ok {
+		return false
+	}
+	until, ok := v.(time.Time)
+	return ok && time.Now().Before(until)
+}
+
+func (g *readGate) record(kind, ns string, err error) {
+	if g == nil {
+		return
+	}
+	if apierrors.IsForbidden(err) || apierrors.IsNotFound(err) {
+		g.until.Store(kind+"/"+ns, time.Now().Add(unavailableFor))
+	}
 }
 
 // finishApps is the shared tail of ListAppsInNamespaces: HPA badge
@@ -850,29 +953,26 @@ func labelsMatch(podLabels, selector map[string]string) bool {
 
 // ── HPAs (badge enrichment) ──────────────────────────────────────────
 
-// listHPABadges returns "ns/Kind/Name" → HPABadge for a namespace, trying v2
-// and falling back to v1 silently. Returns empty map on error.
-func listHPABadges(ctx context.Context, cs kubernetes.Interface, ns string) map[string]*HPABadge {
+// hpaBadges reads a namespace's HPAs as badges keyed ns/Kind/Name, from
+// autoscaling/v2 or, on a server older than 1.23, autoscaling/v1. The error
+// is the last one when neither could be read.
+func hpaBadges(ctx context.Context, cs kubernetes.Interface, ns string) (map[string]*HPABadge, error) {
 	out := make(map[string]*HPABadge)
 	v2list, err := cs.AutoscalingV2().HorizontalPodAutoscalers(ns).List(ctx, metav1.ListOptions{})
 	if err == nil {
 		for _, h := range v2list.Items {
-			b := hpaV2ToBadge(h)
-			key := h.Namespace + "/" + h.Spec.ScaleTargetRef.Kind + "/" + h.Spec.ScaleTargetRef.Name
-			out[key] = b
+			out[h.Namespace+"/"+h.Spec.ScaleTargetRef.Kind+"/"+h.Spec.ScaleTargetRef.Name] = hpaV2ToBadge(h)
 		}
-		return out
+		return out, nil
 	}
 	v1list, err := cs.AutoscalingV1().HorizontalPodAutoscalers(ns).List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return out
+		return out, err
 	}
 	for _, h := range v1list.Items {
-		b := hpaV1ToBadge(h)
-		key := h.Namespace + "/" + h.Spec.ScaleTargetRef.Kind + "/" + h.Spec.ScaleTargetRef.Name
-		out[key] = b
+		out[h.Namespace+"/"+h.Spec.ScaleTargetRef.Kind+"/"+h.Spec.ScaleTargetRef.Name] = hpaV1ToBadge(h)
 	}
-	return out
+	return out, nil
 }
 
 func hpaV2ToBadge(h autoscalingv2.HorizontalPodAutoscaler) *HPABadge {
@@ -1518,6 +1618,12 @@ func (ch *ClusterHealth) addPod(p corev1.Pod) {
 // direct-API path when informers failed to sync (timeout, RBAC, or no set
 // was built).
 func (c *Client) LoadClusterHealth(ctx context.Context) (ClusterHealth, error) {
+	// An account confined to one namespace can list neither nodes nor pods
+	// across the cluster; asking on every tick only collects 403s. No data
+	// hides the pill, as the 403 did.
+	if c.scopedNamespace() != "" {
+		return ClusterHealth{}, nil
+	}
 	podLister := c.Informers().Pods()
 	nodeLister := c.Informers().Nodes()
 	if podLister == nil || nodeLister == nil {
@@ -1599,13 +1705,13 @@ func podInfosSortedNSName(pods []corev1.Pod, metrics map[types.NamespacedName]Re
 // ── Node "Available" math ────────────────────────────────────────────
 
 // sumPodRequests computes the requested CPU/memory across the given pods,
-// honoring init-container/sidecar semantics and pod overhead. Pods that are
-// truly terminating (DeletionTimestamp set AND phase Failed/Succeeded) are
-// skipped — they no longer hold their slot.
+// honoring init-container/sidecar semantics and pod overhead. Finished pods
+// (Succeeded or Failed) are skipped, deleted or not: they hold no slot, as
+// the scheduler and kubectl describe node count it. A node that keeps a few
+// days of finished Job pods otherwise read as several times overcommitted.
 func sumPodRequests(pods []*corev1.Pod) (cpu, mem int64, count int32) {
 	for _, p := range pods {
-		if p.DeletionTimestamp != nil &&
-			(p.Status.Phase == corev1.PodFailed || p.Status.Phase == corev1.PodSucceeded) {
+		if p.Status.Phase == corev1.PodFailed || p.Status.Phase == corev1.PodSucceeded {
 			continue
 		}
 		c, m := podEffectiveRequests(p)
