@@ -177,3 +177,26 @@ func TestCloseFlushesPendingCapture(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(data), "partial final line")
 }
+
+func TestReadEvidenceRejectsPathTraversal(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "evidence"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(dir, "secret.jsonl")
+	if err := os.WriteFile(secret, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"../secret", "../../etc/passwd", "/etc/passwd", strings.Repeat("a", 31) + "/", ""} {
+		if _, err := ReadEvidence(dir, id); err == nil {
+			t.Errorf("ReadEvidence(%q) succeeded, want error", id)
+		}
+	}
+	id := strings.Repeat("ab", 16)
+	if err := os.WriteFile(filepath.Join(dir, "evidence", id+".jsonl"), []byte("ok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := ReadEvidence(dir, id); err != nil || string(b) != "ok" {
+		t.Fatalf("valid ID: %q %v", b, err)
+	}
+}
