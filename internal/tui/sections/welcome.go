@@ -95,13 +95,13 @@ func WelcomeSail(t *theme.Theme, w, h int) string {
 		name = "safina"
 	}
 	lines = append(lines, center(t.NameStrong.Render(ansi.Truncate(name, w, ""))))
-	const tagline = "The Kubernetes TUI for teams that ship."
+	const tagline = "The Kubernetes TUI for teams that ship fast."
 	if w >= 22 && h-len(lines) >= 4 {
 		lines = append(lines, "")
 		if w >= len(tagline)+4 {
 			lines = append(lines, center(t.DimTxt.Render(tagline)))
 		} else {
-			lines = append(lines, center(t.DimTxt.Render("The Kubernetes TUI")), center(t.DimTxt.Render("for teams that ship.")))
+			lines = append(lines, center(t.DimTxt.Render("The Kubernetes TUI")), center(t.DimTxt.Render("for teams that ship fast.")))
 		}
 	}
 	// A slightly raised optical centre leaves breathing room below the mark.

@@ -3,8 +3,8 @@
 #
 #   curl -fsSL https://safina.run/install.sh | sh
 #
-# Linux on x86-64 or ARM64, with glibc 2.34 or newer. It downloads the
-# release archive and its checksums, verifies the archive's SHA-256, and puts
+# Linux on x86-64 or ARM64 with glibc 2.34 or newer, or macOS 13 or newer
+# on Apple silicon or Intel. It downloads the release archive and its checksums, verifies the archive's SHA-256, and puts
 # the binary in ~/.local/bin. Nothing else on the machine changes, and
 # nothing runs as root.
 #
@@ -27,8 +27,8 @@ die() {
 main() {
 	os=$(uname -s)
 	case "$os" in
-	Linux) ;;
-	Darwin) die "no macOS binaries yet. Build from source: git clone https://github.com/$repo && cd safina && make install" ;;
+	Linux) platform=linux ;;
+	Darwin) platform=darwin ;;
 	*) die "no binary for $os. Build from source: https://github.com/$repo" ;;
 	esac
 
@@ -38,15 +38,23 @@ main() {
 	*) die "no binary for $(uname -m). Build from source: https://github.com/$repo" ;;
 	esac
 
-	# The release build refuses a binary that needs anything newer than 2.34.
-	libc=$(getconf GNU_LIBC_VERSION 2>/dev/null || true)
-	case "$libc" in
-	"glibc "*) ;;
-	*) die "safina's binaries need glibc, and this system doesn't report one (musl, as on Alpine?). Build from source: https://github.com/$repo" ;;
-	esac
-	have=${libc#glibc }
-	if [ "$(printf '%s\n2.34\n' "$have" | sort -t. -k1,1n -k2,2n | head -n 1)" != 2.34 ]; then
-		die "safina's binaries need glibc 2.34 or newer; this system has $have. Build from source: https://github.com/$repo"
+	if [ "$platform" = linux ]; then
+		# The release build refuses a binary that needs anything newer than 2.34.
+		libc=$(getconf GNU_LIBC_VERSION 2>/dev/null || true)
+		case "$libc" in
+		"glibc "*) ;;
+		*) die "safina's binaries need glibc, and this system doesn't report one (musl, as on Alpine?). Build from source: https://github.com/$repo" ;;
+		esac
+		have=${libc#glibc }
+		if [ "$(printf '%s\n2.34\n' "$have" | sort -t. -k1,1n -k2,2n | head -n 1)" != 2.34 ]; then
+			die "safina's binaries need glibc 2.34 or newer; this system has $have. Build from source: https://github.com/$repo"
+		fi
+	else
+		# The release build targets macOS 13.
+		have=$(sw_vers -productVersion 2>/dev/null || echo 0)
+		if [ "${have%%.*}" -lt 13 ] 2>/dev/null; then
+			die "safina's binaries need macOS 13 or newer; this Mac has $have. Build from source: https://github.com/$repo"
+		fi
 	fi
 
 	if command -v curl >/dev/null 2>&1; then
@@ -71,7 +79,7 @@ main() {
 	else
 		base="https://github.com/$repo/releases/latest/download"
 	fi
-	file="safina_linux_$arch.tar.gz"
+	file="safina_${platform}_$arch.tar.gz"
 	dir=${SAFINA_INSTALL_DIR:-$HOME/.local/bin}
 
 	tmp=$(mktemp -d)

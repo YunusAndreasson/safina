@@ -78,11 +78,12 @@ notice rather than failed.
 ## Releases
 
 A `v*` tag pushed to GitHub builds the Linux binaries (x86-64 and ARM64, on
-Ubuntu 22.04, needing glibc 2.34 or newer) and publishes them with a
-`checksums.txt` (`.github/workflows/release.yml`; run it by hand to build
-without publishing). `public/install.sh`, served at
-https://safina.run/install.sh, installs the latest one: it refuses macOS,
-musl and old glibc with the from-source line, verifies the archive's
+Ubuntu 22.04, needing glibc 2.34 or newer) and the macOS ones (Apple silicon
+and Intel, for macOS 13 or newer, ad-hoc signed and not notarized) and
+publishes them with a `checksums.txt` (`.github/workflows/release.yml`; run
+it by hand to build without publishing). `public/install.sh`, served at
+https://safina.run/install.sh, installs the latest one: it refuses other
+systems, musl, old glibc and macOS before 13 with the from-source line, verifies the archive's
 SHA-256 and writes only `~/.local/bin/safina`. The archive names are shared
 by the workflow, the script and `src/data/release.ts`; change them together.
 
@@ -248,12 +249,14 @@ pyftsubset node_modules/@fontsource-variable/reem-kufi/files/reem-kufi-arabic-wg
 
 ## Voice
 
-The tagline is **"The Kubernetes TUI for teams that ship."** It is
+The tagline is **"The Kubernetes TUI for teams that ship fast."** It is
 the product's identity, not a stock phrase: safina is Arabic for ship, so
 "teams that ship" reads both ways, the team that ships software and the
 crew of a ship. "TUI" replaced "console" in Nov 2026 (the user's call): the
 site speaks to engineers who know the genre, "TUI" can't be read as a web
-console, and "TUI for teams" alliterates. "Terminal" stays in the meta
+console, and "TUI for teams" alliterates. "Fast" joined it later in Nov
+2026 (the user's call again): speed is the claim safina leads with, and the
+lede and Compare's measured rows give it numbers. "Terminal" stays in the meta
 description ("A terminal UI for Kubernetes") and on the social card. It stands in the hero headline, the page title, the meta
 description, the social card (`scripts/og.html`, then `scripts/og.sh`) and
 its alt text (`Base.astro`). Never reword it, swap it for another line, or
@@ -348,8 +351,13 @@ what reaches the model, where files live. Recheck them when that code changes.
 The nav calls it FAQ, the eyebrow over its title; each question is an h3
 in the title voice, so a scan down the list reads the questions alone.
 
-Safina and k9s (`Compare.astro`) is a table of checks and dashes, no words
-in the cells: nobody reads a comparison, they scan it. One sentence under
+Safina and k9s (`Compare.astro`) is one table in two groups, no words in
+the cells: nobody reads a comparison, they scan it. Measured comes first,
+with figures from `cmd/safina-versus` (`make versus`): medians, the side
+that's ahead beyond the noise in the brightest ink, ties and k9s's wins
+(memory, idle API requests) kept in, and the run named in the note (versions,
+cluster, machine). Re-run it on a release and change every row with the
+note; never round a tie into a win. Features follows, checks and dashes. One sentence under
 its title, the dated note below the table. Every k9s cell is checked against k9s's own README, k9scli.io
 and its latest release, dated in the section's note (v0.51.0, June 2026);
 recheck it when k9s ships, and keep k9s's wins in the table (read-only
@@ -363,8 +371,9 @@ Quieter marks: the Logbook's export running "from the *bismillah* before
 your first look to the *alhamdulillah* when the pods are ready" (said on
 starting something and on its end, and the verse at the top of the page
 source begins with the same bismillah; the sentence reads as start to
-finish to anyone who doesn't know the words), "in sha Allah" on the release
-promise, the Hijri year in the footer, the 404 ("Overboard", and the belly of a whale), and the words Nuh
+finish to anyone who doesn't know the words), "in sha Allah" on a promise
+not yet kept (none on the page since v0.3.0 shipped the macOS binaries it
+was on), the Hijri year in the footer, the 404 ("Overboard", and the belly of a whale), and the words Nuh
 spoke boarding the ark at the top of the page source (`Base.astro`).
 
 ## Layout

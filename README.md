@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://safina.run">
-    <img src="site/public/og.jpg" alt="Safina's sail and name, with its Arabic name سفينة, over a container ship in a night storm: the Kubernetes TUI for teams that ship." width="760">
+    <img src="site/public/og.jpg" alt="Safina's sail and name, with its Arabic name سفينة, over a container ship in a night storm: the Kubernetes TUI for teams that ship fast." width="760">
   </a>
 </p>
 

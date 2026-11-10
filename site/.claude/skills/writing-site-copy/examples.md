@@ -62,7 +62,7 @@ more. Cut description, never the reason a feature exists.
 
 **The tagline**
 
-> The tagline (since Nov 2026 "The Kubernetes TUI for teams that ship.") was
+> The tagline (since Nov 2026 "The Kubernetes TUI for teams that ship fast.") was
 > once swapped for "for bad nights" as a supposed stock phrase. It was
 > restored. Never touch it; only the user changes it.
 

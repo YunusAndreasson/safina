@@ -39,19 +39,19 @@ const portraitMedia = "(aspect-ratio <= 4/5)";
 
     <div class="stage__copy wrap">
       <h1 id="title" class="headline">
-        <span class="visually-hidden">Safina: </span>The Kubernetes TUI<br class="headline__break" /> for teams that ship.
+        <span class="visually-hidden">Safina: </span>The Kubernetes TUI<br class="headline__break" /> for teams that ship&nbsp;fast.
       </h1>
       <p class="lede">
-        Safina is fast, keyboard-driven and written for terminal hackers. It’s a single Go binary on
-        lazy <code>client-&#8288;go</code> informers, with session history in SQLite and an MCP server for
-        your&nbsp;agent.
+        Safina answers a keypress in <a href="#compare">about 20&nbsp;ms</a> and shows 500 pods within a second
+        of launch. It’s one Go binary on lazy <code>client-&#8288;go</code> informers, so it reads the cluster from
+        watch caches instead of polling the&nbsp;API.
       </p>
       {
         release.available && (
           <div class="get">
             <Command id="cmd-hero" text={release.install} />
             <p class="get__note">
-              Linux x86-64 and ARM64. On a Mac, <a href="#install">build from source</a>.
+              Linux and macOS, on x86-64 or&nbsp;ARM64.
             </p>
           </div>
         )

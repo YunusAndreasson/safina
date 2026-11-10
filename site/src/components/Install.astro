@@ -32,7 +32,7 @@ const [avif, fallback] = await Promise.all([
     <div class="install__main">
       {
         release.available ? (
-          <p class="lede">One binary. On Linux, this line puts it in <code>~/.local/bin</code>, checked against the release’s SHA&#8209;256&nbsp;sums:</p>
+          <p class="lede">One binary. On Linux or macOS, this line puts it in <code>~/.local/bin</code>, checked against the release’s SHA&#8209;256&nbsp;sums:</p>
         ) : (
           <p class="lede">Binaries for macOS and Linux come with the first release, <i>in&nbsp;sha&nbsp;Allah</i>. Until then, build&nbsp;from&nbsp;source:</p>
         )
@@ -44,7 +44,7 @@ const [avif, fallback] = await Promise.all([
             <p class="release-tag">
               {release.version && <span>v{release.version}</span>}
               <span>MIT</span>
-              <span>Linux x86-64 · ARM64</span>
+              <span>Linux · macOS</span>
               <a href={`${release.repo}/releases/latest`}>release notes</a>
               <a href={`${release.repo}/blob/main/site/public/install.sh`}>the script</a>
             </p>
@@ -57,7 +57,7 @@ const [avif, fallback] = await Promise.all([
                 </li>
               ))}
             </ul>
-            <p class="quiet">macOS binaries come later, <i>in&nbsp;sha&nbsp;Allah</i>. On a Mac, run <code>make install</code> in a clone of the <a href={release.repo}>repo</a>, with Go 1.27 and Python&nbsp;3.</p>
+            <p class="quiet">The macOS binaries aren’t notarized. The script’s download runs as is, but one from your browser needs <code>xattr -d com.apple.quarantine safina</code> first. Anywhere else, run <code>make install</code> in a clone of the <a href={release.repo}>repo</a>, with Go 1.27 and Python&nbsp;3.</p>
           </div>
         ) : (
           <p class="quiet">You’ll need Go 1.27 or newer and Python&nbsp;3.</p>
@@ -146,6 +146,10 @@ const [avif, fallback] = await Promise.all([
   }
   .lede {
     font-size: var(--t-lead);
+  }
+  /* A path breaks at its slash otherwise. */
+  .lede code {
+    white-space: nowrap;
   }
   .quiet {
     margin-top: var(--s1);

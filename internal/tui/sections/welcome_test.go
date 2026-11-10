@@ -27,7 +27,7 @@ func TestWelcomeSailFitsPaneAndMonochrome(t *testing.T) {
 				require.Contains(t, plain, "#", "the sail remains visible without color")
 			}
 			if size[1] >= 22 {
-				require.Contains(t, strings.Join(strings.Fields(plain), " "), "The Kubernetes TUI for teams that ship.")
+				require.Contains(t, strings.Join(strings.Fields(plain), " "), "The Kubernetes TUI for teams that ship fast.")
 			}
 		})
 	}

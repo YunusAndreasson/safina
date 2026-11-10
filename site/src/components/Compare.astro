@@ -12,6 +12,29 @@
 // "some" is a half answer: k9s asks before a delete but not a kill; safina
 // shows six resource groups and you add the rest.
 type Mark = boolean | "some";
+
+// Measured: medians from cmd/safina-versus (`make versus`, method in
+// docs/development.md), both tools in one 200×50 pseudo-terminal against the
+// same cluster through one recording API proxy. Latency is keystroke to the
+// first correct frame. `ahead` names the side whose whole 95% interval beats
+// the other by 5% and 1 ms; null is a tie. Keep k9s's wins and the ties in,
+// for the same reason as the dashes below. Re-run on a release and update
+// every row and the note together; never round a tie into a win.
+// Report: safina v0.3.0 vs k9s v0.51.0, 10 rounds, seed 42, 10 Nov 2026
+// (versus-20261110-131310).
+type Side = "safina" | "k9s" | null;
+const measured: { label: string; safina: string; k9s: string; ahead: Side }[] = [
+  { label: "Launch to the pod list, all namespaces", safina: "0.7 s", k9s: "2.9 s", ahead: "safina" },
+  { label: "Move the cursor one row", safina: "20 ms", k9s: "28 ms", ahead: "safina" },
+  { label: "Filter 500 pods by name", safina: "139 ms", k9s: "343 ms", ahead: "safina" },
+  { label: "Switch from pods to deployments", safina: "33 ms", k9s: "112 ms", ahead: "safina" },
+  { label: "Open a pod’s YAML", safina: "64 ms", k9s: "68 ms", ahead: null },
+  { label: "Back out of the YAML", safina: "27 ms", k9s: "145 ms", ahead: "safina" },
+  { label: "Open logs to the first line", safina: "80 ms", k9s: "115 ms", ahead: "safina" },
+  { label: "CPU while idle, of one core", safina: "7%", k9s: "15%", ahead: "safina" },
+  { label: "Memory", safina: "187 MB", k9s: "179 MB", ahead: null },
+  { label: "API requests while idle", safina: "18/min", k9s: "4/min", ahead: "k9s" },
+];
 const rows: { label: string; safina: Mark; k9s: Mark }[] = [
   { label: "Write actions need Shift", safina: true, k9s: false },
   { label: "Confirmation on every write", safina: true, k9s: "some" },
@@ -46,6 +69,37 @@ const rows: { label: string; safina: Mark; k9s: Mark }[] = [
           </tr>
         </thead>
         <tbody>
+          <tr class="compare__group">
+            <th scope="rowgroup">Measured</th>
+            <td class="compare__mark compare__mark--safina"></td>
+            <td class="compare__mark"></td>
+          </tr>
+          {
+            measured.map((r) => (
+              <tr>
+                <th scope="row">{r.label}</th>
+                {(["safina", "k9s"] as const).map((side) => (
+                  <td
+                    class:list={[
+                      "compare__mark",
+                      "compare__num",
+                      { "compare__mark--safina": side === "safina", "compare__num--ahead": r.ahead === side },
+                    ]}
+                  >
+                    {r[side]}
+                    {r.ahead === side && <span class="visually-hidden"> (better)</span>}
+                  </td>
+                ))}
+              </tr>
+            ))
+          }
+        </tbody>
+        <tbody>
+          <tr class="compare__group">
+            <th scope="rowgroup">Features</th>
+            <td class="compare__mark compare__mark--safina"></td>
+            <td class="compare__mark"></td>
+          </tr>
           {
             rows.map((r) => (
               <tr>
@@ -69,7 +123,13 @@ const rows: { label: string; safina: Mark; k9s: Mark }[] = [
           }
         </tbody>
       </table>
-      <p class="compare__note">k9s as of v0.51.0, June&nbsp;2026.</p>
+      <p class="compare__note">
+        Measured: medians of 10 launches each, safina v0.3.0 and k9s v0.51.0 at its defaults, with 500 pods on a local
+        minikube cluster and an Intel i7-7820HQ laptop. Times run from the keypress to the first correct frame. A
+        brighter figure is ahead by more than the run-to-run spread, and the rest are ties. Most of safina’s idle
+        requests re-read pod metrics every 5&nbsp;seconds.
+        <a href="https://github.com/YunusAndreasson/safina/blob/main/docs/development.md#comparing-with-k9s">Run&nbsp;it&nbsp;yourself</a> with <code>make&nbsp;versus</code>. Features: k9s as of v0.51.0, June&nbsp;2026.
+      </p>
     </div>
   </div>
 </section>
@@ -152,8 +212,41 @@ const rows: { label: string; safina: Mark; k9s: Mark }[] = [
     border-radius: 12px 12px 0 0;
     color: var(--beacon);
   }
-  tbody tr:last-child .compare__mark--safina {
+  tbody:last-child tr:last-child .compare__mark--safina {
     border-radius: 0 0 12px 12px;
+  }
+
+  /* Each group opens on its name in the column names' hull lettering, with
+     room above it: a heading for the rows, not a row to read. The band
+     runs through. */
+  .compare__group {
+    border-top: 0;
+  }
+  .compare__group th {
+    padding-block: var(--s3) 10px;
+    font-size: var(--t-ui);
+    font-weight: 400;
+    font-stretch: 125%;
+    letter-spacing: 0.08em;
+    color: var(--fog);
+  }
+  tbody:first-child .compare__group th {
+    padding-top: 8px;
+  }
+
+  /* Figures line up digit for digit; the side that's ahead takes the
+     brightest ink (safina's in the beacon), the other stays quiet. */
+  .compare__num {
+    font-variant-numeric: tabular-nums;
+    font-size: var(--t-small);
+    color: var(--fog);
+    white-space: nowrap;
+  }
+  .compare__num--ahead {
+    color: var(--foam);
+  }
+  .compare__num--ahead.compare__mark--safina {
+    color: var(--beacon);
   }
 
   .check {

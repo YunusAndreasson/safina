@@ -2,7 +2,7 @@
 
 ## The tagline is the identity
 
-**"The Kubernetes TUI for teams that ship."**
+**"The Kubernetes TUI for teams that ship fast."**
 
 Safina (سفينة) is Arabic for ship, so "teams that ship" reads both ways:
 the team that ships software and the crew of a ship. That double meaning is
@@ -10,7 +10,9 @@ the product's core identity. It is not a stock marketing phrase, and it is
 not "AI slop" to be cleaned up.
 
 - Never reword it, replace it with another line, or cut it. Only the user
-  changes it (they did once, in Nov 2026: "console" became "TUI").
+  changes it (twice so far, both in Nov 2026: "console" became "TUI", then
+  "ship" became "ship fast", so the line carries safina's speed, which the
+  hero's lede and the measured rows in Compare back with numbers).
 - It appears in five places on the site, and all five must agree: the hero
   headline (`site/src/components/Opening.astro`), the page title and meta
   description (`site/src/pages/index.astro`), the social card

@@ -25,8 +25,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { launch } from "./cdp.mjs";
 
 const site = join(dirname(fileURLToPath(import.meta.url)), "..");
-const TAGLINE = "The Kubernetes TUI for teams that ship.";
-const SHIP = /for teams that ship/i;
+const TAGLINE = "The Kubernetes TUI for teams that ship fast.";
+const SHIP = /for teams that ship fast/i;
 
 const textOnly = process.argv.includes("--text");
 const pages = process.argv.slice(2).filter((a) => a !== "--text");
@@ -259,10 +259,10 @@ try {
       if (!data.h1.includes(TAGLINE)) hard.push(`h1 lacks the tagline “${TAGLINE}” (it reads “${data.h1}”)`);
       for (const kind of ["title", "description", "og-alt"]) {
         const b = all.find((x) => x.kind === kind);
-        if (!b || !SHIP.test(b.text)) hard.push(`${kind} lacks “for teams that ship”`);
+        if (!b || !SHIP.test(b.text)) hard.push(`${kind} lacks “for teams that ship fast”`);
       }
       const og = join(site, "scripts/og.html");
-      if (existsSync(og) && !/teams that ship/i.test(readFileSync(og, "utf8"))) hard.push("scripts/og.html (the social card) lacks “teams that ship”");
+      if (existsSync(og) && !/teams that ship fast/i.test(readFileSync(og, "utf8"))) hard.push("scripts/og.html (the social card) lacks “teams that ship fast”");
       for (const n of data.nav) {
         if (!n.found) hard.push(`nav “${n.label}” points at #${n.id}, which isn't on the page`);
         else if (n.own !== null ? n.own !== n.label : !(n.title === n.label || n.echoed || n.group))

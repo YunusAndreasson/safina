@@ -23,12 +23,14 @@ export const release = {
    *  to show only the license, platforms and release notes. */
   version: "0.3.0",
   repo: "https://github.com/YunusAndreasson/safina",
-  /** Linux only, for now: install.sh refuses anything else with the from-source line. */
+  /** Linux and macOS: install.sh refuses anything else with the from-source line. */
   install: "curl -fsSL https://safina.run/install.sh | sh",
   fromSource: "git clone https://github.com/YunusAndreasson/safina && cd safina && make install",
   assets: [
-    { os: "linux", arch: "amd64", label: "Linux, x86-64", file: "safina_linux_amd64.tar.gz" },
-    { os: "linux", arch: "arm64", label: "Linux, ARM64", file: "safina_linux_arm64.tar.gz" },
+    { os: "linux", arch: "amd64", label: "Linux x86-64", file: "safina_linux_amd64.tar.gz" },
+    { os: "linux", arch: "arm64", label: "Linux ARM64", file: "safina_linux_arm64.tar.gz" },
+    { os: "macos", arch: "arm64", label: "Apple silicon", file: "safina_darwin_arm64.tar.gz" },
+    { os: "macos", arch: "amd64", label: "Intel Mac", file: "safina_darwin_amd64.tar.gz" },
   ] satisfies ReleaseAsset[],
 };
 
