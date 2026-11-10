@@ -12,6 +12,7 @@ import (
 
 	"github.com/YunusAndreasson/safina/internal/k8s"
 	"github.com/YunusAndreasson/safina/internal/tui/components"
+	"github.com/YunusAndreasson/safina/internal/tui/textw"
 	"github.com/YunusAndreasson/safina/internal/tui/theme"
 	"github.com/YunusAndreasson/safina/internal/tui/tuictx"
 )
@@ -131,7 +132,7 @@ func (s *Events) SetPaneSize(innerW, innerH int) {
 
 // Body returns unframed content for the workspace tab embedding.
 func (s *Events) Body(c *tuictx.Ctx) string {
-	return lipgloss.JoinVertical(lipgloss.Left,
+	return textw.JoinVertical(lipgloss.Left,
 		s.renderStatusRow(c),
 		s.viewportBlock(c),
 		s.renderKeysRow(),
@@ -187,7 +188,7 @@ func (s *Events) refreshContent() {
 	countW := 5
 	for _, idx := range s.filtered {
 		if s.items[idx].Count > 1 {
-			countW = max(countW, ansi.StringWidth(fmt.Sprintf(" ×%d", s.items[idx].Count)))
+			countW = max(countW, textw.StringWidth(fmt.Sprintf(" ×%d", s.items[idx].Count)))
 		}
 	}
 	var b strings.Builder
@@ -201,7 +202,7 @@ func (s *Events) refreshContent() {
 }
 
 func (s *Events) renderRow(e k8s.EventInfo, w int) string {
-	return s.renderRowWithCountWidth(e, w, max(5, ansi.StringWidth(fmt.Sprintf(" ×%d", e.Count))))
+	return s.renderRowWithCountWidth(e, w, max(5, textw.StringWidth(fmt.Sprintf(" ×%d", e.Count))))
 }
 
 func (s *Events) renderRowWithCountWidth(e k8s.EventInfo, w, countW int) string {
@@ -315,7 +316,7 @@ func (s *Events) viewportBlock(c *tuictx.Ctx) string {
 	default:
 		st.Loaded = true
 	}
-	return components.CenteredViewportBlock(c.Theme, c.Spinner.View(), s.vp, st)
+	return components.CenteredViewportBlock(c.Theme, c.SpinnerView(), s.vp, st)
 }
 
 func (s *Events) renderStatusRow(c *tuictx.Ctx) string {

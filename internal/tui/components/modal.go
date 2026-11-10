@@ -2,11 +2,13 @@ package components
 
 import (
 	"strings"
+	"sync"
 
 	"charm.land/bubbles/v2/viewport"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/YunusAndreasson/safina/internal/tui/textw"
 	"github.com/YunusAndreasson/safina/internal/tui/theme"
 )
 
@@ -142,9 +144,45 @@ func RenderModalKeysRow(t *theme.Theme, pairs []KeyDesc) string {
 	}
 	pieces := make([]string, len(pairs))
 	for i, p := range pairs {
-		pieces[i] = keyStyle(t, p).Render(p.Key) + " " + t.HelpDesc.Render(p.Desc)
+		pieces[i] = hintPiece(t, p)
 	}
-	return strings.Join(pieces, t.HelpDesc.Render(" · "))
+	return strings.Join(pieces, hintPiece(t, KeyDesc{Desc: hintSeparator}))
+}
+
+// hintSeparator stands for the separator in the hint cache: no real hint
+// has an empty key.
+const hintSeparator = "\x00 · "
+
+type hintKey struct {
+	t *theme.Theme
+	p KeyDesc
+}
+
+// hintPieces holds rendered hints. The footer redraws them every frame,
+// and they come from a small fixed vocabulary of keys.
+var hintPieces = struct {
+	sync.Mutex
+	m map[hintKey]string
+}{m: map[hintKey]string{}}
+
+func hintPiece(t *theme.Theme, p KeyDesc) string {
+	k := hintKey{t, p}
+	hintPieces.Lock()
+	defer hintPieces.Unlock()
+	if s, ok := hintPieces.m[k]; ok {
+		return s
+	}
+	var s string
+	if p.Key == "" && p.Desc == hintSeparator {
+		s = t.HelpDesc.Render(" · ")
+	} else {
+		s = keyStyle(t, p).Render(p.Key) + " " + t.HelpDesc.Render(p.Desc)
+	}
+	if len(hintPieces.m) >= 1024 { // hints with live counts would otherwise pile up
+		clear(hintPieces.m)
+	}
+	hintPieces.m[k] = s
+	return s
 }
 
 // RenderBoundedHints keeps whole shortcuts in priority order. When supplied,
@@ -154,7 +192,7 @@ func RenderBoundedHints(t *theme.Theme, pairs []KeyDesc, width int, overflow Key
 		return ""
 	}
 	full := RenderModalKeysRow(t, pairs)
-	if lipgloss.Width(full) <= width {
+	if textw.Width(full) <= width {
 		return full
 	}
 	tail := []KeyDesc{}
@@ -164,7 +202,7 @@ func RenderBoundedHints(t *theme.Theme, pairs []KeyDesc, width int, overflow Key
 	for keep := len(pairs) - 1; keep >= 0; keep-- {
 		visible := append(append([]KeyDesc{}, pairs[:keep]...), tail...)
 		row := RenderModalKeysRow(t, visible)
-		if lipgloss.Width(row) <= width {
+		if textw.Width(row) <= width {
 			return row
 		}
 	}
@@ -239,9 +277,9 @@ func RenderModalStatusBar(t *theme.Theme, modalW int, filter Filter, indicators 
 	}
 	right := strings.Join(parts, "  ")
 	right = ansi.Truncate(right, max(0, inner-10), "…")
-	left = ansi.Truncate(left, max(1, inner-lipgloss.Width(right)-1), "…")
+	left = ansi.Truncate(left, max(1, inner-textw.Width(right)-1), "…")
 
-	pad := inner - lipgloss.Width(left) - lipgloss.Width(right)
+	pad := inner - textw.Width(left) - textw.Width(right)
 	if pad < 1 {
 		pad = 1
 	}

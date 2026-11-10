@@ -11,6 +11,7 @@ import (
 
 	"github.com/YunusAndreasson/safina/internal/config"
 	"github.com/YunusAndreasson/safina/internal/tui/components"
+	"github.com/YunusAndreasson/safina/internal/tui/textw"
 	"github.com/YunusAndreasson/safina/internal/tui/theme"
 	"github.com/YunusAndreasson/safina/internal/tui/tuictx"
 )
@@ -141,7 +142,7 @@ func (s *ClusterSwitcher) Card(c *tuictx.Ctx, termW, termH int, activeContext st
 	inner := max(1, min(70, termW-8))
 	listH := max(1, min(12, termH-10))
 	prompt := s.input.View(t, inner)
-	stack := lipgloss.JoinVertical(lipgloss.Left,
+	stack := textw.JoinVertical(lipgloss.Left,
 		t.CyanBold.Render("Switch cluster · ● current"),
 		ansi.Truncate(prompt, inner, "…"), "",
 		s.renderList(t, inner, listH, activeContext), "",

@@ -9,6 +9,7 @@ import (
 
 	"github.com/YunusAndreasson/safina/internal/k8s"
 	"github.com/YunusAndreasson/safina/internal/tui/components"
+	"github.com/YunusAndreasson/safina/internal/tui/textw"
 	"github.com/YunusAndreasson/safina/internal/tui/theme"
 	"github.com/YunusAndreasson/safina/internal/tui/tuictx"
 )
@@ -105,22 +106,22 @@ func (s *Hot) Body(c *tuictx.Ctx, w, h int) string {
 	})
 	hintRow := lipgloss.NewStyle().Width(w).Align(lipgloss.Right).Render(hint)
 	if s.gate.Visible() {
-		return lipgloss.JoinVertical(lipgloss.Left,
+		return textw.JoinVertical(lipgloss.Left,
 			hintRow,
-			th.Idle.Render(c.Spinner.View()+" loading hot pods…"))
+			th.Idle.Render(c.SpinnerView()+" loading hot pods…"))
 	}
 	if s.err != nil {
-		return lipgloss.JoinVertical(lipgloss.Left,
+		return textw.JoinVertical(lipgloss.Left,
 			hintRow,
 			th.ErrLine.Render("✗ "+s.err.Error()))
 	}
 	if len(s.items) == 0 {
-		return lipgloss.JoinVertical(lipgloss.Left,
+		return textw.JoinVertical(lipgloss.Left,
 			hintRow,
 			th.Idle.Render("no pod metrics available — is metrics-server running?"))
 	}
 	body := s.renderTable(th, w, h-1)
-	return lipgloss.JoinVertical(lipgloss.Left, hintRow, body)
+	return textw.JoinVertical(lipgloss.Left, hintRow, body)
 }
 
 // PaneTitle returns the workspace tab title.

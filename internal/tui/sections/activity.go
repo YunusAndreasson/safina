@@ -13,6 +13,7 @@ import (
 	"github.com/YunusAndreasson/safina/internal/debug"
 	"github.com/YunusAndreasson/safina/internal/k8s"
 	"github.com/YunusAndreasson/safina/internal/tui/components"
+	"github.com/YunusAndreasson/safina/internal/tui/textw"
 	"github.com/YunusAndreasson/safina/internal/tui/tuictx"
 )
 
@@ -191,7 +192,7 @@ func (a *Activity) renderBody(c *tuictx.Ctx, innerW, innerH int) string {
 	case a.kind == "":
 		return t.Idle.Render("No event preview for this selection.")
 	case a.gate.Visible() && len(a.items) == 0:
-		return t.Idle.Render(c.Spinner.View() + " loading events…")
+		return t.Idle.Render(c.SpinnerView() + " loading events…")
 	case a.err != nil:
 		return lipgloss.NewStyle().Foreground(t.P.Red).
 			Render(components.TruncPad("✗ "+a.err.Error(), innerW))
@@ -202,7 +203,7 @@ func (a *Activity) renderBody(c *tuictx.Ctx, innerW, innerH int) string {
 	// Keep time and severity aligned while allowing event text to wrap.
 	ageW := 5
 	for _, e := range a.items {
-		ageW = max(ageW, ansi.StringWidth(e.Age))
+		ageW = max(ageW, textw.StringWidth(e.Age))
 	}
 	ageW = min(ageW, max(1, innerW-4))
 	lines := make([]string, 0, innerH)
@@ -223,7 +224,7 @@ func (a *Activity) renderBody(c *tuictx.Ctx, innerW, innerH int) string {
 		wrapped := strings.Split(ansi.Wrap(prefix+text, max(1, innerW), ""), "\n")
 		if innerW >= 40 {
 			// Continuations belong under event text, leaving the time gutter clear.
-			prefixW := ansi.StringWidth(prefix)
+			prefixW := textw.StringWidth(prefix)
 			wrapped = strings.Split(ansi.Wrap(text, innerW-prefixW, ""), "\n")
 			for i := range wrapped {
 				if i == 0 {

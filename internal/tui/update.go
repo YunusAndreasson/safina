@@ -63,6 +63,27 @@ func (m *Model) startChatStream(prompt string) tea.Cmd {
 }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	model, cmd := m.update(msg)
+	return model, tea.Batch(cmd, m.resumeSpinner(msg))
+}
+
+// resumeSpinner restarts a stopped spinner after any message that may have
+// started a load. The tick arrives right after this message's frame, which
+// either shows the spinner (it keeps ticking) or not (it stops again). The
+// once-a-second clock never starts a load, so it does not count.
+func (m *Model) resumeSpinner(msg tea.Msg) tea.Cmd {
+	switch msg.(type) {
+	case spinner.TickMsg, clockMsg:
+		return nil
+	}
+	if !m.spinnerStopped {
+		return nil
+	}
+	m.spinnerStopped = false
+	return m.ctx.Spinner.Tick
+}
+
+func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case resourceViewResultMsg:
 		if msg.request != m.viewRequests[msg.view] || msg.cluster != m.ctx.ActiveContext || m.baseState() != msg.view {
@@ -808,6 +829,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.ctx.Spinner, cmd = m.ctx.Spinner.Update(msg)
+		if cmd != nil && !m.spinnerShown {
+			m.spinnerStopped = true // nothing on screen animates; end the chain
+			return m, nil
+		}
 		return m, cmd
 
 	case tea.PasteMsg:

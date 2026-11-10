@@ -11,6 +11,7 @@ import (
 
 	"github.com/YunusAndreasson/safina/internal/k8s"
 	"github.com/YunusAndreasson/safina/internal/tui/components"
+	"github.com/YunusAndreasson/safina/internal/tui/textw"
 	"github.com/YunusAndreasson/safina/internal/tui/theme"
 	"github.com/YunusAndreasson/safina/internal/tui/tuictx"
 )
@@ -158,7 +159,7 @@ func (c *Connected) View(ctx *tuictx.Ctx, w, h int) string {
 	c.PanelHeight, c.PanelWidth = h, w
 	title := "Connected"
 	if c.snap.loading {
-		title = "Connected · " + ctx.Spinner.View() + " loading…"
+		title = "Connected · " + ctx.SpinnerView() + " loading…"
 	}
 	return components.PanelWithAccent(t, title, w, h, body, false, t.P.Pink, t.P.Pink)
 }
@@ -234,7 +235,7 @@ func (c *Connected) renderGroups(t *theme.Theme, innerW, rows int) []string {
 			}
 			prefix := label + " "
 			if n > 0 {
-				prefix = strings.Repeat(" ", lipgloss.Width(prefix))
+				prefix = strings.Repeat(" ", textw.Width(prefix))
 			}
 			ref := group.refs[start+n]
 			c.renderedRefs = append(c.renderedRefs, ref)
@@ -249,8 +250,8 @@ func (c *Connected) renderGroups(t *theme.Theme, innerW, rows int) []string {
 			if c.Focused && c.cursor == groupOffset+start+n {
 				bg = t.Selected
 			}
-			row := bg.Foreground(t.P.Dim).Render(marker+prefix) + renderConnectedRow(t, ref, max(1, innerW-lipgloss.Width(marker+prefix)), bg)
-			row += bg.Render(strings.Repeat(" ", max(0, innerW-lipgloss.Width(row))))
+			row := bg.Foreground(t.P.Dim).Render(marker+prefix) + renderConnectedRow(t, ref, max(1, innerW-textw.Width(marker+prefix)), bg)
+			row += bg.Render(strings.Repeat(" ", max(0, innerW-textw.Width(row))))
 			lines = append(lines, truncate(row, innerW))
 		}
 		groupOffset += len(group.refs)

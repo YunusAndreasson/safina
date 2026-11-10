@@ -6,6 +6,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/YunusAndreasson/safina/internal/tui/components"
+	"github.com/YunusAndreasson/safina/internal/tui/textw"
 	"github.com/YunusAndreasson/safina/internal/tui/theme"
 	"github.com/YunusAndreasson/safina/internal/tui/tuictx"
 )
@@ -142,7 +143,7 @@ func workspaceTabLayout(tabs []WorkspaceTab, active WorkspaceTab, w int) (hits [
 			n += 2
 		}
 		for i := start; i < end; i++ {
-			n += lipgloss.Width(tabs[i].Label())
+			n += textw.Width(tabs[i].Label())
 			if i > start {
 				n += 3
 			}
@@ -164,7 +165,7 @@ func workspaceTabLayout(tabs []WorkspaceTab, active WorkspaceTab, w int) (hits [
 		pos = 2
 	}
 	for _, tab := range tabs[start:end] {
-		next := pos + lipgloss.Width(tab.Label())
+		next := pos + textw.Width(tab.Label())
 		hits = append(hits, TabHitbox{Tab: tab, X0: pos, X1: next})
 		pos = next + 3
 	}
@@ -220,7 +221,7 @@ func RenderWorkspaceBodyHeader(t *theme.Theme, w int) string {
 func RenderWorkspacePane(t *theme.Theme, w, h int, title, tabStrip, body string, focused bool) string {
 	inner := components.PanelContentWidth(w)
 	header := RenderWorkspaceBodyHeader(t, inner)
-	content := lipgloss.JoinVertical(lipgloss.Left, tabStrip, header, body)
+	content := textw.JoinVertical(lipgloss.Left, tabStrip, header, body)
 	return components.PanelWithAccent(t, title, w, h, content, focused, t.P.Cyan, t.P.Cyan)
 }
 
@@ -255,7 +256,7 @@ func RenderInspectorTab(c *tuictx.Ctx, w, h int, inspector *Inspector, activity 
 	}
 	innerW := components.PanelContentWidth(w)
 	if h < 9 {
-		return lipgloss.JoinVertical(lipgloss.Left, inspector.View(c, w, 3), activity.View(c, w, h-3))
+		return textw.JoinVertical(lipgloss.Left, inspector.View(c, w, 3), activity.View(c, w, h-3))
 	}
 	connH := 3
 	if connected.snap != nil {
@@ -276,7 +277,7 @@ func RenderInspectorTab(c *tuictx.Ctx, w, h int, inspector *Inspector, activity 
 	inspH = min(inspH, h-connH-activityMin)
 	actH := h - inspH - connH
 	connected.PanelTop = inspH + actH
-	return lipgloss.JoinVertical(lipgloss.Left,
+	return textw.JoinVertical(lipgloss.Left,
 		inspector.View(c, w, inspH),
 		activity.View(c, w, actH),
 		connected.View(c, w, connH),

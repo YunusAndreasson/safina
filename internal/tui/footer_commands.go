@@ -4,8 +4,8 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 	"github.com/YunusAndreasson/safina/internal/tui/components"
+	"github.com/YunusAndreasson/safina/internal/tui/textw"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -107,7 +107,7 @@ func (m *Model) renderTreeFooter() string {
 		right = t.HelpDesc.Render("hold ") + right
 	}
 	// Keep the discoverability hint visible even when commands overflow.
-	leftWidth := max(0, width-lipgloss.Width(right)-2)
+	leftWidth := max(0, width-textw.Width(right)-2)
 	var left string
 	if showChanges {
 		prefix := t.Danger.Render("CHANGE")
@@ -120,12 +120,12 @@ func (m *Model) renderTreeFooter() string {
 			target := ansi.Truncate(kind+"/"+ref.Name, min(28, leftWidth/3), "…")
 			prefix += " · " + t.Hint.Render(target)
 		}
-		budget := max(0, leftWidth-lipgloss.Width(prefix)-2)
+		budget := max(0, leftWidth-textw.Width(prefix)-2)
 		commands := components.RenderBoundedHints(t, changes, budget, components.KeyDesc{})
 		left = prefix + "  " + commands
 	} else {
 		left = components.RenderBoundedHints(t, reads, leftWidth, components.KeyDesc{})
 	}
 	left = ansi.Truncate(left, leftWidth, "")
-	return left + strings.Repeat(" ", max(0, width-lipgloss.Width(left)-lipgloss.Width(right))) + right
+	return left + strings.Repeat(" ", max(0, width-textw.Width(left)-textw.Width(right))) + right
 }

@@ -135,6 +135,14 @@ type Model struct {
 	cacheWarmEpoch  uint64
 	cacheWarmCancel context.CancelFunc
 
+	// The spinner ticks only while a frame shows it. Each tick redraws the
+	// whole screen, so a spinner ticking with nothing loading kept safina
+	// rendering 12 frames a second while idle. spinnerShown is the last
+	// frame's answer; spinnerStopped marks a tick chain that ended because
+	// nothing showed the spinner, so the next message restarts it.
+	spinnerShown   bool
+	spinnerStopped bool
+
 	metrics               sections.Metrics
 	metricsHistoryRequest uint64
 	metricsHistoryPending bool

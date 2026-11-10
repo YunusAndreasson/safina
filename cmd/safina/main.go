@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime/pprof"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -133,8 +134,15 @@ color-coded status, and perform actions like scaling, rollback, and log viewing.
 			// Bubble Tea v2 moves AltScreen + MouseMode into declarative
 			// tea.View fields (set in Model.View). NewProgram only needs the
 			// model itself; the runtime applies whatever the View frame says.
-			p := tea.NewProgram(&model)
-			if _, err := p.Run(); err != nil {
+			stopProfile := startCPUProfile(os.Getenv("SAFINA_CPUPROFILE"))
+			// A finished frame waits for the renderer's next tick before it
+			// reaches the terminal: half a tick on average, 8 ms at the
+			// default 60 fps. 120 (Bubble Tea's ceiling) halves that wait;
+			// an unchanged frame is skipped at the tick, so idle stays cheap.
+			p := tea.NewProgram(&model, tea.WithFPS(120))
+			_, err = p.Run()
+			stopProfile()
+			if err != nil {
 				debug.Errf("tui.run_failed", "err", err.Error())
 				fmt.Fprintf(os.Stderr, "Error running TUI: %v\n", err)
 				os.Exit(1)
@@ -250,4 +258,26 @@ func historyCommand() *cobra.Command {
 		parent.AddCommand(command)
 	}
 	return parent
+}
+
+// startCPUProfile writes a CPU profile of the TUI session to path, for
+// performance work (go tool pprof). Empty path: no profiling.
+func startCPUProfile(path string) func() {
+	if path == "" {
+		return func() {}
+	}
+	f, err := os.Create(path) // #nosec G304 G703 -- Developer-supplied profile path from SAFINA_CPUPROFILE.
+	if err != nil {
+		debug.Errf("cpuprofile.create_failed", "err", err.Error())
+		return func() {}
+	}
+	if err = pprof.StartCPUProfile(f); err != nil {
+		debug.Errf("cpuprofile.start_failed", "err", err.Error())
+		_ = f.Close()
+		return func() {}
+	}
+	return func() {
+		pprof.StopCPUProfile()
+		_ = f.Close()
+	}
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/YunusAndreasson/safina/internal/history"
 	"github.com/YunusAndreasson/safina/internal/k8s"
 	"github.com/YunusAndreasson/safina/internal/tui/components"
+	"github.com/YunusAndreasson/safina/internal/tui/textw"
 	"github.com/YunusAndreasson/safina/internal/tui/theme"
 	"github.com/YunusAndreasson/safina/internal/tui/tuictx"
 )
@@ -134,7 +135,7 @@ func (d *Drain) render(inline bool) string {
 		parts = append(parts, "", elapsed)
 	}
 	parts = append(parts, "", footer)
-	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+	return textw.JoinVertical(lipgloss.Left, parts...)
 }
 
 // ── Commands / messages ──────────────────────────────────────────────

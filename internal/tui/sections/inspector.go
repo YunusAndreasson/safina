@@ -20,6 +20,7 @@ import (
 
 	"github.com/YunusAndreasson/safina/internal/k8s"
 	"github.com/YunusAndreasson/safina/internal/tui/components"
+	"github.com/YunusAndreasson/safina/internal/tui/textw"
 	"github.com/YunusAndreasson/safina/internal/tui/theme"
 	"github.com/YunusAndreasson/safina/internal/tui/tuictx"
 )
@@ -230,7 +231,7 @@ func (i *Inspector) View(c *tuictx.Ctx, w, h int) string {
 	body := i.renderBody(c, components.PanelContentWidth(w), h-2)
 	title := ""
 	if i.snap.loading {
-		title = c.Spinner.View() + " loading…"
+		title = c.SpinnerView() + " loading…"
 	}
 	return components.PanelWithAccent(t, title, w, h, body, false, t.P.Cyan, t.P.Dim)
 }
@@ -243,7 +244,7 @@ func (i *Inspector) renderBody(c *tuictx.Ctx, innerW, innerH int) string {
 	kind, _, _ := strings.Cut(s.title, " · ")
 	summary := lipgloss.NewStyle().Foreground(t.ResourceKindColor(kind)).Bold(true).Render(kind)
 	if s.statusText != "" {
-		summary += t.DimTxt.Render(" · ") + statusLine(t, s.statusText, s.statusKind, max(innerW, lipgloss.Width(s.statusText)))
+		summary += t.DimTxt.Render(" · ") + statusLine(t, s.statusText, s.statusKind, max(innerW, textw.Width(s.statusText)))
 	}
 	var replicaSummary strings.Builder
 	for _, section := range s.sections {
@@ -350,7 +351,7 @@ func globalInspectorLabelW(secs []inspectorSection) int {
 	w := 0
 	for _, sec := range secs {
 		for _, r := range sec.rows {
-			if lw := lipgloss.Width(r.label); lw > w {
+			if lw := textw.Width(r.label); lw > w {
 				w = lw
 			}
 		}
@@ -438,7 +439,7 @@ func renderLiveMetric(t *theme.Theme, kind string, live *inspectorLive, isCPU bo
 	}
 	// Right-pad the value into a fixed cell so cpu↔mem rows share an
 	// edge regardless of digit count.
-	valPad := liveValueCellW - lipgloss.Width(curStr)
+	valPad := liveValueCellW - textw.Width(curStr)
 	if valPad < 0 {
 		valPad = 0
 	}
@@ -1567,7 +1568,7 @@ func truncate(s string, maxW int) string {
 	if maxW <= 0 {
 		return ""
 	}
-	if lipgloss.Width(s) <= maxW {
+	if textw.Width(s) <= maxW {
 		return s
 	}
 	if maxW < 2 {

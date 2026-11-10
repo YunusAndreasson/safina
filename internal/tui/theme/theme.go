@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+
+	"github.com/YunusAndreasson/safina/internal/tui/textw"
 )
 
 // Phi is the golden ratio. The layout uses it structurally: pane widths,
@@ -204,7 +206,7 @@ func (t *Theme) StatusGlyph(s string, maxW int, bg lipgloss.Style) string {
 	}
 	labelW := maxW - 2 // "● " takes 2 cells
 	label := s
-	if lipgloss.Width(label) > labelW {
+	if textw.Width(label) > labelW {
 		if labelW < 2 {
 			return dot
 		}
@@ -349,7 +351,7 @@ func (t *Theme) FocusGradient(base color.Color, n int) []color.Color {
 // Recurring section boundaries use muted text; Divider uses cyan for modal titles.
 func (t *Theme) SectionRule(title string, width int) string {
 	titleSeg := t.DimTxt.Render(strings.TrimSpace(title))
-	titleW := lipgloss.Width(titleSeg)
+	titleW := textw.Width(titleSeg)
 	if width <= titleW+4 {
 		return titleSeg
 	}
@@ -361,7 +363,7 @@ func (t *Theme) SectionRule(title string, width int) string {
 // Divider renders a cyan modal title between muted horizontal rules.
 func (t *Theme) Divider(title string, width int) string {
 	inner := t.CyanBold.Render(strings.TrimSpace(title))
-	innerW := lipgloss.Width(inner)
+	innerW := textw.Width(inner)
 	if width <= innerW+2 {
 		return inner
 	}

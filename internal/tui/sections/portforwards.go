@@ -14,6 +14,7 @@ import (
 	"github.com/YunusAndreasson/safina/internal/history"
 	"github.com/YunusAndreasson/safina/internal/k8s"
 	"github.com/YunusAndreasson/safina/internal/tui/components"
+	"github.com/YunusAndreasson/safina/internal/tui/textw"
 	"github.com/YunusAndreasson/safina/internal/tui/theme"
 	"github.com/YunusAndreasson/safina/internal/tui/tuictx"
 )
@@ -88,7 +89,7 @@ func (f *Forwards) View(w int) string {
 	if len(f.rows) == 0 {
 		body := lipgloss.NewStyle().Foreground(t.P.FGFade).Render("  (no active forwards)")
 		hint := components.RenderModalKeysRow(t, []components.KeyDesc{{Key: "f", Desc: "start on a pod or service"}})
-		return lipgloss.JoinVertical(lipgloss.Left, body, "", hint)
+		return textw.JoinVertical(lipgloss.Left, body, "", hint)
 	}
 
 	header := lipgloss.NewStyle().Foreground(t.P.Dim).Render(
@@ -137,7 +138,7 @@ func (f *Forwards) View(w int) string {
 	lines = append(lines, components.RenderHintRow(t, []components.KeyDesc{
 		{Key: "K", Desc: "stop", Write: true},
 	}))
-	return lipgloss.JoinVertical(lipgloss.Left, lines...)
+	return textw.JoinVertical(lipgloss.Left, lines...)
 }
 
 // truncMid keeps the start and end and inserts "…" so the human-meaningful

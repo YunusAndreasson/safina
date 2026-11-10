@@ -2,10 +2,12 @@ package components
 
 import (
 	"strings"
+	"sync"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/YunusAndreasson/safina/internal/tui/textw"
 	"github.com/YunusAndreasson/safina/internal/tui/theme"
 )
 
@@ -38,7 +40,7 @@ func Header(t *theme.Theme, labels []string, widths []int, aligns []Align) strin
 	for i, l := range labels {
 		style := t.ColHeader.Width(widths[i])
 		if i < len(aligns) && aligns[i] == AlignRight {
-			if lipgloss.Width(strings.TrimSpace(l)) <= 2 {
+			if textw.Width(strings.TrimSpace(l)) <= 2 {
 				style = style.AlignHorizontal(lipgloss.Center)
 			} else {
 				style = style.AlignHorizontal(lipgloss.Right)
@@ -58,10 +60,14 @@ func Header(t *theme.Theme, labels []string, widths []int, aligns []Align) strin
 // string spans (sumWidths + gaps + 2*edgePad) cells, with bg painted edge to
 // edge.
 func Row(t *theme.Theme, vals []string, widths []int, aligns []Align, selected bool, idx int) string {
-	bg := t.RowBg(idx)
-	if selected {
-		bg = t.Selected
+	if row, ok := fastRow(t, vals, widths, aligns, selected, idx); ok {
+		return row
 	}
+	return styledRow(t, vals, widths, aligns, selected, idx)
+}
+
+func styledRow(t *theme.Theme, vals []string, widths []int, aligns []Align, selected bool, idx int) string {
+	bg := t.RowBgFor(idx, selected)
 	cellStyle := lipgloss.NewStyle().Inherit(bg)
 
 	cells := make([]string, len(vals))
@@ -76,6 +82,119 @@ func Row(t *theme.Theme, vals []string, widths []int, aligns []Align, selected b
 	pad := bg.Width(edgePad).Render("")
 	body := pad + strings.Join(cells, gap) + pad
 	return bg.Width(RowOuterWidth(widths)).Render(body)
+}
+
+// rowPaint is what lipgloss writes around a row's text: the style's SGR
+// before text, and the background-only SGR before padding. Each Render
+// call of styledRow costs a few microseconds, and a row makes one per cell
+// plus three, so a table frame spent most of its time there.
+type rowPaint struct {
+	text, space string
+	ok          bool
+}
+
+type rowPaintKey struct {
+	t        *theme.Theme
+	selected bool
+	odd      bool
+}
+
+var rowPaints = struct {
+	sync.Mutex
+	m map[rowPaintKey]rowPaint
+}{m: map[rowPaintKey]rowPaint{}}
+
+func paintFor(t *theme.Theme, selected bool, idx int) rowPaint {
+	k := rowPaintKey{t, selected, !selected && idx%2 == 1}
+	rowPaints.Lock()
+	defer rowPaints.Unlock()
+	if p, ok := rowPaints.m[k]; ok {
+		return p
+	}
+	p := derivePaint(lipgloss.NewStyle().Inherit(t.RowBgFor(idx, selected)))
+	rowPaints.m[k] = p
+	return p
+}
+
+// derivePaint reads the two prefixes off lipgloss's own output, so the fast
+// path writes exactly what lipgloss would. Any other shape disables it.
+func derivePaint(st lipgloss.Style) rowPaint {
+	const reset = "\x1b[m"
+	text, ok := strings.CutSuffix(st.Render("X"), "X"+reset)
+	if !ok || strings.Contains(text, "X") {
+		return rowPaint{}
+	}
+	rest, ok := strings.CutPrefix(st.Width(1).Render(""), text+reset)
+	if !ok {
+		return rowPaint{}
+	}
+	space, ok := strings.CutSuffix(rest, " "+reset)
+	if !ok {
+		return rowPaint{}
+	}
+	return rowPaint{text: text, space: space, ok: true}
+}
+
+// fastRow builds the row styledRow would when every value is one line that
+// fits its column; anything else (wrapping, tabs, overflow) goes to lipgloss.
+func fastRow(t *theme.Theme, vals []string, widths []int, aligns []Align, selected bool, idx int) (string, bool) {
+	if len(vals) != len(widths) {
+		return "", false
+	}
+	p := paintFor(t, selected, idx)
+	if !p.ok {
+		return "", false
+	}
+	const reset = "\x1b[m"
+	var b strings.Builder
+	b.Grow(RowOuterWidth(widths) + len(vals)*(len(p.text)+len(p.space)+16) + 64)
+	b.WriteString(p.text)
+	writeSpace := func(n int) {
+		b.WriteString(p.space)
+		for ; n > 0; n-- {
+			b.WriteByte(' ')
+		}
+		b.WriteString(reset)
+	}
+	blank := func(n int) { // Width(n).Render(""): an empty text run, then n spaces
+		b.WriteString(p.text)
+		b.WriteString(reset)
+		writeSpace(n)
+	}
+	blank(edgePad)
+	for i, v := range vals {
+		w := widths[i]
+		if w < 1 || strings.ContainsAny(v, "\n\t\r") {
+			return "", false
+		}
+		vw := textw.StringWidth(v)
+		if vw > w {
+			return "", false
+		}
+		if i > 0 {
+			blank(gapW)
+		}
+		right := i < len(aligns) && aligns[i] == AlignRight
+		switch {
+		case vw == w:
+			b.WriteString(p.text)
+			b.WriteString(v)
+			b.WriteString(reset)
+		case right: // an empty value still writes its (empty) text run, after the padding
+			writeSpace(w - vw)
+			b.WriteString(p.text)
+			b.WriteString(v)
+			b.WriteString(reset)
+		default:
+			b.WriteString(p.text)
+			b.WriteString(v)
+			b.WriteString(reset)
+			writeSpace(w - vw)
+		}
+	}
+	blank(edgePad)
+	b.WriteString(reset)
+	return b.String(), true
 }
 
 // RowOuterWidth returns the total visible width of a row given its column
@@ -127,7 +246,7 @@ func TruncPad(s string, w int) string {
 		w = 1
 	}
 	s = ansi.Truncate(s, w, "…")
-	return s + strings.Repeat(" ", max(0, w-lipgloss.Width(s)))
+	return s + strings.Repeat(" ", max(0, w-textw.Width(s)))
 }
 
 func sumWidths(w []int) int {
@@ -141,10 +260,10 @@ func sumWidths(w []int) int {
 // TruncMiddlePad keeps a pod's distinguishing suffix visible when its full
 // generated name does not fit. Both halves still refer to the original name.
 func TruncMiddlePad(s string, w int) string {
-	if lipgloss.Width(s) <= w || w < 7 {
+	if textw.Width(s) <= w || w < 7 {
 		return TruncPad(s, w)
 	}
 	tail := min(5, (w-1)/2)
 	head := w - tail - 1
-	return ansi.Cut(s, 0, head) + "…" + ansi.Cut(s, lipgloss.Width(s)-tail, lipgloss.Width(s))
+	return ansi.Cut(s, 0, head) + "…" + ansi.Cut(s, textw.Width(s)-tail, textw.Width(s))
 }

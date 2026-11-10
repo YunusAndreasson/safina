@@ -13,6 +13,7 @@ import (
 
 	"github.com/YunusAndreasson/safina/internal/k8s"
 	"github.com/YunusAndreasson/safina/internal/tui/components"
+	"github.com/YunusAndreasson/safina/internal/tui/textw"
 	"github.com/YunusAndreasson/safina/internal/tui/theme"
 	"github.com/YunusAndreasson/safina/internal/tui/tuictx"
 )
@@ -161,9 +162,9 @@ func (s *Describe) Body(c *tuictx.Ctx) string {
 			Foreground(c.Theme.P.Yellow).
 			Bold(true).
 			Render("⚠ decoded — values are plaintext")
-		body = lipgloss.JoinVertical(lipgloss.Left, banner, body)
+		body = textw.JoinVertical(lipgloss.Left, banner, body)
 	}
-	return lipgloss.JoinVertical(lipgloss.Left,
+	return textw.JoinVertical(lipgloss.Left,
 		s.renderStatusRow(c),
 		body,
 		s.renderKeysRow(),
@@ -314,7 +315,7 @@ func (s *Describe) viewportBlock(c *tuictx.Ctx) string {
 	default:
 		st.Loaded = true
 	}
-	return components.CenteredViewportBlock(c.Theme, c.Spinner.View(), s.vp, st)
+	return components.CenteredViewportBlock(c.Theme, c.SpinnerView(), s.vp, st)
 }
 
 func (s *Describe) renderStatusRow(c *tuictx.Ctx) string {

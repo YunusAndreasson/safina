@@ -7,6 +7,7 @@ import (
 
 	"github.com/YunusAndreasson/safina/internal/history"
 	"github.com/YunusAndreasson/safina/internal/tui/components"
+	"github.com/YunusAndreasson/safina/internal/tui/textw"
 
 	"charm.land/bubbles/v2/list"
 	tea "charm.land/bubbletea/v2"
@@ -86,7 +87,7 @@ func (m *Model) choicesCard() string {
 	}
 	h := max(4, min(tallest, max(5, len(m.choices.model.Items())*2+4), m.ctx.Height-6-lipgloss.Height(footer)))
 	m.choices.model.SetSize(w, h)
-	return m.ctx.Theme.Modal.Padding(1, 2).Render(lipgloss.JoinVertical(lipgloss.Left, m.choices.model.View(), footer))
+	return m.ctx.Theme.Modal.Padding(1, 2).Render(textw.JoinVertical(lipgloss.Left, m.choices.model.View(), footer))
 }
 
 func (m *Model) recordNotification(text string, failed bool) {

@@ -36,11 +36,13 @@ type Ctx struct {
 	Background context.Context //nolint:containedctx // Bubble Tea callbacks have no context argument; this owns the view lifetime.
 	Cancel     context.CancelFunc
 
-	// Spinner is the shared loading indicator. Sections render Spinner.View()
-	// in their loading branches; the root forwards spinner.TickMsg to keep it
-	// animated. One spinner for the whole app keeps every loader on the same
-	// frame.
+	// Spinner is the shared loading indicator. Sections draw it with
+	// SpinnerView in their loading branches; the root forwards
+	// spinner.TickMsg to keep it animated while a frame shows it. One
+	// spinner for the whole app keeps every loader on the same frame.
 	Spinner spinner.Model
+	// spinnerDrawn records whether the frame being rendered drew the spinner.
+	spinnerDrawn bool
 
 	// Stale is true when the data on screen is meaningfully older than the
 	// auto-refresh cadence — either the topbar's refresh-age pill has
@@ -75,4 +77,18 @@ func (c *Ctx) ResetBackground() {
 		c.Cancel()
 	}
 	c.Background, c.Cancel = context.WithCancel(context.Background())
+}
+
+// SpinnerView draws the shared spinner and notes that this frame shows it.
+func (c *Ctx) SpinnerView() string {
+	c.spinnerDrawn = true
+	return c.Spinner.View()
+}
+
+// TakeSpinnerDrawn reports whether SpinnerView was called since the last
+// call, and resets the record. The root calls it once per frame.
+func (c *Ctx) TakeSpinnerDrawn() bool {
+	drawn := c.spinnerDrawn
+	c.spinnerDrawn = false
+	return drawn
 }

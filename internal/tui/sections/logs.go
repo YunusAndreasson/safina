@@ -12,6 +12,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/YunusAndreasson/safina/internal/tui/components"
+	"github.com/YunusAndreasson/safina/internal/tui/textw"
 	"github.com/YunusAndreasson/safina/internal/tui/theme"
 	"github.com/YunusAndreasson/safina/internal/tui/tuictx"
 )
@@ -163,7 +164,7 @@ func (l *Logs) SetPaneSize(innerW, innerH int) {
 // an unframed stack — for embedding inside the workspace pane, which owns
 // the panel border / focus ring.
 func (l *Logs) Body(c *tuictx.Ctx) string {
-	return lipgloss.JoinVertical(lipgloss.Left,
+	return textw.JoinVertical(lipgloss.Left,
 		l.renderStatusRow(c),
 		l.viewportBlock(c),
 		l.renderKeysRow(),
@@ -529,7 +530,7 @@ func (l *Logs) viewportBlock(c *tuictx.Ctx) string {
 	default:
 		st.Loaded = true
 	}
-	return components.CenteredViewportBlock(c.Theme, c.Spinner.View(), l.vp, st)
+	return components.CenteredViewportBlock(c.Theme, c.SpinnerView(), l.vp, st)
 }
 
 // renderStatusRow shows query (or hint), match count, follow state, and

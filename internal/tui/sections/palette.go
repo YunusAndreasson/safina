@@ -13,6 +13,7 @@ import (
 
 	"github.com/YunusAndreasson/safina/internal/k8s"
 	"github.com/YunusAndreasson/safina/internal/tui/components"
+	"github.com/YunusAndreasson/safina/internal/tui/textw"
 	"github.com/YunusAndreasson/safina/internal/tui/tuictx"
 )
 
@@ -234,7 +235,7 @@ func (p *Palette) Card(c *tuictx.Ctx, termW, termH int) string {
 		parts = append(parts, searchHint)
 	}
 	parts = append(parts, footer)
-	body := lipgloss.JoinVertical(lipgloss.Left, parts...)
+	body := textw.JoinVertical(lipgloss.Left, parts...)
 	panel := t.Modal.Padding(1, 2).Width(innerW + 6).Render(body)
 	return panel
 }
@@ -313,7 +314,7 @@ func renderPaletteRow(c *tuictx.Ctx, e PaletteEntry, hits []int, w int, selected
 
 	line := cursor + highlighted + suffix
 	// Pad to width so the row's background fills the modal column.
-	pad := w - lipgloss.Width(line)
+	pad := w - textw.Width(line)
 	if pad > 0 {
 		line += bg.Width(pad).Render("")
 	}

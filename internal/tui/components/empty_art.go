@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	"github.com/YunusAndreasson/safina/internal/tui/textw"
 	"github.com/YunusAndreasson/safina/internal/tui/theme"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -97,7 +98,7 @@ func IllustratedEmpty(t *theme.Theme, w, h int, motif EmptyArt, caption, hint st
 	art := ""
 	// A margin around each composition keeps it away from the pane border.
 	for _, candidate := range []string{large, small} {
-		if candidate != "" && lipgloss.Width(candidate)+6 <= w && lipgloss.Height(candidate)+textH+4 <= h {
+		if candidate != "" && textw.Width(candidate)+6 <= w && lipgloss.Height(candidate)+textH+4 <= h {
 			art = candidate
 			break
 		}
@@ -107,11 +108,11 @@ func IllustratedEmpty(t *theme.Theme, w, h int, motif EmptyArt, caption, hint st
 	}
 	rows := strings.Split(art, "\n")
 	colors := lipgloss.Blend1D(len(rows), t.P.FGFade, t.P.Blue, t.P.Dim)
-	artW := lipgloss.Width(art)
+	artW := textw.Width(art)
 	for i, row := range rows {
-		rows[i] = lipgloss.NewStyle().Foreground(colors[i]).Render(row + strings.Repeat(" ", artW-ansi.StringWidth(row)))
+		rows[i] = lipgloss.NewStyle().Foreground(colors[i]).Render(row + strings.Repeat(" ", artW-textw.StringWidth(row)))
 	}
-	block := lipgloss.JoinVertical(lipgloss.Center, strings.Join(rows, "\n"), "", text)
+	block := textw.JoinVertical(lipgloss.Center, strings.Join(rows, "\n"), "", text)
 	// Lift the composition slightly above the mathematical centre, as on welcome.
 	top := max(0, (h-lipgloss.Height(block))*2/5)
 	return lipgloss.NewStyle().Width(w).Height(h).Render(strings.Repeat("\n", top) + lipgloss.PlaceHorizontal(w, lipgloss.Center, block))
@@ -122,7 +123,7 @@ func emptyText(t *theme.Theme, w int, caption, hint string) string {
 	if hint != "" {
 		text += "\n" + t.Hint.Render(ansi.Wrap(hint, max(1, w-2), ""))
 	}
-	return lipgloss.NewStyle().Width(min(w, lipgloss.Width(text))).Align(lipgloss.Center).Render(text)
+	return lipgloss.NewStyle().Width(min(w, textw.Width(text))).Align(lipgloss.Center).Render(text)
 }
 
 func boundedEmptyText(t *theme.Theme, w, h int, caption, hint string) string {

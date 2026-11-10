@@ -62,7 +62,7 @@ func LoadInspectorDetail(ctx context.Context, mgr *k8s.Manager, contextName, kin
 		cs := client.Clientset
 		switch kind {
 		case k8s.KindPod:
-			d, err := k8s.InspectPod(ctx, cs, namespace, name)
+			d, err := client.InspectPod(ctx, namespace, name)
 			out.Err = err
 			if err == nil {
 				out.Pod = &d

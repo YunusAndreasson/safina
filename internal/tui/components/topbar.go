@@ -2,11 +2,14 @@ package components
 
 import (
 	"fmt"
+	"slices"
 	"strings"
+	"sync"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/YunusAndreasson/safina/internal/tui/textw"
 	"github.com/YunusAndreasson/safina/internal/tui/theme"
 )
 
@@ -42,6 +45,36 @@ type ClusterHealth struct {
 // overflows.
 // forwardCount == 0 hides the forwards pill entirely.
 func Topbar(t *theme.Theme, w int, crumbs []Crumb, forwardCount int, health ClusterHealth, cached bool) string {
+	in := topbarInput{t, w, forwardCount, health, cached}
+	lastTopbar.Lock()
+	defer lastTopbar.Unlock()
+	if lastTopbar.ok && lastTopbar.in == in && slices.Equal(lastTopbar.crumbs, crumbs) {
+		return lastTopbar.out
+	}
+	out := topbar(t, w, crumbs, forwardCount, health, cached)
+	lastTopbar.in, lastTopbar.crumbs, lastTopbar.out, lastTopbar.ok = in, slices.Clone(crumbs), out, true
+	return out
+}
+
+type topbarInput struct {
+	t            *theme.Theme
+	w            int
+	forwardCount int
+	health       ClusterHealth
+	cached       bool
+}
+
+// lastTopbar is the bar drawn last: it changes on navigation, not on the
+// cursor moves and ticks that redraw every frame.
+var lastTopbar struct {
+	sync.Mutex
+	in     topbarInput
+	crumbs []Crumb
+	out    string
+	ok     bool
+}
+
+func topbar(t *theme.Theme, w int, crumbs []Crumb, forwardCount int, health ClusterHealth, cached bool) string {
 	bar := lipgloss.NewStyle().
 		Background(t.P.BG).
 		Foreground(t.P.FG).
@@ -103,8 +136,8 @@ func Topbar(t *theme.Theme, w int, crumbs []Crumb, forwardCount int, health Clus
 		return strings.Join(cells, spacer)
 	}
 	right := renderRight()
-	locationMin := min(32, innerW-lipgloss.Width(logo+logoSep)-minGap)
-	budget := func() int { return innerW - lipgloss.Width(logo+logoSep+right) - minGap }
+	locationMin := min(32, innerW-textw.Width(logo+logoSep)-minGap)
+	budget := func() int { return innerW - textw.Width(logo+logoSep+right) - minGap }
 	if budget() < locationMin {
 		healthCell = ""
 		right = renderRight()
@@ -131,7 +164,7 @@ func Topbar(t *theme.Theme, w int, crumbs []Crumb, forwardCount int, health Clus
 			}
 			cluster := ansi.Truncate(crumb.Label, crumbBudget, "…")
 			crumbCell = ramp[len(ramp)-1].Render(cluster)
-			remaining := crumbBudget - lipgloss.Width(cluster) - 3
+			remaining := crumbBudget - textw.Width(cluster) - 3
 			if i+1 < len(crumbs) && remaining > 3 {
 				crumbCell += sepStyle.Render(" ▸ ") + BreadcrumbRamped(crumbs[i+1:], remaining, ramp, sepStyle)
 			}
@@ -139,8 +172,8 @@ func Topbar(t *theme.Theme, w int, crumbs []Crumb, forwardCount int, health Clus
 		}
 	}
 
-	consumed := lipgloss.Width(logo) + lipgloss.Width(logoSep) +
-		lipgloss.Width(crumbCell) + lipgloss.Width(right)
+	consumed := textw.Width(logo) + textw.Width(logoSep) +
+		textw.Width(crumbCell) + textw.Width(right)
 	pad := innerW - consumed
 	if pad < 1 {
 		pad = 1

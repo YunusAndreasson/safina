@@ -14,6 +14,7 @@ import (
 	"github.com/YunusAndreasson/safina/internal/tui/components"
 	"github.com/YunusAndreasson/safina/internal/tui/keys"
 	"github.com/YunusAndreasson/safina/internal/tui/sections"
+	"github.com/YunusAndreasson/safina/internal/tui/textw"
 	"github.com/YunusAndreasson/safina/internal/tui/theme"
 )
 
@@ -39,6 +40,7 @@ import (
 // what the chat textarea relies on for YAML / log snippets.
 func (m *Model) View() tea.View {
 	content := m.render()
+	m.spinnerShown = m.ctx.TakeSpinnerDrawn()
 	v := tea.View{
 		Content:       content,
 		AltScreen:     true,
@@ -275,7 +277,7 @@ func (m *Model) renderBase(w, h int) string {
 	}
 
 	parts = append(parts, m.renderMainSplit(w, botH), m.renderFooter())
-	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+	return textw.JoinVertical(lipgloss.Left, parts...)
 }
 
 // renderMainSplit composes the body region: a clean two-pane φ split.
@@ -344,7 +346,7 @@ func (m *Model) renderMainSplit(w, h int) string {
 		return workspaceView
 	}
 	treeView := m.tree.View(m.ctx, treeW, h)
-	return lipgloss.JoinHorizontal(lipgloss.Top, treeView, workspaceView)
+	return textw.JoinHorizontal(lipgloss.Top, treeView, workspaceView)
 }
 
 // renderWorkspace builds the right-hand workspace pane: a tab strip + the
@@ -917,7 +919,7 @@ func (m *Model) renderInputDialog(title, namespace, label, input, help, validati
 	parts = append(parts, "", input, feedback, "", components.RenderHintRow(t, []components.KeyDesc{
 		{Key: "↵", Desc: action, Write: write}, {Key: "esc", Desc: "cancel"},
 	}))
-	return frame.Width(w + 6).Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
+	return frame.Width(w + 6).Render(textw.JoinVertical(lipgloss.Left, parts...))
 }
 
 func (m *Model) renderEditConfirmModal() string {
@@ -956,7 +958,7 @@ func (m *Model) renderEditConfirmModal() string {
 	}
 	parts = append(parts, "", components.RenderConfirmHint(t, "apply"), components.RenderModalKeysRow(t, []components.KeyDesc{{Key: "↑/↓/pgup/pgdn", Desc: "scroll diff"}}))
 
-	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
+	content := textw.JoinVertical(lipgloss.Left, parts...)
 	return t.ModalDanger.Render(content)
 }
 
@@ -965,7 +967,7 @@ func (m *Model) renderEditConfirmModal() string {
 func (m *Model) renderConfirmModal(action, resource string) string {
 	t := m.ctx.Theme
 	resourceStyle := lipgloss.NewStyle().Foreground(t.P.FG).Bold(true)
-	content := lipgloss.JoinVertical(lipgloss.Left,
+	content := textw.JoinVertical(lipgloss.Left,
 		t.Danger.Render(action),
 		"",
 		resourceStyle.Render(resource),
@@ -993,17 +995,17 @@ func (m *Model) renderHelpModal() string {
 	for _, g := range groups {
 		cols = append(cols, renderHelpGroup(t, g))
 	}
-	body := lipgloss.JoinHorizontal(lipgloss.Top,
+	body := textw.JoinHorizontal(lipgloss.Top,
 		lipgloss.NewStyle().PaddingRight(3).Render(cols[0]),
 		lipgloss.NewStyle().PaddingRight(3).Render(cols[1]), cols[2])
-	if lipgloss.Width(body) > w {
+	if textw.Width(body) > w {
 		body = strings.Join(cols, "\n\n")
 	}
 	m.helpViewport.SetWidth(w)
 	m.helpViewport.SetHeight(max(1, min(lipgloss.Height(body), m.ctx.Height-10)))
 	m.helpViewport.SoftWrap = true
 	m.helpViewport.SetContent(body)
-	content := lipgloss.JoinVertical(lipgloss.Left,
+	content := textw.JoinVertical(lipgloss.Left,
 		t.CyanBold.Render("Keyboard shortcuts"), "", m.helpViewport.View(), "",
 		components.RenderBoundedHints(t, []components.KeyDesc{{Key: "↑↓/pgup/pgdn", Desc: "scroll"}, {Key: "esc/?", Desc: "close"}}, w, components.KeyDesc{Key: "esc/?", Desc: "close"}))
 	return t.Modal.Padding(1, 2).Width(w + 6).Render(content)
@@ -1027,13 +1029,13 @@ func renderHelpGroup(t *theme.Theme, g keys.Group) string {
 		h := b.Help()
 		lines = append(lines, helpRow(t, keyStyle, keyW, h.Key, h.Desc))
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, lines...)
+	return textw.JoinVertical(lipgloss.Left, lines...)
 }
 
 func widestKey(g keys.Group) int {
 	w := 4
 	measure := func(s string) {
-		if n := lipgloss.Width(s); n > w {
+		if n := textw.Width(s); n > w {
 			w = n
 		}
 	}

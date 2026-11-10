@@ -4,6 +4,8 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+
+	"github.com/YunusAndreasson/safina/internal/tui/textw"
 )
 
 // Crumb is one segment in a breadcrumb path. The optional KindGlyph and
@@ -70,20 +72,20 @@ func BreadcrumbRamped(crumbs []Crumb, w int, ramp []lipgloss.Style, sepStyle lip
 	sep := sepStyle.Render(sepText)
 
 	full := strings.Join(styledParts, sep)
-	if lipgloss.Width(full) <= w {
+	if textw.Width(full) <= w {
 		return full
 	}
 	dim := ramp[0]
 	ellipsis := dim.Render("…")
 	for keep := len(styledParts) - 1; keep >= 1; keep-- {
 		candidate := ellipsis + sep + strings.Join(styledParts[len(styledParts)-keep:], sep)
-		if lipgloss.Width(candidate) <= w {
+		if textw.Width(candidate) <= w {
 			return candidate
 		}
 	}
 	last := rawParts[len(rawParts)-1]
 	current := ramp[len(ramp)-1]
-	if lipgloss.Width(last) <= w {
+	if textw.Width(last) <= w {
 		return current.Render(last)
 	}
 	rs := []rune(last)

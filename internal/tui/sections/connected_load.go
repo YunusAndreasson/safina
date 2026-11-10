@@ -46,7 +46,7 @@ func LoadConnections(ctx context.Context, mgr *k8s.Manager, contextName, kind, s
 		case k8s.KindApp:
 			conns, err = k8s.ConnectionsForWorkload(ctx, cs, subKind, namespace, name)
 		case k8s.KindPod:
-			conns, err = k8s.ConnectionsForPod(ctx, cs, namespace, name)
+			conns, err = client.ConnectionsForPod(ctx, namespace, name)
 		case k8s.KindService:
 			conns, err = k8s.ConnectionsForService(ctx, cs, namespace, name)
 		case k8s.KindIngress:

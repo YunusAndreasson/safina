@@ -11,6 +11,7 @@ import (
 	"github.com/YunusAndreasson/safina/internal/k8s"
 	"github.com/YunusAndreasson/safina/internal/terminal"
 	"github.com/YunusAndreasson/safina/internal/tui/components"
+	"github.com/YunusAndreasson/safina/internal/tui/textw"
 	"github.com/YunusAndreasson/safina/internal/tui/theme"
 	"github.com/YunusAndreasson/safina/internal/tui/tuictx"
 )
@@ -331,7 +332,7 @@ func (s *Shell) View(c *tuictx.Ctx, termW, termH int) string {
 	statusRow := s.statusRow(c)
 	keysRow := s.keysRow(t)
 
-	content := lipgloss.JoinVertical(lipgloss.Left,
+	content := textw.JoinVertical(lipgloss.Left,
 		statusRow,
 		body,
 		keysRow,
@@ -370,7 +371,7 @@ func (s *Shell) bodyForPhase(c *tuictx.Ctx) string {
 		return s.renderTerminal(t)
 	case phaseDebug:
 		return centerBox(w, h,
-			c.Spinner.View()+" "+t.Idle.Render("creating debug container · "+k8s.DefaultDebugImage+"…"),
+			c.SpinnerView()+" "+t.Idle.Render("creating debug container · "+k8s.DefaultDebugImage+"…"),
 			"",
 			t.Hint.Render("first pull can take 10–30s"),
 		)
@@ -436,7 +437,7 @@ func (s *Shell) statusRow(c *tuictx.Ctx) string {
 		right = lipgloss.NewStyle().Foreground(t.P.Red).Bold(true).Render("✗ error")
 	}
 
-	pad := inner - lipgloss.Width(left) - lipgloss.Width(right)
+	pad := inner - textw.Width(left) - textw.Width(right)
 	if pad < 1 {
 		pad = 1
 	}
@@ -459,7 +460,7 @@ func (s *Shell) keysRow(t *theme.Theme) string {
 	row := components.RenderBoundedHints(t, hints, s.gridCols, components.KeyDesc{})
 	if s.phase == phaseLive && s.isDebug {
 		note := t.Hint.Render(" · debug container remains until pod deletion")
-		if lipgloss.Width(row+note) <= s.gridCols {
+		if textw.Width(row+note) <= s.gridCols {
 			row += note
 		}
 	}

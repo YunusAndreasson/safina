@@ -23,6 +23,7 @@ import (
 	"github.com/YunusAndreasson/safina/internal/k8s"
 	"github.com/YunusAndreasson/safina/internal/metrics"
 	"github.com/YunusAndreasson/safina/internal/tui/components"
+	"github.com/YunusAndreasson/safina/internal/tui/textw"
 	"github.com/YunusAndreasson/safina/internal/tui/theme"
 	"github.com/YunusAndreasson/safina/internal/tui/tuictx"
 )
@@ -153,6 +154,9 @@ type Tree struct {
 	// buffer has only one sample and the sparkline draws as a dim "─"
 	// until the trend has enough body to show.
 	metricsHist map[string]*metricSeries
+
+	// podRows reuses rendered pod rows between frames (see rowCache).
+	podRows rowCache
 
 	// nsHealthCache caches a namespace's app-health rollup keyed by name.
 	// Populated whenever SetChildren delivers apps for a namespace; the
@@ -1051,7 +1055,7 @@ func (t *Tree) View(c *tuictx.Ctx, w, h int) string {
 	// branch (Loading=true && children==nil) still owns the empty-screen
 	// case; this is for the "we have data, refreshing it" case.
 	if t.refreshGate.Visible() && t.children != nil {
-		title = title + " " + c.Spinner.View()
+		title = title + " " + c.SpinnerView()
 	}
 
 	// Title goes Dim, not cyan-bold — it's a label, not a headline. The
@@ -1258,7 +1262,7 @@ func (t *Tree) renderBody(c *tuictx.Ctx, innerW, rowsAvail int) string {
 		// Spinner only shows past the gate's ShowAfter threshold —
 		// fast cache hits go straight to rows.
 		if t.loadGate.Visible() {
-			return th.Idle.Render(c.Spinner.View() + " loading resources…")
+			return th.Idle.Render(c.SpinnerView() + " loading resources…")
 		}
 		return th.Idle.Render("…")
 	}
@@ -1284,7 +1288,7 @@ func (t *Tree) renderBody(c *tuictx.Ctx, innerW, rowsAvail int) string {
 		case apierrors.IsNotFound(t.LoadErr):
 			message = "Resource unavailable: " + message
 		}
-		return lipgloss.JoinVertical(lipgloss.Left,
+		return textw.JoinVertical(lipgloss.Left,
 			lipgloss.NewStyle().Foreground(th.P.Red).Render(ansi.Wrap("✗ "+message, max(1, innerW), "")), "",
 			th.Hint.Render(ansi.Wrap(hint, max(1, innerW), "")))
 	}
@@ -1293,7 +1297,7 @@ func (t *Tree) renderBody(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	}
 
 	if t.filter.Value() != "" && t.visibleCount() == 0 {
-		return lipgloss.JoinVertical(lipgloss.Left,
+		return textw.JoinVertical(lipgloss.Left,
 			th.Idle.Render("No matching resources"),
 			th.Hint.Render("Change or clear the filter."))
 	}
@@ -2040,34 +2044,41 @@ func (t *Tree) renderPodRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 
 	start, end := components.VisibleRange(t.cursor, len(pods), rowsAvail-1)
 	out := []string{header}
+	// Everything a row's rendering reads besides the pod itself.
+	layout := fmt.Sprint(cols, showNS, showMetrics, showRST)
+	defer t.podRows.endFrame()
 	for i := start; i < end; i++ {
 		p := pods[i]
 		selected := i == t.cursor && t.Focused
 		bg := th.RowBgFor(i, selected)
-		nameCell := th.NameStrongOn(components.TruncMiddlePad(p.Name, nW), bg)
-		// StatusGlyph at maxW=1 collapses to just the colored dot (the
-		// abnormal-state word is dropped). Same shape Apps use for H.
-		statusCell := th.StatusGlyph(p.Status, 1, bg)
-		rstCell := th.RestartCount(int(p.Restarts), bg)
-		ageCell := th.Age(p.Age, bg)
-
-		vals := []string{nameCell}
-		if showNS {
-			vals = append(vals, th.MetaOn(components.TruncPad(p.Namespace, nsW), bg))
-		}
-		vals = append(vals, statusCell)
+		// Sparklines cache their own rendering; their output is part of the key.
+		var cpuCell, memCell string
 		if showMetrics {
 			cpuBuf, memBuf := t.metricSeriesFor(k8s.KindPod, p.Namespace, p.Name)
-			vals = append(vals,
-				renderMetricCell(th, cpuBuf, bg, c.Stale),
-				renderMetricCell(th, memBuf, bg, c.Stale),
-			)
+			cpuCell = renderMetricCell(th, cpuBuf, bg, c.Stale)
+			memCell = renderMetricCell(th, memBuf, bg, c.Stale)
 		}
-		if showRST {
-			vals = append(vals, rstCell)
-		}
-		vals = append(vals, ageCell)
-		out = append(out, components.Row(th, vals, cols, aligns, selected, i))
+		key := rowKey(layout, strconv.FormatBool(selected), strconv.Itoa(i%2),
+			p.Name, p.Namespace, p.Status, strconv.Itoa(int(p.Restarts)), p.Age, cpuCell, memCell)
+		out = append(out, t.podRows.get(th, key, func() string {
+			nameCell := th.NameStrongOn(components.TruncMiddlePad(p.Name, nW), bg)
+			// StatusGlyph at maxW=1 collapses to just the colored dot (the
+			// abnormal-state word is dropped). Same shape Apps use for H.
+			statusCell := th.StatusGlyph(p.Status, 1, bg)
+			vals := []string{nameCell}
+			if showNS {
+				vals = append(vals, th.MetaOn(components.TruncPad(p.Namespace, nsW), bg))
+			}
+			vals = append(vals, statusCell)
+			if showMetrics {
+				vals = append(vals, cpuCell, memCell)
+			}
+			if showRST {
+				vals = append(vals, th.RestartCount(int(p.Restarts), bg))
+			}
+			vals = append(vals, th.Age(p.Age, bg))
+			return components.Row(th, vals, cols, aligns, selected, i)
+		}))
 	}
 	return strings.Join(out, "\n")
 }
@@ -2187,7 +2198,7 @@ func (t *Tree) renderContainerRows(c *tuictx.Ctx, innerW, rowsAvail int) string 
 			namePrefix = th.MetaOn("["+shortKind(ci.Kind)+"] ", bg)
 		}
 		nameCell := namePrefix +
-			th.NameStrongOn(components.TruncPad(ci.Name, nameW-lipgloss.Width(namePrefix)), bg) +
+			th.NameStrongOn(components.TruncPad(ci.Name, nameW-textw.Width(namePrefix)), bg) +
 			th.MetaOn(components.TruncPad(" · "+ci.Image, imgW), bg)
 		// StatusGlyph(maxW=1) collapses to just the colored dot — same
 		// shape Apps and Pods use for H. The Inspector tile carries the
@@ -2371,10 +2382,10 @@ func renderPressureCell(th *theme.Theme, pressures []string, width int, bg lipgl
 		b.WriteString(bg.Foreground(th.P.Red).Bold(true).Render(label))
 	}
 	out := b.String()
-	if lipgloss.Width(out) > width {
+	if textw.Width(out) > width {
 		return out
 	}
-	return out + bg.Width(width-lipgloss.Width(out)).Render("")
+	return out + bg.Width(width-textw.Width(out)).Render("")
 }
 
 func (t *Tree) renderConfigMapRows(c *tuictx.Ctx, innerW, rowsAvail int) string {

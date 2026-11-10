@@ -14,6 +14,7 @@ import (
 	"github.com/YunusAndreasson/safina/internal/config"
 	"github.com/YunusAndreasson/safina/internal/k8s"
 	"github.com/YunusAndreasson/safina/internal/tui/components"
+	"github.com/YunusAndreasson/safina/internal/tui/textw"
 	"github.com/YunusAndreasson/safina/internal/tui/tuictx"
 )
 
@@ -252,7 +253,7 @@ func (b *Browser) Card(c *tuictx.Ctx, termW, termH int) string {
 	if b.DiscoveryError != "" {
 		status = "Discovery incomplete: " + b.DiscoveryError
 	}
-	body := lipgloss.JoinVertical(lipgloss.Left,
+	body := textw.JoinVertical(lipgloss.Left,
 		t.CyanBold.Render(ansi.Truncate(header, innerW, "…")),
 		ansi.Truncate(b.input.View(t, innerW), innerW, "…"),
 		t.Meta.Render(ansi.Truncate(b.Scope, innerW, "…")),
@@ -321,7 +322,7 @@ func renderBrowserRow(c *tuictx.Ctx, e browserEntry, hits []int, w int, selected
 	}
 	suffix := bg.Render("  ") + bg.Foreground(t.P.FGFade).Render(e.Group+scope)
 	line := cursor + check + highlighted + suffix
-	pad := w - lipgloss.Width(line)
+	pad := w - textw.Width(line)
 	if pad > 0 {
 		line += bg.Width(pad).Render("")
 	}
