@@ -333,17 +333,6 @@
       grid-template-columns: minmax(0, 1fr);
     }
   }
-  /* A reference section's title column (Also on board, Safina and k9s,
-     Fair questions) travels with its list: side by side it holds under the
-     bar while the text line scrolls, so a long list never leaves its title a
-     screen behind. Only position changes: the column keeps its alignment,
-     so title and text still start level. */
-  .split__title {
-    @media (width > 1100px) {
-      position: sticky;
-      top: calc(var(--nav-h) + var(--s3));
-    }
-  }
 }
 
 /* ─── shared components ───────────────────────────────────────────────────── */

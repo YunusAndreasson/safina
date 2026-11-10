@@ -12,6 +12,13 @@ function spy(root: HTMLElement): void {
     const part = document.getElementById(link.hash.slice(1));
     return part ? [{ link, part }] : [];
   });
+  // A part away from its link's anchor names it in data-nav ("#features"),
+  // so Also on board, after Speed, still marks Features.
+  for (const part of document.querySelectorAll<HTMLElement>("[data-nav]")) {
+    const link = marks.find((m) => m.link.hash === part.dataset.nav)?.link;
+    if (link) marks.push({ link, part });
+  }
+  marks.sort((a, b) => (a.part.compareDocumentPosition(b.part) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
   if (marks.length === 0) return;
 
   let current: HTMLAnchorElement | undefined;

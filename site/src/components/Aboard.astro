@@ -1,6 +1,7 @@
 ---
-// The smaller features, each a name and the one line that sells it. On the
-// page grid: the title on the title line, the list on the text line.
+// The smaller features, each a name and the one line that sells it. The
+// title above, then the list across the page grid two a row: the left item
+// on the title line, the right on the text line, so no column stands empty.
 const items: { name: string; keys: string[]; text: string }[] = [
   {
     name: "Shell anywhere",
@@ -35,10 +36,10 @@ const items: { name: string; keys: string[]; text: string }[] = [
 ];
 ---
 
-<section class="aboard" id="aboard" aria-labelledby="aboard-title">
-  <div class="wrap split">
-    <h2 id="aboard-title" class="h2-ref split__title">Also on board</h2>
-    <dl class="aboard__list">
+<section class="aboard" id="aboard" data-nav="#features" aria-labelledby="aboard-title">
+  <div class="wrap">
+    <h2 id="aboard-title" class="h2-ref">Also on board</h2>
+    <dl class="aboard__list split">
       {
         items.map((it) => (
           <div class="aboard__item">
@@ -65,30 +66,23 @@ const items: { name: string; keys: string[]; text: string }[] = [
     padding-top: var(--s5);
     background: var(--abyss);
   }
-  /* After the interlude, the photograph's fade carries part of the break,
-     as it does above it: s4 on both sides. */
-  :global(.interlude) + .aboard {
-    padding-top: var(--s4);
-  }
-  .aboard .split {
-    row-gap: var(--s3);
-  }
   .aboard h2 {
     max-width: 17ch;
   }
-  /* Two a row on the text line, ruled like the key list's groups; one a
-     row on a phone. */
+  /* Two a row on the page's two lines, ruled like the key list's groups.
+     Stacked, two a row inside the measure; one a row on a phone. */
   .aboard__list {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: var(--s3) var(--s3);
+    margin-top: var(--s3);
+    row-gap: var(--s3);
 
     @media (width <= 1100px) {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      column-gap: var(--s3);
       max-width: var(--measure);
     }
     @media (width <= 640px) {
       grid-template-columns: minmax(0, 1fr);
-      gap: var(--s2);
+      row-gap: var(--s2);
     }
   }
   .aboard__item {
@@ -120,6 +114,7 @@ const items: { name: string; keys: string[]; text: string }[] = [
     height: 1.9em;
   }
   dd {
+    max-width: 52ch;
     margin: var(--s1) 0 0;
     color: var(--spray);
     font-size: var(--t-small);

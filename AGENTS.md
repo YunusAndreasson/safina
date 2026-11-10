@@ -12,7 +12,7 @@ not "AI slop" to be cleaned up.
 - Never reword it, replace it with another line, or cut it. Only the user
   changes it (twice so far, both in Nov 2026: "console" became "TUI", then
   "ship" became "ship fast", so the line carries safina's speed, which the
-  hero's lede and the measured rows in Compare back with numbers).
+  hero's lede and the Speed section back with numbers).
 - It appears in five places on the site, and all five must agree: the hero
   headline (`site/src/components/Opening.astro`), the page title and meta
   description (`site/src/pages/index.astro`), the social card

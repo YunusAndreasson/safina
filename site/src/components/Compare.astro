@@ -1,284 +1,293 @@
 ---
-// Safina next to k9s: a check or a dash, nothing to read. Every k9s mark is
-// checked against the k9s README, k9scli.io and its latest release (v0.51.0,
-// June 2026); every safina mark against this repo. Recheck both when either
-// changes, and keep k9s's wins in: the dashes on safina's side are what make
-// its checks believable.
-//   Confirmation on every write: k9s's Ctrl-K kill has no confirmation dialog.
-//   All resource types by default: safina shows six groups; others
-//   are added. Labels stay short and precise, two to five words. Each row
-//   uses the field's own terms (kubectl's "rollout status" and "resource types"; "AI assistant" as Headlamp and Lens tables say;
-//   k9s's "read-only mode", "plugins", "skins"), never a safina feature name.
-// "some" is a half answer: k9s asks before a delete but not a kill; safina
-// shows six resource groups and you add the rest.
-type Mark = boolean | "some";
-
-// Measured: medians from cmd/safina-versus (`make versus`, method in
+// Speed: safina timed against k9s, the payoff of the hero's "about 20 ms".
+// Medians from cmd/safina-versus (`make versus`, method in
 // docs/development.md), both tools in one 200×50 pseudo-terminal against the
 // same cluster through one recording API proxy. Latency is keystroke to the
 // first correct frame. `ahead` names the side whose whole 95% interval beats
-// the other by 5% and 1 ms; null is a tie. Keep k9s's wins and the ties in,
-// for the same reason as the dashes below. Re-run on a release and update
+// the other by 5% and 1 ms; null is a tie. Keep k9s's wins and the ties in:
+// they're what make safina's wins believable. Re-run on a release and update
 // every row and the note together; never round a tie into a win.
 // Report: safina v0.3.0 vs k9s v0.51.0, 10 rounds, seed 42, 10 Nov 2026
-// (versus-20261110-131310).
+// (versus-20261110-131310). Values are the report's medians, unrounded: the
+// figures and the ratio are both derived from them, so they agree.
+// Lower is better on every row. Each row's bars are scaled to its own slower
+// side, so a bar compares within its row only; the figures carry the scale.
 type Side = "safina" | "k9s" | null;
-const measured: { label: string; safina: string; k9s: string; ahead: Side }[] = [
-  { label: "Launch to the pod list, all namespaces", safina: "0.7 s", k9s: "2.9 s", ahead: "safina" },
-  { label: "Move the cursor one row", safina: "20 ms", k9s: "28 ms", ahead: "safina" },
-  { label: "Filter 500 pods by name", safina: "139 ms", k9s: "343 ms", ahead: "safina" },
-  { label: "Switch from pods to deployments", safina: "33 ms", k9s: "112 ms", ahead: "safina" },
-  { label: "Open a pod’s YAML", safina: "64 ms", k9s: "68 ms", ahead: null },
-  { label: "Back out of the YAML", safina: "27 ms", k9s: "145 ms", ahead: "safina" },
-  { label: "Open logs to the first line", safina: "80 ms", k9s: "115 ms", ahead: "safina" },
-  { label: "CPU while idle, of one core", safina: "7%", k9s: "15%", ahead: "safina" },
-  { label: "Memory", safina: "187 MB", k9s: "179 MB", ahead: null },
-  { label: "API requests while idle", safina: "18/min", k9s: "4/min", ahead: "k9s" },
+type Row = { label: string; safina: number; k9s: number; unit: "ms" | "%" | "MB" | "/min"; ahead: Side; less?: string };
+const groups: { name: string; rows: Row[] }[] = [
+  {
+    name: "Keypress to the first correct frame",
+    rows: [
+      { label: "Launch to the pod list, all namespaces", safina: 689.9, k9s: 2944.1, unit: "ms", ahead: "safina" },
+      { label: "Move the cursor one row", safina: 19.8, k9s: 28.3, unit: "ms", ahead: "safina" },
+      { label: "Filter 500 pods by name", safina: 139.4, k9s: 342.5, unit: "ms", ahead: "safina" },
+      { label: "Switch from pods to deployments", safina: 33.4, k9s: 112.3, unit: "ms", ahead: "safina" },
+      { label: "Open a pod’s YAML", safina: 63.6, k9s: 67.9, unit: "ms", ahead: null },
+      { label: "Back out of the YAML", safina: 27.2, k9s: 144.5, unit: "ms", ahead: "safina" },
+      { label: "Open logs to the first line", safina: 79.8, k9s: 114.7, unit: "ms", ahead: "safina" },
+    ],
+  },
+  {
+    name: "Footprint",
+    rows: [
+      { label: "CPU while idle, of one core", safina: 6.6, k9s: 15.1, unit: "%", ahead: "safina", less: "less" },
+      { label: "Memory", safina: 187.1, k9s: 179.3, unit: "MB", ahead: null },
+      { label: "API requests while idle", safina: 18, k9s: 4, unit: "/min", ahead: "k9s", less: "fewer" },
+    ],
+  },
 ];
-const rows: { label: string; safina: Mark; k9s: Mark }[] = [
-  { label: "Write actions need Shift", safina: true, k9s: false },
-  { label: "Confirmation on every write", safina: true, k9s: "some" },
-  { label: "Rollout status after scale, restart or edit", safina: true, k9s: false },
-  { label: "Cluster picker at launch", safina: true, k9s: false },
-  { label: "AI assistant", safina: true, k9s: false },
-  { label: "Incident timeline export", safina: true, k9s: false },
-  { label: "All resource types by default", safina: "some", k9s: true },
-  { label: "Read-only mode", safina: false, k9s: true },
-  { label: "Plugins and skins", safina: false, k9s: true },
-  { label: "Windows support", safina: false, k9s: true },
-  { label: "Package manager install", safina: false, k9s: true },
-];
+
+// Seconds once a row reaches a second, so both sides of a row share a unit.
+function fmt(v: number, r: Row): string {
+  if (r.unit === "ms") return Math.max(r.safina, r.k9s) >= 1000 ? `${(v / 1000).toFixed(2)} s` : `${String(Math.round(v))} ms`;
+  const n = String(Math.round(v));
+  if (r.unit === "MB") return `${n} MB`;
+  return r.unit === "%" ? `${n}%` : `${n}/min`;
+}
+function diff(r: Row): string {
+  if (!r.ahead) return "Tie";
+  const x = (Math.max(r.safina, r.k9s) / Math.min(r.safina, r.k9s)).toFixed(1);
+  const what = r.less ?? "faster";
+  return r.ahead === "safina" ? `${x}× ${what}` : `k9s, ${x}× ${what}`;
+}
+const sides = ["safina", "k9s"] as const;
 ---
 
-<section class="compare" id="compare" aria-labelledby="compare-title">
-  <div class="wrap split">
-    <div class="compare__head split__title">
+<section class="speed" id="compare" aria-labelledby="speed-title">
+  <div class="wrap">
+    <div class="speed__head split">
       <hgroup>
-        <p class="section-name">Compare</p>
-        <h2 id="compare-title" class="h2-ref">Safina and k9s</h2>
+        <p class="section-name">Speed</p>
+        <h2 id="speed-title" class="h2-ref">Timed against k9s</h2>
       </hgroup>
-      <p class="compare__lede">Both read the same kubeconfig, so you can run them side&nbsp;by&nbsp;side.</p>
-    </div>
-    <div class="compare__body">
-      <table class="compare__table">
-        <thead>
-          <tr>
-            <td></td>
-            <th scope="col" class="compare__name compare__name--safina">safina</th>
-            <th scope="col" class="compare__name">k9s</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr class="compare__group">
-            <th scope="rowgroup">Measured</th>
-            <td class="compare__mark compare__mark--safina"></td>
-            <td class="compare__mark"></td>
-          </tr>
-          {
-            measured.map((r) => (
-              <tr>
-                <th scope="row">{r.label}</th>
-                {(["safina", "k9s"] as const).map((side) => (
-                  <td
-                    class:list={[
-                      "compare__mark",
-                      "compare__num",
-                      { "compare__mark--safina": side === "safina", "compare__num--ahead": r.ahead === side },
-                    ]}
-                  >
-                    {r[side]}
-                    {r.ahead === side && <span class="visually-hidden"> (better)</span>}
-                  </td>
-                ))}
-              </tr>
-            ))
-          }
-        </tbody>
-        <tbody>
-          <tr class="compare__group">
-            <th scope="rowgroup">Features</th>
-            <td class="compare__mark compare__mark--safina"></td>
-            <td class="compare__mark"></td>
-          </tr>
-          {
-            rows.map((r) => (
-              <tr>
-                <th scope="row">{r.label}</th>
-                {[r.safina, r.k9s].map((has, i) => (
-                  <td class:list={["compare__mark", { "compare__mark--safina": i === 0 }]}>
-                    {has === "some" ? (
-                      <span class="some">Some</span>
-                    ) : has ? (
-                      <svg class="check" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
-                        <path d="M3.2 8.6 6.5 11.8 12.8 4.6" />
-                      </svg>
-                    ) : (
-                      <span class="dash" aria-hidden="true" />
-                    )}
-                    {has !== "some" && <span class="visually-hidden">{has ? "Yes" : "No"}</span>}
-                  </td>
-                ))}
-              </tr>
-            ))
-          }
-        </tbody>
-      </table>
-      <p class="compare__note">
-        Measured: medians of 10 launches each, safina v0.3.0 and k9s v0.51.0 at its defaults, with 500 pods on a local
-        minikube cluster and an Intel i7-7820HQ laptop. Times run from the keypress to the first correct frame. A
-        brighter figure is ahead by more than the run-to-run spread, and the rest are ties. Most of safina’s idle
-        requests re-read pod metrics every 5&nbsp;seconds.
-        <a href="https://github.com/YunusAndreasson/safina/blob/main/docs/development.md#comparing-with-k9s">Run&nbsp;it&nbsp;yourself</a> with <code>make&nbsp;versus</code>. Features: k9s as of v0.51.0, June&nbsp;2026.
+      <p class="speed__lede">
+        Both run in one terminal against the same 500 pods. The same keys go to each, and the clock is read from
+        outside&nbsp;both.
       </p>
     </div>
+    <div class="speed__body">
+    <table class="speed__table">
+      <thead>
+        <tr>
+          <td></td>
+          <th scope="col" class="speed__legend">
+            <span class="speed__key speed__key--safina">safina</span>
+            <span class="speed__key">k9s</span>
+          </th>
+          <th scope="col" class="speed__diff-head">Difference</th>
+        </tr>
+      </thead>
+      {
+        groups.map((g) => (
+          <tbody>
+            <tr class="speed__group">
+              <th scope="rowgroup" colspan="3">
+                {g.name}
+              </th>
+            </tr>
+            {g.rows.map((r) => {
+              const max = Math.max(r.safina, r.k9s);
+              return (
+                <tr>
+                  <th scope="row">{r.label}</th>
+                  <td class="speed__bars">
+                    {sides.map((side) => (
+                      <span class:list={["speed__line", `speed__line--${side}`, { "speed__line--ahead": r.ahead === side }]}>
+                        <span class="speed__bar" style={`--w: ${((r[side] / max) * 100).toFixed(1)}%`} aria-hidden="true" />
+                        <span class="speed__fig">
+                          <span class="visually-hidden">{side} </span>
+                          {fmt(r[side], r)}
+                        </span>
+                      </span>
+                    ))}
+                  </td>
+                  <td class:list={["speed__diff", { "speed__diff--safina": r.ahead === "safina", "speed__diff--k9s": r.ahead === "k9s" }]}>
+                    {diff(r)}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        ))
+      }
+    </table>
+    </div>
+    <p class="speed__note">
+      Medians of 10 launches each, safina v0.3.0 and k9s v0.51.0 at its defaults, on a local minikube cluster and an
+      Intel i7-7820HQ laptop. A difference counts only when it’s larger than the run-to-run spread; the rest are ties.
+      Most of safina’s idle requests re-read pod metrics every 5&nbsp;seconds. <a href="https://github.com/YunusAndreasson/safina/blob/main/docs/development.md#comparing-with-k9s">Run&nbsp;it&nbsp;yourself</a> with <code>make&nbsp;versus</code>.
+    </p>
   </div>
 </section>
 
 <style>
-  .compare {
-    padding-top: var(--s5);
+  .speed {
+    padding-top: var(--s4);
     background: var(--abyss);
   }
-  .compare .split {
-    row-gap: var(--s3);
+  .speed__head {
+    row-gap: var(--s2);
   }
-  .compare h2 {
-    max-width: 17ch;
-  }
-  .compare__body {
-    @media (width <= 1100px) {
-      max-width: var(--measure);
-    }
-  }
-  /* The title and the one sentence that frames the table, as one block on
-     the title line: the table alone takes the text line, starting level
-     with the title. */
-  .compare__lede {
-    max-width: 28ch;
-    margin-top: var(--s2);
+  .speed__lede {
     color: var(--spray);
-    text-wrap: balance;
 
     @media (width <= 1100px) {
       max-width: var(--measure);
     }
   }
 
-  /* Names left, two narrow columns of marks. */
-  .compare__table {
+  /* The labels take the title column and the bars start on the text line,
+     so the table hangs off the page's two verticals like every section. */
+  .speed__body {
+    container-type: inline-size;
+    margin-top: var(--s3);
+  }
+  .speed__table {
     width: 100%;
     border-collapse: collapse;
+
+    @media (width <= 1100px) {
+      max-width: var(--measure);
+    }
   }
   th,
   td {
     padding: 0;
     font-weight: inherit;
     text-align: start;
+    vertical-align: middle;
   }
-  tbody th {
-    padding-block: 11px;
+  tbody th[scope="row"] {
+    width: calc((100cqw - var(--col-gap)) * 5 / 11 + var(--col-gap));
+    padding-block: 12px;
     padding-inline-end: 16px;
     color: var(--spray);
     text-wrap: balance;
+
+    @media (width <= 1100px) {
+      width: auto;
+    }
   }
   tbody tr {
     border-top: 1px solid var(--hairline);
   }
-  .compare__name,
-  .compare__mark {
-    width: 6.5rem;
-    text-align: center;
-    vertical-align: middle;
 
-    @media (width <= 640px) {
-      width: 4.75rem;
-    }
-  }
-  /* The names in the feature names' hull lettering; safina's in cyan. */
-  .compare__name {
-    padding-block: 12px 10px;
+  /* The names in hull lettering, safina's in the beacon like its bars. */
+  .speed__legend,
+  .speed__diff-head,
+  .speed__group th {
     font-size: var(--t-ui);
     font-weight: 400;
     font-stretch: 125%;
     letter-spacing: 0.08em;
     color: var(--fog);
   }
-  /* safina's column: one faint band of the beacon, top to bottom. */
-  .compare__name--safina,
-  .compare__mark--safina {
-    background: rgb(from var(--beacon) r g b / 6%);
+  .speed__legend {
+    display: flex;
+    gap: var(--s2);
+    padding-bottom: 10px;
   }
-  .compare__name--safina {
-    border-radius: 12px 12px 0 0;
+  .speed__key--safina {
     color: var(--beacon);
   }
-  tbody:last-child tr:last-child .compare__mark--safina {
-    border-radius: 0 0 12px 12px;
+  .speed__diff-head {
+    padding-bottom: 10px;
+    text-align: end;
   }
-
-  /* Each group opens on its name in the column names' hull lettering, with
-     room above it: a heading for the rows, not a row to read. The band
-     runs through. */
-  .compare__group {
+  .speed__group {
     border-top: 0;
   }
-  .compare__group th {
+  .speed__group th {
     padding-block: var(--s3) 10px;
-    font-size: var(--t-ui);
-    font-weight: 400;
-    font-stretch: 125%;
-    letter-spacing: 0.08em;
-    color: var(--fog);
   }
-  tbody:first-child .compare__group th {
+  tbody:first-of-type .speed__group th {
     padding-top: 8px;
   }
 
-  /* Figures line up digit for digit; the side that's ahead takes the
-     brightest ink (safina's in the beacon), the other stays quiet. */
-  .compare__num {
-    font-variant-numeric: tabular-nums;
+  /* Two bars a row, each with its figure at its end. The side that's ahead
+     takes the brightest ink, safina's in the beacon; the other stays quiet. */
+  .speed__bars {
+    padding-block: 10px;
+  }
+  .speed__line {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: 20px;
+  }
+  .speed__bar {
+    width: calc(var(--w) * 0.78);
+    min-width: 3px;
+    height: 6px;
+    border-radius: 3px;
+    background: rgb(from var(--fog) r g b / 45%);
+  }
+  .speed__line--safina .speed__bar {
+    background: rgb(from var(--beacon) r g b / 55%);
+  }
+  .speed__line--ahead.speed__line--safina .speed__bar {
+    background: var(--beacon);
+  }
+  .speed__line--ahead.speed__line--k9s .speed__bar {
+    background: var(--foam);
+  }
+  .speed__fig {
     font-size: var(--t-small);
+    font-variant-numeric: tabular-nums;
     color: var(--fog);
     white-space: nowrap;
   }
-  .compare__num--ahead {
+  .speed__line--ahead .speed__fig {
     color: var(--foam);
   }
-  .compare__num--ahead.compare__mark--safina {
+  .speed__line--ahead.speed__line--safina .speed__fig {
     color: var(--beacon);
   }
 
-  .check {
-    display: block;
-    margin-inline: auto;
-    fill: none;
-    stroke: var(--foam);
-    stroke-width: 1.8;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-  }
-  .compare__mark--safina .check {
-    stroke: var(--beacon);
-  }
-  .dash {
-    display: block;
-    width: 10px;
-    height: 1.5px;
-    margin-inline: auto;
-    border-radius: 1px;
-    background: rgb(from var(--fog) r g b / 55%);
-  }
-
-  /* A half answer, in words, quieter than a check. */
-  .some {
-    font-size: var(--t-micro);
-    letter-spacing: 0.02em;
+  .speed__diff {
+    width: 9.5rem;
+    font-size: var(--t-small);
+    font-variant-numeric: tabular-nums;
+    text-align: end;
     color: var(--fog);
+    white-space: nowrap;
+  }
+  .speed__diff--safina {
+    color: var(--beacon);
+  }
+  .speed__diff--k9s {
+    color: var(--foam);
   }
 
-  .compare__note {
-    margin-top: var(--s1);
+  /* On a phone each row stacks: the label and its difference on one line,
+     the bars under them at the full width. */
+  @media (width <= 640px) {
+    tbody tr:not(.speed__group) {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      column-gap: 12px;
+      padding-block: 12px;
+    }
+    tbody th[scope="row"] {
+      padding: 0;
+    }
+    .speed__bars {
+      grid-column: 1 / -1;
+      grid-row: 2;
+      padding-block: 6px 0;
+    }
+    .speed__diff {
+      width: auto;
+    }
+    thead td,
+    .speed__diff-head {
+      display: none;
+    }
+  }
+
+  .speed__note {
+    margin-top: var(--s2);
+    max-width: var(--measure);
     font-size: var(--t-small);
     color: var(--fog);
   }

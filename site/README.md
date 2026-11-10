@@ -256,7 +256,7 @@ crew of a ship. "TUI" replaced "console" in Nov 2026 (the user's call): the
 site speaks to engineers who know the genre, "TUI" can't be read as a web
 console, and "TUI for teams" alliterates. "Fast" joined it later in Nov
 2026 (the user's call again): speed is the claim safina leads with, and the
-lede and Compare's measured rows give it numbers. "Terminal" stays in the meta
+lede and the Speed section give it numbers. "Terminal" stays in the meta
 description ("A terminal UI for Kubernetes") and on the social card. It stands in the hero headline, the page title, the meta
 description, the social card (`scripts/og.html`, then `scripts/og.sh`) and
 its alt text (`Base.astro`). Never reword it, swap it for another line, or
@@ -282,12 +282,13 @@ that says what it does for you (`<Feature name heading>`).
 
 The nav follows Jakob's law: the words every product site uses, in page
 order, so it makes sense before the page does. Deep dive (the tour, named
-for the deep under the ship), Features (Chat to Also on board), Compare and
+for the deep under the ship), Features (Chat to Also on board), Speed and
 FAQ, then the Get safina button, which stays put from the first frame. Each
 lights up in cyan while you're in its part (`aria-current`,
 `src/scripts/nav.ts`), and each part shows the same word: the Deep dive
 label under the tour window, the feature names, and the eyebrows over
-Compare's and FAQ's titles. `copy-tells.mjs` fails the build's copy check
+Speed's and FAQ's titles. Also on board sits after Speed but belongs to
+Features, so it names its link with `data-nav="#features"`. `copy-tells.mjs` fails the build's copy check
 when a nav word has no match on the page. The hero holds no buttons: the
 bar has both. On wide screens it ends on the install line instead, the
 same command block as Get safina, as one block centred in the sky over the
@@ -351,18 +352,24 @@ what reaches the model, where files live. Recheck them when that code changes.
 The nav calls it FAQ, the eyebrow over its title; each question is an h3
 in the title voice, so a scan down the list reads the questions alone.
 
-Safina and k9s (`Compare.astro`) is one table in two groups, no words in
-the cells: nobody reads a comparison, they scan it. Measured comes first,
-with figures from `cmd/safina-versus` (`make versus`): medians, the side
-that's ahead beyond the noise in the brightest ink, ties and k9s's wins
-(memory, idle API requests) kept in, and the run named in the note (versions,
-cluster, machine). Re-run it on a release and change every row with the
-note; never round a tie into a win. Features follows, checks and dashes. One sentence under
-its title, the dated note below the table. Every k9s cell is checked against k9s's own README, k9scli.io
-and its latest release, dated in the section's note (v0.51.0, June 2026);
-recheck it when k9s ships, and keep k9s's wins in the table (read-only
-mode, plugins, Windows). It replaces the "Why not just use k9s?" question;
-the nav calls it Compare, the eyebrow over its title.
+Speed (`Compare.astro`, `#compare`) pays off the hero's "about 20 ms": safina
+timed against k9s by `cmd/safina-versus` (`make versus`), first in act III,
+right after the storm passes. One table, a row per operation: a bar for each
+tool scaled to that row's slower side, the figures at the bars' ends and the
+difference at the right edge, so it scans without reading. The values are
+the report's unrounded medians, so the figures and the ratios agree. The
+side that's ahead beyond the noise takes the brightest ink; ties and k9s's
+win (idle API requests) stay in, and the run is named in the note
+(versions, cluster, machine). Re-run it on a release and change every row
+with the note; never round a tie into a win. The nav calls it Speed, the
+eyebrow over its title.
+
+The feature checks that once sat under it are now the FAQ's "Why not
+k9s?": both read the same kubeconfig, and what k9s has that safina
+doesn't (read-only mode, plugins and skins, Windows, package managers,
+every resource type by default). Every claim there is checked against
+k9s's own README, k9scli.io and its latest release (v0.51.0, June 2026);
+recheck it when k9s ships, and keep k9s's wins in.
 
 Mark a name safina gives its own behaviour with `<b>` and an Arabic term
 with `<i>` (in a tour caption, `_word_`). Both render upright in the
@@ -385,17 +392,20 @@ first, their text on the second, and anything that must line up with a
 section's text (the "Write" keys, the install steps, the footer's story)
 starts on the second too. The title column may carry a section's quiet
 second voice under its title (the "Read" keys, the install facts, the
-footer's name and licence, Compare's one sentence), so a closing weighs
-the same on both sides. Only photographs and the tour window bleed past
-the column.
+footer's name and licence), so a closing weighs the same on both sides.
+Only photographs and the tour window bleed past the column.
+
+A title column holds only text about as long as its own. A list or table
+longer than that goes under its header and spans both lines, so the left
+of the screen never stands empty beside it: Speed's labels take the title
+column and its bars start on the text line, and Also on board and Fair
+questions run two columns, one on each line.
 
 Titles rank by size, so the page shows where the story ends and the
 reference begins: the hero (`--t-mark`), a story beat (`--t-h2`: Chat,
 Barbarossa mode, Logbook, Get safina), a reference section (`--t-h2-ref`,
-`.h2-ref`: Also on board, Compare, FAQ) and an item inside one (`--t-h3`:
-a question). A reference section's title column is sticky
-(`.split__title`) side by side, so its title travels with a long list
-instead of leaving an empty column behind it. Every key that plays
+`.h2-ref`: Speed, Also on board, FAQ) and an item inside one (`--t-h3`:
+a question). Every key that plays
 something sits in one tray (`.tray`): the tour's six and each feature's
 recording key.
 

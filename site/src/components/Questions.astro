@@ -2,6 +2,11 @@
 // What an engineer asks before installing a tool that touches production,
 // answered the way a colleague would: plainly, with the limits included.
 // Every answer is checked against the code; change one only with it.
+// "Why not k9s?" is checked against the k9s README, k9scli.io and its latest
+// release (v0.51.0, June 2026); recheck it when k9s ships. Its wins stay in:
+// they're what make the Speed section's numbers believable. k9s's Ctrl-K
+// kill has no confirmation, and it lists every resource type by default
+// where safina shows six groups.
 
 // The real `history` block of ~/.safina/config.yaml, with its defaults
 // (internal/history/store.go): config shown as it is, which an engineer
@@ -19,12 +24,21 @@ const lines = config.split("\n").map((line) => {
 ---
 
 <section class="questions" id="questions" aria-labelledby="questions-title">
-  <div class="wrap split">
-    <hgroup class="split__title">
+  <div class="wrap">
+    <hgroup>
       <p class="section-name">FAQ</p>
       <h2 id="questions-title" class="h2-ref">Fair questions</h2>
     </hgroup>
-    <div class="questions__list">
+    <div class="questions__list split">
+      <div class="questions__col">
+      <div class="question">
+        <h3>Why not k9s?</h3>
+        <div class="answer">
+          They read the same kubeconfig, so you can run both side by side. k9s shows every resource type by default,
+          where safina shows six groups and you add the rest. k9s also has a read-only mode, plugins and skins, Windows
+          builds and package-manager installs, none of which safina has&nbsp;yet.
+        </div>
+      </div>
       <div class="question">
         <h3>What does the model see?</h3>
         <div class="answer">
@@ -41,6 +55,8 @@ const lines = config.split("\n").map((line) => {
           can’t take that&nbsp;back.
         </div>
       </div>
+      </div>
+      <div class="questions__col">
       <div class="question">
         <h3>What does it leave on my machine?</h3>
         <div class="answer">
@@ -63,6 +79,7 @@ const lines = config.split("\n").map((line) => {
           Logbooks stay personal; export one for the team’s&nbsp;postmortem.
         </div>
       </div>
+      </div>
     </div>
   </div>
 </section>
@@ -72,21 +89,24 @@ const lines = config.split("\n").map((line) => {
     padding-top: var(--s5);
     background: var(--abyss);
   }
-  .questions .split {
-    row-gap: var(--s3);
-  }
   .questions h2 {
     max-width: 17ch;
   }
-  /* One a row on the text line, ruled like the Also on board list: the
-     answers run to a few sentences, so they take the full measure. */
+  /* The questions in two columns on the page's two lines, ruled like the
+     Also on board list, so the title column doesn't stand empty beside a
+     long list. Stacked, one column at the measure. */
   .questions__list {
-    display: grid;
-    gap: var(--s2);
+    margin-top: var(--s3);
+    row-gap: var(--s2);
 
     @media (width <= 1100px) {
       max-width: var(--measure);
     }
+  }
+  .questions__col {
+    display: grid;
+    align-content: start;
+    gap: var(--s2);
   }
   .question {
     min-width: 0;

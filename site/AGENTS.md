@@ -84,9 +84,10 @@ cue. A visitor should feel it and not be able to point at it.
     stays black.
 13. **Fixed running time.** Measured by `scripts/frames.mjs` with every
     section laid out (Nov 2026, with the recordings' keys, the Metrics
-    stop, the hero without buttons, the 160-column shoot and Compare's
-    measured rows, the user's call: 10.6 screens at 1440×900 with Install at
-    9.5; 13.3 on a 390×844 phone; 10.4 and 13.5 in Gecko). Figures before Nov 2026 under-counted: off-screen features were
+    stop, the hero without buttons, the 160-column shoot, and Speed in
+    place of the feature table with the reference lists across both
+    lines, the user's call: 9.9 screens at 1440×900 with Install at 8.8;
+    13.3 on a 390×844 phone; 9.9 and 13.6 in Gecko). Figures before Nov 2026 under-counted: off-screen features were
     measured at their 900px placeholder. A new section costs a cut or a merge
     somewhere else.
 14. **Don't copy the mix.** Nolan lets the score bury the dialogue. Here words
@@ -99,7 +100,7 @@ cue. A visitor should feel it and not be able to point at it.
 | --- | --- | --- |
 | I. Night falls | Opening, Deep dive (the tour) | The promise (tagline), then the incident seen: the red 0/2, `n` to it, the crash caught live, the back-off, the hot pods and their CPU |
 | II. The watch | Chat, Barbarossa mode, Logbook | The diagnosis, the held breath (the red diff), what's still there in the morning |
-| III. First light | Interlude, Also on board, Safina and k9s, Fair questions, Get safina, footer | The storm passing as the fix lands, the cross-examination with limits admitted, then calm water and the promise kept |
+| III. First light | Interlude, Speed, Also on board, Fair questions, Get safina, footer | The storm passing as the fix lands, the proof of the hero's speed claim, the cross-examination with limits admitted (k9s's wins in "Why not k9s?"), then calm water and the promise kept |
 
 ## Continuity
 
@@ -150,9 +151,9 @@ layout signatures or assets.
 | What the best of them do | Here |
 | --- | --- |
 | Say what it is, for whom, with the real product on the first screen at 1440×900 and 390×844 | Yes: tagline, lede, the window's peek (`--peek`). Keep it. |
-| One obvious next step | Get safina, the bar's one filled button, in place from the first frame (the hero has none; on wide screens it ends on the install line itself; the nav's words follow Jakob's law, README §Voice). A one-line install on Linux (since v0.1.0) and macOS (since v0.3.0) (`public/install.sh`, README §Releases). Still to come: a package manager, which also flips a k9s row in Compare |
+| One obvious next step | Get safina, the bar's one filled button, in place from the first frame (the hero has none; on wide screens it ends on the install line itself; the nav's words follow Jakob's law, README §Voice). A one-line install on Linux (since v0.1.0) and macOS (since v0.3.0) (`public/install.sh`, README §Releases). Still to come: a package manager, which also changes the FAQ's "Why not k9s?" |
 | Let you try the product | The Deep dive, the keyboard tour |
-| Proof that checks out | Today Compare (its measured rows from `make versus`, reproducible from the repo) and Fair questions, both checked against code. The public repo, release notes and version (v0.3.0, Nov 2026). Never invented quotes, logos, user counts, stars or benchmarks |
+| Proof that checks out | Today Speed (from `make versus`, reproducible from the repo) and Fair questions, both checked against code. The public repo, release notes and version (v0.3.0, Nov 2026). Never invented quotes, logos, user counts, stars or benchmarks |
 | Load fast | Readable with no JavaScript, CLS 0, first load about 431 KB on desktop and 203 KB on a phone (Nov 2026, Chromium). The recordings' player (about 114 KB of script, 80 KB of font and 38 KB of casts, gzipped) loads only once the visitor scrolls in or reaches for a key; the deep dive's reel starts only once its keys are on screen. Growth needs a reason the user agreed to |
 | Accessible | WCAG 2.2 AA: contrast, focus, keyboard, alt text that says what each screen shows |
 | Look current | Dated notes (k9s "as of v0.51.0") get rechecked; a changelog once there are releases |
