@@ -95,31 +95,40 @@ func ConnectionsForPod(ctx context.Context, cs kubernetes.Interface, namespace, 
 	if err != nil {
 		return Connections{}, classifyDetailErr(err, "pod", name)
 	}
+	var services []*corev1.Service
+	if svcs, _ := cs.CoreV1().Services(namespace).List(ctx, metav1.ListOptions{}); svcs != nil {
+		services = make([]*corev1.Service, len(svcs.Items))
+		for i := range svcs.Items {
+			services[i] = &svcs.Items[i]
+		}
+	}
+	return podConnections(p, services), nil
+}
 
+// podConnections builds a pod's references from the pod and the services of
+// its namespace, wherever those came from.
+func podConnections(p *corev1.Pod, services []*corev1.Service) Connections {
 	out := Connections{}
 	if owner := primaryOwner(p.OwnerReferences); owner != nil {
 		out.Uses = append(out.Uses, ConnectedRef{
 			Kind: ownerKindToTreeKind(owner.Kind), SubKind: appKindFromOwner(owner.Kind),
-			Namespace: namespace, Name: owner.Name, Reason: "ownerRef",
+			Namespace: p.Namespace, Name: owner.Name, Reason: "ownerRef",
 		})
 	}
-	out.Uses = append(out.Uses, podSpecRefs(p.Spec, namespace)...)
+	out.Uses = append(out.Uses, podSpecRefs(p.Spec, p.Namespace)...)
 
 	// Services selecting this pod's labels — reverse direction.
-	svcs, _ := cs.CoreV1().Services(namespace).List(ctx, metav1.ListOptions{})
-	if svcs != nil {
-		for _, s := range svcs.Items {
-			if labelsMatch(p.Labels, s.Spec.Selector) {
-				out.UsedBy = append(out.UsedBy, ConnectedRef{
-					Kind: KindService, Namespace: s.Namespace, Name: s.Name, Reason: "selector",
-				})
-			}
+	for _, s := range services {
+		if labelsMatch(p.Labels, s.Spec.Selector) {
+			out.UsedBy = append(out.UsedBy, ConnectedRef{
+				Kind: KindService, Namespace: s.Namespace, Name: s.Name, Reason: "selector",
+			})
 		}
 	}
 
 	sortRefs(out.Uses)
 	sortRefs(out.UsedBy)
-	return out, nil
+	return out
 }
 
 // ConnectionsForService resolves Ingresses routing to a service (forward) and

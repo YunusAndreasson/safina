@@ -6,6 +6,7 @@ import (
 	"hash"
 	"hash/fnv"
 	"iter"
+	"maps"
 	"sort"
 	"strings"
 	"sync"
@@ -514,7 +515,82 @@ func listApps(ctx context.Context, cs kubernetes.Interface, namespaces []string,
 	wgEnrich.Go(func() {
 		metrics, metricsErr = ListPodMetrics(ctx, cs, scope)
 	})
+	// Kinds without a synced cache are read once across the cluster rather
+	// than once per namespace: before the watches sync, opening a cluster
+	// with a dozen namespaces otherwise sent a dozen Lists of each kind.
+	var (
+		deployB  nsBuckets[appsv1.Deployment]
+		stsB     nsBuckets[appsv1.StatefulSet]
+		dsB      nsBuckets[appsv1.DaemonSet]
+		jobB     nsBuckets[batchv1.Job]
+		cronB    nsBuckets[batchv1.CronJob]
+		hpaAll   map[string]*HPABadge
+		hpaShare = len(namespaces) > 1 && src.hpas == nil && !src.gate.skip("HorizontalPodAutoscaler", "")
+	)
+	if src.deployments == nil {
+		wgEnrich.Go(func() {
+			deployB = listAcross(src.gate, "Deployment", namespaces, func() ([]appsv1.Deployment, error) {
+				list, err := cs.AppsV1().Deployments("").List(ctx, metav1.ListOptions{})
+				if err != nil {
+					return nil, err
+				}
+				return list.Items, nil
+			}, func(d *appsv1.Deployment) string { return d.Namespace })
+		})
+	}
+	if src.statefulSets == nil {
+		wgEnrich.Go(func() {
+			stsB = listAcross(src.gate, "StatefulSet", namespaces, func() ([]appsv1.StatefulSet, error) {
+				list, err := cs.AppsV1().StatefulSets("").List(ctx, metav1.ListOptions{})
+				if err != nil {
+					return nil, err
+				}
+				return list.Items, nil
+			}, func(d *appsv1.StatefulSet) string { return d.Namespace })
+		})
+	}
+	if src.daemonSets == nil {
+		wgEnrich.Go(func() {
+			dsB = listAcross(src.gate, "DaemonSet", namespaces, func() ([]appsv1.DaemonSet, error) {
+				list, err := cs.AppsV1().DaemonSets("").List(ctx, metav1.ListOptions{})
+				if err != nil {
+					return nil, err
+				}
+				return list.Items, nil
+			}, func(d *appsv1.DaemonSet) string { return d.Namespace })
+		})
+	}
+	if src.jobs == nil {
+		wgEnrich.Go(func() {
+			jobB = listAcross(src.gate, "Job", namespaces, func() ([]batchv1.Job, error) {
+				list, err := cs.BatchV1().Jobs("").List(ctx, metav1.ListOptions{})
+				if err != nil {
+					return nil, err
+				}
+				return list.Items, nil
+			}, func(j *batchv1.Job) string { return j.Namespace })
+		})
+	}
+	if src.cronJobs == nil {
+		wgEnrich.Go(func() {
+			cronB = listAcross(src.gate, "CronJob", namespaces, func() ([]batchv1.CronJob, error) {
+				return listCronJobs(ctx, cs, "")
+			}, func(c *batchv1.CronJob) string { return c.Namespace })
+		})
+	}
+	if hpaShare {
+		wgEnrich.Go(func() {
+			badges, err := hpaBadges(ctx, cs, "")
+			src.gate.record("HorizontalPodAutoscaler", "", err)
+			if err == nil {
+				hpaAll = badges // keyed by namespace, so other namespaces' entries never match
+			}
+		})
+	}
 	wgEnrich.Wait()
+	if hpaAll != nil {
+		maps.Copy(hpaIdx, hpaAll)
+	}
 
 	var wg sync.WaitGroup
 	for _, ns := range namespaces {
@@ -532,6 +608,8 @@ func listApps(ctx context.Context, cs kubernetes.Interface, namespaces []string,
 		var cachedDeployments func() ([]*appsv1.Deployment, error)
 		if src.deployments != nil {
 			cachedDeployments = func() ([]*appsv1.Deployment, error) { return src.deployments.Deployments(ns).List(labels.Everything()) }
+		} else if deployB != nil {
+			cachedDeployments = deployB.in(ns)
 		}
 		gatherApps(&wg, src.gate, "Deployment", ns, cachedDeployments, func() ([]appsv1.Deployment, error) {
 			list, err := cs.AppsV1().Deployments(ns).List(ctx, metav1.ListOptions{})
@@ -546,6 +624,8 @@ func listApps(ctx context.Context, cs kubernetes.Interface, namespaces []string,
 			cachedStatefulSets = func() ([]*appsv1.StatefulSet, error) {
 				return src.statefulSets.StatefulSets(ns).List(labels.Everything())
 			}
+		} else if stsB != nil {
+			cachedStatefulSets = stsB.in(ns)
 		}
 		gatherApps(&wg, src.gate, "StatefulSet", ns, cachedStatefulSets, func() ([]appsv1.StatefulSet, error) {
 			list, err := cs.AppsV1().StatefulSets(ns).List(ctx, metav1.ListOptions{})
@@ -558,6 +638,8 @@ func listApps(ctx context.Context, cs kubernetes.Interface, namespaces []string,
 		var cachedDaemonSets func() ([]*appsv1.DaemonSet, error)
 		if src.daemonSets != nil {
 			cachedDaemonSets = func() ([]*appsv1.DaemonSet, error) { return src.daemonSets.DaemonSets(ns).List(labels.Everything()) }
+		} else if dsB != nil {
+			cachedDaemonSets = dsB.in(ns)
 		}
 		gatherApps(&wg, src.gate, "DaemonSet", ns, cachedDaemonSets, func() ([]appsv1.DaemonSet, error) {
 			list, err := cs.AppsV1().DaemonSets(ns).List(ctx, metav1.ListOptions{})
@@ -570,6 +652,8 @@ func listApps(ctx context.Context, cs kubernetes.Interface, namespaces []string,
 		var cachedCronJobs func() ([]*batchv1.CronJob, error)
 		if src.cronJobs != nil {
 			cachedCronJobs = func() ([]*batchv1.CronJob, error) { return src.cronJobs.CronJobs(ns).List(labels.Everything()) }
+		} else if cronB != nil {
+			cachedCronJobs = cronB.in(ns)
 		}
 		gatherApps(&wg, src.gate, "CronJob", ns, cachedCronJobs, func() ([]batchv1.CronJob, error) {
 			return listCronJobs(ctx, cs, ns)
@@ -578,6 +662,8 @@ func listApps(ctx context.Context, cs kubernetes.Interface, namespaces []string,
 		var cachedJobs func() ([]*batchv1.Job, error)
 		if src.jobs != nil {
 			cachedJobs = func() ([]*batchv1.Job, error) { return src.jobs.Jobs(ns).List(labels.Everything()) }
+		} else if jobB != nil {
+			cachedJobs = jobB.in(ns)
 		}
 		gatherApps(&wg, src.gate, "Job", ns, cachedJobs, func() ([]batchv1.Job, error) {
 			list, err := cs.BatchV1().Jobs(ns).List(ctx, metav1.ListOptions{})
@@ -600,6 +686,7 @@ func listApps(ctx context.Context, cs kubernetes.Interface, namespaces []string,
 				}
 				mu.Unlock()
 			}
+		case hpaAll != nil: // read across the cluster above
 		case !src.gate.skip("HorizontalPodAutoscaler", ns):
 			wg.Go(func() {
 				badges, err := hpaBadges(ctx, cs, ns)
@@ -615,6 +702,40 @@ func listApps(ctx context.Context, cs kubernetes.Interface, namespaces []string,
 	wg.Wait()
 
 	return finishApps(out, hpaIdx, metricsErr), nil
+}
+
+// nsBuckets holds one kind's objects from a cluster-wide List, by namespace.
+type nsBuckets[T any] map[string][]*T
+
+// in serves one namespace's share the way a lister would.
+func (b nsBuckets[T]) in(ns string) func() ([]*T, error) {
+	return func() ([]*T, error) { return b[ns], nil }
+}
+
+// listAcross reads a kind once for all of namespaces. It returns nil, and
+// the caller lists namespace by namespace, for a single namespace or when
+// the account can't list the kind cluster-wide (the gate then remembers
+// not to try again for a while).
+func listAcross[T any](gate *readGate, kind string, namespaces []string, list func() ([]T, error), nsOf func(*T) string) nsBuckets[T] {
+	if len(namespaces) < 2 || gate.skip(kind, "") {
+		return nil
+	}
+	items, err := list()
+	gate.record(kind, "", err)
+	if err != nil {
+		return nil
+	}
+	want := make(map[string]bool, len(namespaces))
+	for _, ns := range namespaces {
+		want[ns] = true
+	}
+	b := make(nsBuckets[T], len(namespaces))
+	for i := range items {
+		if ns := nsOf(&items[i]); want[ns] {
+			b[ns] = append(b[ns], &items[i])
+		}
+	}
+	return b
 }
 
 // gatherApps adds one kind's rows in one namespace: from the cache when

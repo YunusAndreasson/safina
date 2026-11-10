@@ -181,6 +181,11 @@ func InspectPod(ctx context.Context, cs kubernetes.Interface, namespace, name st
 	if err != nil {
 		return PodDetail{}, classifyDetailErr(err, "pod", name)
 	}
+	return podDetail(p), nil
+}
+
+// podDetail projects a pod, fetched or cached, into a PodDetail.
+func podDetail(p *corev1.Pod) PodDetail {
 	d := PodDetail{
 		PodIP:  p.Status.PodIP,
 		HostIP: p.Status.HostIP,
@@ -194,7 +199,7 @@ func InspectPod(ctx context.Context, cs kubernetes.Interface, namespace, name st
 	}
 	d.SchedulingReason = schedulingReason(p)
 	d.CPURequestMilli, d.CPULimitMilli, d.MemRequestBytes, d.MemLimitBytes = sumResources(p.Spec)
-	return d, nil
+	return d
 }
 
 // InspectApp dispatches across Deployment / StatefulSet / DaemonSet /

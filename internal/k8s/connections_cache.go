@@ -98,3 +98,39 @@ func (c *Client) cachedWorkloadRefs(namespace string, match refMatcher) ([]Conne
 	}
 	return out, true
 }
+
+// cachedPod is the pod from the informer cache, if that cache is synced and
+// holds it. Callers fall back to a direct Get otherwise.
+func (c *Client) cachedPod(namespace, name string) (*corev1.Pod, bool) {
+	podL := c.Informers().Pods()
+	if podL == nil {
+		return nil, false
+	}
+	p, err := podL.Pods(namespace).Get(name)
+	return p, err == nil
+}
+
+// InspectPod is InspectPod served from the pod cache when it can be: the
+// pod list on screen comes from the same cache, so moving the cursor across
+// pods costs no API requests.
+func (c *Client) InspectPod(ctx context.Context, namespace, name string) (PodDetail, error) {
+	if p, ok := c.cachedPod(namespace, name); ok {
+		return podDetail(p), nil
+	}
+	return InspectPod(ctx, c.Clientset, namespace, name)
+}
+
+// ConnectionsForPod is ConnectionsForPod served from the pod and service
+// caches when both are synced.
+func (c *Client) ConnectionsForPod(ctx context.Context, namespace, name string) (Connections, error) {
+	p, ok := c.cachedPod(namespace, name)
+	svcL := c.Informers().Services()
+	if !ok || svcL == nil {
+		return ConnectionsForPod(ctx, c.Clientset, namespace, name)
+	}
+	services, err := svcL.Services(namespace).List(labels.Everything())
+	if err != nil {
+		return ConnectionsForPod(ctx, c.Clientset, namespace, name)
+	}
+	return podConnections(p, services), nil
+}

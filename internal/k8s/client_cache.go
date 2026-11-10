@@ -367,9 +367,21 @@ func sortByNSName[R any](rows []R, key func(R) (string, string)) {
 }
 
 // ListPodsAcrossNamespaces includes standalone pods as well as managed workloads.
+//
+// Pod metrics come from one cluster-wide request rather than one per
+// namespace: this view refreshes every few seconds, and a request per
+// namespace per refresh was most of safina's API traffic while idle. Only
+// when RBAC forbids the cluster-wide read does it ask namespace by namespace.
 func (c *Client) ListPodsAcrossNamespaces(ctx context.Context, namespaces []string) ([]PodInfo, error) {
 	var out []PodInfo
 	lister := c.Informers().Pods()
+	var shared map[types.NamespacedName]ResourceUsage
+	var sharedErr error
+	perNamespace := len(namespaces) <= 1
+	if !perNamespace {
+		shared, sharedErr = ListPodMetrics(ctx, c.Clientset, "")
+		perNamespace = apierrors.IsForbidden(sharedErr)
+	}
 	for _, ns := range namespaces {
 		var pods []corev1.Pod
 		if lister != nil {
@@ -385,7 +397,10 @@ func (c *Client) ListPodsAcrossNamespaces(ctx context.Context, namespaces []stri
 			}
 			pods = list.Items
 		}
-		metrics, metricsErr := ListPodMetrics(ctx, c.Clientset, ns)
+		metrics, metricsErr := shared, sharedErr
+		if perNamespace {
+			metrics, metricsErr = ListPodMetrics(ctx, c.Clientset, ns)
+		}
 		out = append(out, podInfosSortedNSName(pods, metrics, metricsErr)...)
 	}
 	slices.SortFunc(out, func(a, b PodInfo) int {
