@@ -8,8 +8,9 @@
 #   which install.sh checks for.
 # - macOS on macOS runners, for Apple silicon and Intel. It must run on
 #   macOS 13 or later and link nothing beyond the system's own libraries.
-#   It carries the linker's ad-hoc signature, which Apple silicon requires,
-#   and is not notarized.
+#   It carries an ad-hoc signature, which Apple silicon requires, and is
+#   not notarized. The arm64 linker signs on its own; the Intel one doesn't,
+#   so both are signed explicitly.
 # libghostty is linked in statically; the archive names are the ones
 # site/src/data/release.ts and site/public/install.sh download.
 name: release
@@ -62,6 +63,9 @@ jobs:
             go build -trimpath -ldflags "-s -w -X github.com/YunusAndreasson/safina/internal/version.Version=$version" \
             -o out/safina ./cmd/safina
           echo "VERSION=$version" >> "$GITHUB_ENV"
+      - name: Sign the macOS binary
+        if: runner.os == 'macOS'
+        run: codesign --force --sign - out/safina
       - name: Check the version
         run: ./out/safina --version | tee /dev/stderr | grep -qx "safina version $VERSION"
       # The binary must need nothing newer than the glibc the install script
