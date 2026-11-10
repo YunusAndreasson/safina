@@ -42,6 +42,7 @@ func (e *ghostty) Resize(w, h int) {
 	}
 	e.w, e.h = w, h
 }
+
 func (e *ghostty) Plain() string {
 	start, err := e.t.GridRef(g.Point{Tag: g.PointTagActive})
 	if err != nil {
@@ -61,6 +62,7 @@ func (e *ghostty) Plain() string {
 	}
 	return normalized(text)
 }
+
 func (e *ghostty) Key(key string) string {
 	if key == "" {
 		return e.input.String()
@@ -95,6 +97,7 @@ func (e *ghostty) Key(key string) string {
 	}
 	return string(out)
 }
+
 func (e *ghostty) Paste(text string) string {
 	e.input.Reset()
 	_, err := e.t.Paste(g.Paste{Source: g.PasteSourceText, MIMEs: []string{"text/plain"}, AllowUnsafe: true, Reader: func(_ string, w io.Writer) error { _, err := io.WriteString(w, text); return err }})

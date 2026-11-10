@@ -81,6 +81,7 @@ func (e *charm) input(send func()) string {
 	e.Close()
 	return e.out.String()
 }
+
 func (e *charm) Key(key string) string {
 	if key == "" {
 		return e.input(func() {})

@@ -30,7 +30,10 @@ fi
 
 echo "→ ensuring minikube profile '$PROFILE' is running"
 if ! minikube status -p "$PROFILE" >/dev/null 2>&1; then
-    minikube start -p "$PROFILE" --kubernetes-version="$K8S_VERSION" --cpus=4 --memory=4096
+    # The kubelet default of 110 pods per node would leave most of the
+    # fixture Pending on a single-node profile; running all of it needs 8 GB.
+    minikube start -p "$PROFILE" --kubernetes-version="$K8S_VERSION" --cpus=4 --memory=8192 --keep-context \
+        --extra-config=kubelet.max-pods=$((NS_COUNT * DEPLOY_COUNT * REPLICAS + 110))
 fi
 
 CTX="$PROFILE"
@@ -100,20 +103,66 @@ EOF
         done
     done
 }
+# One pod that logs, so log views have lines to show (pause writes none).
+# safina-versus opens its logs in both tools.
+generate_chatter() {
+    cat <<EOF
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: bench-logs
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chatter
+  namespace: bench-logs
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: chatter
+  template:
+    metadata:
+      labels:
+        app: chatter
+    spec:
+      containers:
+      - name: chatter
+        image: busybox:1.37
+        command: ["sh", "-c", "i=0; while true; do i=\$((i+1)); echo \"chatter tick \$i\"; sleep 1; done"]
+        resources:
+          requests:
+            cpu: 1m
+            memory: 8Mi
+          limits:
+            cpu: 50m
+            memory: 16Mi
+EOF
+}
 mkdir -p "$FIXTURE_DIR"
-generate_fixture > "$FIXTURE"
+{ generate_fixture; generate_chatter; } > "$FIXTURE"
 echo "→ fixture written to $FIXTURE ($(wc -l < "$FIXTURE") lines)"
+
+# The node may not reach Docker Hub; hand it the host's copy when there is one.
+if command -v docker >/dev/null && docker image inspect busybox:1.37 >/dev/null 2>&1; then
+    minikube -p "$PROFILE" image load busybox:1.37
+fi
 
 echo "→ applying fixture against context $CTX"
 kubectl --context "$CTX" apply -f "$FIXTURE" >/dev/null
 
 echo "→ waiting for at least one pod per namespace to be scheduled"
 for i in $(seq 0 $((NS_COUNT - 1))); do
-    kubectl --context "$CTX" -n "bench-$i" wait --for=condition=Available --timeout=120s deployment/app-0 >/dev/null
+    kubectl --context "$CTX" -n "bench-$i" wait --for=condition=Available --timeout=600s deployment/app-0 >/dev/null
 done
+
+kubectl --context "$CTX" -n bench-logs wait --for=condition=Available --timeout=180s deployment/chatter >/dev/null
 
 echo "done. context: $CTX"
 echo
 echo "next:"
 echo "  make bench-quick         # smoke run + regression gate"
 echo "  make bench-full          # full grid → bench/out/"
+echo "  make versus-quick        # safina vs k9s, short run"

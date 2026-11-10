@@ -1,4 +1,4 @@
-.PHONY: build install dev clean test test-race verify verify-all site-verify tidy lint lint-fix fmt bench-build bench-seed bench-teardown bench-quick bench-full bench-record
+.PHONY: build install dev clean test test-race verify verify-all site-verify tidy lint lint-fix fmt bench-build bench-seed bench-teardown bench-quick bench-full bench-record versus-build versus-k9s versus-quick versus
 
 BINARY_NAME = safina
 .DEFAULT_GOAL := build
@@ -24,7 +24,7 @@ BENCH_KUBECONFIG ?= $(HOME)/.kube/config
 native:
 	python3 scripts/build-libghostty.py --cache "$(NATIVE_CACHE)"
 
-build dev test test-race verify lint lint-fix fmt bench-build: native
+build dev test test-race verify lint lint-fix fmt bench-build versus-build: native
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_PATH)
@@ -100,3 +100,29 @@ bench-full: bench-build
 bench-record: bench-build
 	$(BENCH_BINARY) --kubeconfig $(BENCH_KUBECONFIG) --context $(BENCH_CONTEXT) \
 	    --variants=all --scenarios=all --n=30 --warmup=5 --record-baseline
+
+# --- safina vs k9s ----------------------------------------------------------
+# Both tools run in a pseudo-terminal against the bench cluster through one
+# recording proxy. safina is built like a release; k9s is the pinned release
+# from bench/versus/versions.json. Reports land in bench/versus/out/.
+
+VERSUS_BINARY = $(BUILD_DIR)/safina-versus
+VERSUS_SAFINA = $(BUILD_DIR)/safina-release
+VERSUS_ARGS = --kubeconfig $(BENCH_KUBECONFIG) --context $(BENCH_CONTEXT) --safina $(VERSUS_SAFINA) --k9s bench/.build/k9s
+
+versus-build:
+	go build -o $(VERSUS_BINARY) ./cmd/safina-versus
+	go build -trimpath -ldflags "-s -w $(LDFLAGS)" -o $(VERSUS_SAFINA) $(MAIN_PATH)
+
+versus-k9s:
+	./scripts/bench/k9s.sh
+
+# A few minutes: three rounds, every operation, 10s idle per launch.
+versus-quick: versus-build versus-k9s
+	$(VERSUS_BINARY) run $(VERSUS_ARGS) --rounds 3 --idle 10s
+
+# The full comparison: ten rounds on the local cluster, then again with
+# 40 ms added to every API request, the way a remote cluster answers.
+versus: versus-build versus-k9s
+	$(VERSUS_BINARY) run $(VERSUS_ARGS) --rounds 10 --idle 30s
+	$(VERSUS_BINARY) run $(VERSUS_ARGS) --rounds 10 --idle 30s --rtt 40ms

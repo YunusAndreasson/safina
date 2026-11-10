@@ -134,3 +134,20 @@ func TestStreamBoundariesAndAlternateScreen(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, ansi.Strip(frame), "界é👩‍💻")
 }
+
+func TestPlainDropsStylesAndKeepsRows(t *testing.T) {
+	term := testTerminal(t, 12, 3)
+	_, err := term.Feed([]byte("\x1b[1;31mpods\x1b[0m 3\r\n\x1b[42mapi-1\x1b[0m"))
+	require.NoError(t, err)
+	plain, err := term.Plain()
+	require.NoError(t, err)
+	require.NotContains(t, plain, "\x1b")
+	require.Contains(t, plain, "pods 3")
+	require.Contains(t, plain, "api-1")
+	_, err = term.Feed([]byte("\x1b[2J\x1b[Hgone"))
+	require.NoError(t, err)
+	plain, err = term.Plain()
+	require.NoError(t, err)
+	require.NotContains(t, plain, "pods")
+	require.Contains(t, plain, "gone")
+}

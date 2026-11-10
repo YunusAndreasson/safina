@@ -2,6 +2,7 @@ package bench
 
 import (
 	"math"
+	"math/rand/v2"
 	"sort"
 )
 
@@ -202,4 +203,52 @@ func RegressionVerdict(baseline, candidate Summary, tolerancePct float64) (regre
 	}
 	deltaPct = (candidate.P95Ms - baseline.P95Ms) / baseline.P95Ms * 100.0
 	return deltaPct > tolerancePct, deltaPct
+}
+
+// Percentile is the exported nearest-rank percentile, pct in [0,100]. xs is
+// not modified.
+func Percentile(xs []float64, pct float64) float64 { return percentile(xs, pct) }
+
+// RatioCI is median(a)/median(b) with a percentile-bootstrap confidence
+// interval. Samples are resampled independently (the two tools are separate
+// processes, so samples are unpaired).
+type RatioCI struct {
+	Ratio, Lo, Hi float64
+}
+
+// Excludes1 reports whether the interval lies entirely on one side of 1, the
+// condition for claiming one side is faster.
+func (r RatioCI) Excludes1() bool { return r.Hi < 1 || r.Lo > 1 }
+
+// MedianRatioCI bootstraps the ratio of medians with iters resamples at the
+// given confidence (e.g. 0.95). The rng is seeded so a report is
+// reproducible from its samples. Returns zero when either side is empty or
+// b's median is zero.
+func MedianRatioCI(a, b []float64, iters int, conf float64, seed uint64) RatioCI {
+	if len(a) == 0 || len(b) == 0 {
+		return RatioCI{}
+	}
+	mb := percentile(b, 50)
+	if mb == 0 {
+		return RatioCI{}
+	}
+	out := RatioCI{Ratio: percentile(a, 50) / mb}
+	rng := rand.New(rand.NewPCG(seed, seed^0x9e3779b97f4a7c15)) // #nosec G404 -- Seeded so a report reproduces from its samples.
+	ratios := make([]float64, 0, iters)
+	ra, rb := make([]float64, len(a)), make([]float64, len(b))
+	for range iters {
+		for i := range ra {
+			ra[i] = a[rng.IntN(len(a))]
+		}
+		for i := range rb {
+			rb[i] = b[rng.IntN(len(b))]
+		}
+		if m := percentile(rb, 50); m > 0 {
+			ratios = append(ratios, percentile(ra, 50)/m)
+		}
+	}
+	tail := (1 - conf) / 2 * 100
+	out.Lo = percentile(ratios, tail)
+	out.Hi = percentile(ratios, 100-tail)
+	return out
 }

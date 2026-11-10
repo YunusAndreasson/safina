@@ -16,6 +16,7 @@ import (
 type Terminal struct {
 	native        *g.Terminal
 	formatter     *g.Formatter
+	plain         *g.Formatter
 	encoder       *g.KeyEncoder
 	render        *g.RenderState
 	replies       bytes.Buffer
@@ -66,6 +67,10 @@ func (t *Terminal) Close() {
 	if t.formatter != nil {
 		t.formatter.Close()
 		t.formatter = nil
+	}
+	if t.plain != nil {
+		t.plain.Close()
+		t.plain = nil
 	}
 	if t.native != nil {
 		t.native.Close()
@@ -209,4 +214,33 @@ func (t *Terminal) Frame() (string, *tea.Cursor, error) {
 		cursor = &position
 	}
 	return t.frame, cursor, nil
+}
+
+// Plain returns the visible screen as text without styles, one row per line.
+// Callers that match on content (tests, the safina-versus driver) use this
+// instead of stripping the styled Frame.
+func (t *Terminal) Plain() (string, error) {
+	if t.native == nil {
+		return "", io.ErrClosedPipe
+	}
+	if t.plain == nil {
+		f, err := g.NewFormatter(t.native, g.WithFormatterFormat(g.FormatterFormatPlain), g.WithFormatterExtras(g.FormatterExtrasNone), g.WithFormatterUnwrap(false), g.WithFormatterTrim(true))
+		if err != nil {
+			return "", err
+		}
+		t.plain = f
+	}
+	start, err := t.native.GridRef(g.Point{Tag: g.PointTagActive})
+	if err != nil {
+		return "", err
+	}
+	end, err := t.native.GridRef(g.Point{Tag: g.PointTagActive, X: t.width - 1, Y: uint32(t.height - 1)})
+	if err != nil {
+		return "", err
+	}
+	if err = t.plain.SetSelection(&g.Selection{Start: *start, End: *end}); err != nil {
+		return "", err
+	}
+	text, err := t.plain.FormatString()
+	return strings.ReplaceAll(text, "\r\n", "\n"), err
 }

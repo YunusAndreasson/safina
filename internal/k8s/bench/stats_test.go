@@ -96,3 +96,29 @@ func TestStddev_Stable(t *testing.T) {
 		t.Fatal("stddev should not be NaN")
 	}
 }
+
+func TestMedianRatioCI(t *testing.T) {
+	fast := make([]float64, 200)
+	slow := make([]float64, 200)
+	same := make([]float64, 200)
+	for i := range fast {
+		jitter := float64(i%17) / 17
+		fast[i] = 10 + jitter
+		slow[i] = 20 + 2*jitter
+		same[i] = 10 + float64((i*7)%17)/17
+	}
+	r := MedianRatioCI(fast, slow, 2000, 0.95, 1)
+	if !r.Excludes1() || r.Hi >= 1 || r.Ratio < 0.45 || r.Ratio > 0.55 {
+		t.Fatalf("fast vs slow: %+v, want ratio ≈ 0.5 with CI below 1", r)
+	}
+	r = MedianRatioCI(fast, same, 2000, 0.95, 1)
+	if r.Excludes1() {
+		t.Fatalf("identical distributions: %+v, want CI spanning 1", r)
+	}
+	if again := MedianRatioCI(fast, same, 2000, 0.95, 1); again != r {
+		t.Fatalf("same seed gave %+v then %+v", r, again)
+	}
+	if (MedianRatioCI(nil, slow, 10, 0.95, 1) != RatioCI{}) {
+		t.Fatal("empty side must give the zero value")
+	}
+}

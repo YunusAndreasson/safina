@@ -11,6 +11,7 @@ if [[ "${1:-}" == "--keep-cluster" ]]; then
     for i in $(seq 0 $((NS_COUNT - 1))); do
         kubectl --context "$PROFILE" delete namespace "bench-$i" --ignore-not-found --wait=false
     done
+    kubectl --context "$PROFILE" delete namespace bench-logs --ignore-not-found --wait=false
     exit 0
 fi
 

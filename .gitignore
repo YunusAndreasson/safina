@@ -35,3 +35,7 @@ debug.log
 /site/.demo/
 /site/.frames/
 /site/.wrangler/
+
+# safina-versus: pinned k9s download and comparison reports
+/bench/.build/
+/bench/versus/out/

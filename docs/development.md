@@ -82,13 +82,85 @@ conflicts or emulate server-side Secret conversion. Use small HTTP tests where
 those boundaries matter, and keep ordinary object behavior in the fake-client
 tests. Both run in the existing test and race gates without a cluster or new tools.
 
+## Comparing with k9s
+
+`cmd/safina-versus` measures safina and k9s the same way, from outside the
+process. The other benchmarks time safina's own code paths and can't run
+k9s. This one supports a claim like "faster than k9s" only for the
+operations where it says so.
+
+```bash
+make bench-seed      # creates and seeds the safina-bench minikube profile
+make versus-quick    # 3 rounds, a few minutes
+make versus          # 10 rounds locally, then 10 with 40 ms added per API request
+```
+
+How it measures:
+
+- Each tool runs in its own pseudo-terminal (200×50, `xterm-256color`, a
+  private `HOME`) whose output is parsed by libghostty, the emulator safina
+  embeds. Keys are encoded with whichever keyboard protocol the program
+  negotiated, as a user's terminal would encode them.
+- Output is timestamped when it is read, before it is parsed. A step's
+  latency runs from writing the key until the first output after which the
+  screen shows the expected state: rows of the filtered pods, `apiVersion: v1`
+  in the YAML view, a log line. Moves that only change styling, such as the
+  cursor, count the first frame that differs. Settle time runs until the tool
+  has written nothing for 150 ms.
+- Both tools reach the cluster through one local proxy holding the real
+  credentials. It counts requests and bytes, and with `--rtt` it adds the
+  same latency to every request.
+- CPU and memory come from `/proc` for the tool and its children: idle CPU
+  over a quiet window on the pod list, resident memory at the end, peak
+  resident memory.
+- Rounds alternate the tool order from a seed, after a warmup launch that
+  fills each tool's discovery cache. Interactions start 2 s after the pod
+  list appears, so background loading counts toward the launch and not
+  toward the first key. Single-sample operations repeat three times per
+  launch, and cursor moves twenty times.
+
+The report (`bench/versus/out/versus-*.md`, with every raw sample in the JSON
+beside it) gives, per operation, medians, p95, and the safina/k9s ratio of
+medians with a 95% bootstrap interval. A side wins only when the whole
+interval is at least 5% from 1 and, for latencies, the medians differ by at
+least 1 ms. The driver resolves fractions of a millisecond, so two runs of
+the same program can differ significantly by 1%. Without the margin that
+would read as a win. `go test ./cmd/safina-versus` checks the driver against a
+fake terminal program: a 30 ms response must measure within 2 ms, and
+identical programs must give no verdict.
+
+The operations are defined per tool in `cmd/safina-versus/scenarios.go`, by
+what reaches the screen rather than which keys are pressed. k9s starts on its
+pod list (`--command pods --all-namespaces`). safina starts on its namespace
+list and gets there in two Enter presses, sent as soon as each screen is
+ready. The report times both "first cluster data" and "pod list". k9s runs
+read-only, without logo or splash, at its default 2 s refresh. k9s applies an
+exact filter on Enter. safina applies a fuzzy one on every key, ranking exact
+matches first. So "keystroke while filtering" is reported apart from "filter
+pods by name", which is done once the ten `app-12` pods are the top rows.
+Costs (memory, idle CPU, API traffic) use the same interval rule without the
+1 ms floor. To write or fix a scenario, look at the real screens:
+
+```bash
+bin/safina-versus probe --tool k9s --lines 12 --keys '/app-12<enter> y <esc>'
+```
+
+The seed gives the profile 8 GB and raises the node's pod limit so the whole
+fixture runs. Under the defaults of 110 pods and 4 GB, most pods stay Pending
+or the node goes NotReady. It also adds `bench-logs/chatter`, which logs a
+line per second for the logs operation, and loads its busybox image from the
+host's Docker when the node can't reach Docker Hub.
+`make versus-k9s` downloads the k9s release pinned in
+`bench/versus/versions.json` and verifies its checksum. Linux only (procfs).
+
 ## Project Structure
 
 ```
 safina/
 ├── cmd/
 │   ├── safina/               # Entry point (cobra CLI), including `safina mcp`
-│   └── safina-bench/         # Benchmark driver for the dedicated bench cluster
+│   ├── safina-bench/         # Benchmark driver for the dedicated bench cluster
+│   └── safina-versus/        # safina vs k9s, both driven in a pseudo-terminal
 ├── internal/
 │   ├── tui/                  # Bubble Tea root model, update and view
 │   │   ├── sections/         # Panes: tree, inspector, logs, chat, Logbook, metrics…
