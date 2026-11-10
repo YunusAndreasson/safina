@@ -21,7 +21,7 @@ export const release = {
   /** The tag of the newest release without its "v" (say "0.1.0"), shown
    *  beside the downloads so a visitor can check what they get. Leave empty
    *  to show only the license, platforms and release notes. */
-  version: "0.1.0",
+  version: "0.3.0",
   repo: "https://github.com/YunusAndreasson/safina",
   /** Linux only, for now: install.sh refuses anything else with the from-source line. */
   install: "curl -fsSL https://safina.run/install.sh | sh",
