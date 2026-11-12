@@ -5,24 +5,30 @@ import "charm.land/bubbles/v2/key"
 // Map is the global keymap. It also implements bubbles/help.KeyMap so it can be
 // passed straight to help.View / help.ShortHelpView.
 type Map struct {
-	Up       key.Binding
-	Down     key.Binding
-	Enter    key.Binding
-	Back     key.Binding
-	Quit     key.Binding
-	Delete   key.Binding
-	Metrics  key.Binding
+	Up      key.Binding
+	Down    key.Binding
+	Enter   key.Binding
+	Back    key.Binding
+	Quit    key.Binding
+	Delete  key.Binding
+	Metrics key.Binding
+	// Describe shows what a resource is and how it is doing: its state,
+	// facts, recent events and connections (k9s's d).
 	Describe key.Binding
+	// Yaml shows the resource's manifest (k9s's y).
+	Yaml     key.Binding
 	Scale    key.Binding
 	Rollback key.Binding
 	Restart  key.Binding
 	Logs     key.Binding
-	Events   key.Binding
-	Shell    key.Binding
-	Help     key.Binding
-	Refresh  key.Binding
-	Filter   key.Binding
-	Search   key.Binding
+	// Events has no key of its own, as in k9s: a resource's events show
+	// in its describe view and on its page's Events tab.
+	Events  key.Binding
+	Shell   key.Binding
+	Help    key.Binding
+	Refresh key.Binding
+	Filter  key.Binding
+	Search  key.Binding
 	// Tree-navigator additions:
 	FirstFail key.Binding
 	// Wrap toggles soft line-wrap inside the long-content workspace
@@ -37,15 +43,15 @@ type Map struct {
 	Ask key.Binding
 	// Yank copies the section's payload (resource path, log buffer, YAML,
 	// last assistant turn) to the system clipboard via OSC52 — works over
-	// SSH and through tmux/zellij with passthrough.
+	// SSH and through tmux/zellij with passthrough. `c`, as in k9s.
 	Yank key.Binding
-	// Reveal decodes a Secret's data and shows it in the describe modal.
-	// Scoped to Secret rows; harmless elsewhere. Separate from Describe
-	// because `d` should keep kubectl's (base64) semantics.
+	// Reveal decodes a Secret's data and shows it in the YAML view.
+	// Scoped to Secret rows; harmless elsewhere. Separate from Yaml
+	// because `y` should keep kubectl's (base64) semantics.
 	Reveal key.Binding
 	// Edit opens the resource's YAML in $EDITOR. After the editor exits,
 	// the diff is gated behind a y/n confirm before any write hits the
-	// cluster. Uppercase E because lowercase e is taken by Events.
+	// cluster. `e`, as in k9s.
 	Edit key.Binding
 	// PortForward opens the port-forward input modal for a Pod or Service.
 	// Lower-case `f` is free.
@@ -58,7 +64,7 @@ type Map struct {
 	// cordon-or-uncordon under the hood — kubectl's split is leaked
 	// plumbing the on-caller doesn't need).
 	Cordon key.Binding
-	// Drain evicts a node's pods. Uppercase D to keep `d` (Describe) intact.
+	// Drain evicts a node's pods. Uppercase D to keep `d` (describe) intact.
 	Drain key.Binding
 	// Hot opens the noisy-neighbours modal — top-N pods cluster-wide
 	// sorted by CPU usage. Read-only and cluster-global; lowercase per
@@ -92,9 +98,12 @@ func Default() Map {
 		// chord collides with EOF muscle memory in every shell/REPL, and a
 		// shifted single letter is faster from the home row anyway. K
 		// shares its "loud verb" feel with the rest of the mutator block.
-		Delete:   key.NewBinding(key.WithKeys("K"), key.WithHelp("K", "delete")),
-		Metrics:  key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "metrics")),
-		Describe: key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "YAML")),
+		Delete:  key.NewBinding(key.WithKeys("K"), key.WithHelp("K", "delete")),
+		Metrics: key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "metrics")),
+		// The reading keys follow k9s, so an operator's muscle memory
+		// carries over: d describe, y yaml, l logs, e edit, c copy.
+		Describe: key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "describe")),
+		Yaml:     key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "yaml")),
 		// Convention: lowercase = inspect/connect; uppercase = changes cluster
 		// state through a confirmation. Shell access can also make changes.
 		// The uppercase letters are picked
@@ -105,7 +114,7 @@ func Default() Map {
 		Rollback: key.NewBinding(key.WithKeys("U"), key.WithHelp("U", "rollback")),
 		Restart:  key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "restart")),
 		Logs:     key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "logs")),
-		Events:   key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "events")),
+		Events:   key.NewBinding(key.WithHelp("", "events")),
 		Shell:    key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "shell")),
 		Help:     key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 		Refresh:  key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
@@ -117,9 +126,9 @@ func Default() Map {
 		FirstFail: key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "next fail")),
 		Wrap:      key.NewBinding(key.WithKeys("w"), key.WithHelp("w", "wrap")),
 		Ask:       key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "chat")),
-		Yank:      key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "copy")),
+		Yank:      key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "copy")),
 		Reveal:    key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "reveal secret")),
-		Edit:      key.NewBinding(key.WithKeys("E"), key.WithHelp("E", "edit yaml")),
+		Edit:      key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit")),
 
 		PortForward: key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "forward")),
 		Forwards:    key.NewBinding(key.WithKeys("ctrl+f"), key.WithHelp("ctrl+f", "forwards")),
@@ -140,14 +149,14 @@ func Default() Map {
 }
 
 func (k Map) ShortHelp() []key.Binding {
-	return []key.Binding{k.Up, k.Down, k.Enter, k.Back, k.Search, k.Filter, k.FirstFail, k.Ask, k.Yank, k.Logs, k.Events, k.Configure, k.Help, k.Quit}
+	return []key.Binding{k.Up, k.Down, k.Enter, k.Back, k.Search, k.Filter, k.FirstFail, k.Ask, k.Yank, k.Logs, k.Configure, k.Help, k.Quit}
 }
 
 func (k Map) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.Enter, k.Back},
 		// Row 2: reads (lowercase).
-		{k.Describe, k.Metrics, k.Logs, k.Events, k.Shell, k.Reveal, k.PortForward, k.FirstFail, k.Filter},
+		{k.Describe, k.Yaml, k.Metrics, k.Logs, k.Shell, k.Reveal, k.PortForward, k.FirstFail, k.Filter},
 		// Row 3: mutators (uppercase / ctrl-chord).
 		{k.Scale, k.Rollback, k.Restart, k.Edit, k.Cordon, k.Drain, k.Delete},
 		// Row 4: chrome / global affordances.
@@ -179,7 +188,7 @@ type KeyPair struct {
 }
 
 // Writes are the keys that change the cluster: Barbarossa mode, every one
-// a capital (or Shift chord) and every one confirmed first. The footer and
+// a capital except k9s's e (edit), and every one confirmed first. The footer and
 // the help modal paint these keys in the danger red of their confirmations.
 func (k Map) Writes() []key.Binding {
 	return []key.Binding{k.Scale, k.Rollback, k.Restart, k.Edit, k.Cordon, k.Drain, k.Delete}
@@ -203,7 +212,7 @@ func (k Map) Groups() []Group {
 		{
 			// Inspect and connect; shell access is not inherently read-only.
 			Title:    "Inspect & connect",
-			Bindings: []key.Binding{k.Describe, k.Metrics, k.Logs, k.Events, k.Shell, k.Reveal, k.PortForward, k.FirstFail},
+			Bindings: []key.Binding{k.Describe, k.Yaml, k.Metrics, k.Logs, k.Shell, k.Reveal, k.PortForward, k.FirstFail},
 		},
 		{
 			// All uppercase (or ctrl-chord): each mutates cluster state.
@@ -217,21 +226,18 @@ func (k Map) Groups() []Group {
 			Title: "Navigate & tools",
 			Pairs: []KeyPair{
 				{Key: "↑↓", Desc: "navigate"},
-				{Key: "tab", Desc: "switch pane"},
-				{Key: "z", Desc: "expand reading pane"},
-				{Key: "←", Desc: "parent in tree"},
-				{Key: "→", Desc: "tree to workspace"},
-				{Key: "←→", Desc: "workspace tabs"},
+				{Key: "↵", Desc: "open"},
+				{Key: "esc", Desc: "back to the previous page"},
+				{Key: "←→", Desc: "tabs (← on the first tab: back)"},
+				{Key: "1–9", Desc: "go to tab"},
 				{Key: "ctrl+s", Desc: "expand palette to namespace"},
 				{Key: "ctrl+n", Desc: "notification history"},
 				{Key: "ctrl+d", Desc: "dismiss notification"},
 				{Key: "c / p", Desc: "log targets / previous logs"},
-				{Key: "↵", Desc: "drill / confirm"},
 			},
-			// k.Back pulls its own "esc → back" label from the binding now,
-			// so we don't carry a hardcoded Pair for it. Anything that renders
-			// Back.Help() elsewhere gets the same description.
-			Bindings: []key.Binding{k.Back, k.Search, k.Filter, k.Refresh, k.Ask, k.Yank, k.Hot, k.Forwards, k.Configure, k.ClusterSwitch, k.Help, k.Quit},
+			// Back is listed above with what it does, so the binding itself
+			// isn't repeated here.
+			Bindings: []key.Binding{k.Search, k.Filter, k.Refresh, k.Ask, k.Yank, k.Hot, k.Forwards, k.Configure, k.ClusterSwitch, k.Help, k.Quit},
 		},
 	}
 }

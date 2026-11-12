@@ -23,9 +23,15 @@ type PaletteEntry struct {
 	// (e.g. "● Healthy 3/3", "Running", "8 keys"). Pre-rendered so the
 	// fuzzy match doesn't have to ignore styling bytes.
 	Hint string
+	// Type marks a resource type (Nodes, Pods, ConfigMaps…) rather than a
+	// resource: picking it opens the list itself.
+	Type bool
 }
 
 func (e PaletteEntry) kindLabel() string {
+	if e.Type {
+		return "type"
+	}
 	if e.SubKind != "" {
 		return e.SubKind
 	}
@@ -260,4 +266,47 @@ func splitOn(s string, sep byte) []string {
 	}
 	out = append(out, s[start:])
 	return out
+}
+
+// TypeEntries are the resource types of the cluster on screen, for the
+// search: `:node` finds Nodes, `:pods` the Pods across user namespaces and
+// in the namespace the operator is in. Each opens its list. Empty before a
+// cluster is chosen.
+func (t *Tree) TypeEntries() []PaletteEntry {
+	ci := -1
+	for i, r := range t.path {
+		if r.Kind == k8s.KindContext {
+			ci = i
+			break
+		}
+	}
+	if ci < 0 {
+		return nil
+	}
+	base := clonePath(t.path[:ci+1])
+	under := func(scope NodeRef, hint string) []PaletteEntry {
+		specs := t.foldSpecsFor(t.enabledResources)
+		out := make([]PaletteEntry, 0, len(specs))
+		for _, spec := range specs {
+			ref := t.resourceFolderForSpec(spec)
+			out = append(out, PaletteEntry{
+				Kind: ref.Kind, Name: spec.Label, Type: true, Hint: hint,
+				Path: append(append(clonePath(base), scope), ref),
+			})
+		}
+		return out
+	}
+	var out []PaletteEntry
+	for _, r := range t.path[ci+1:] {
+		if r.Kind == k8s.KindNamespaceFolder {
+			out = append(out, under(r, "in "+r.Name)...)
+		}
+	}
+	out = append(out, under(NodeRef{Kind: k8s.KindAllNamespacesFold, Name: "All", Display: "All user namespaces", Health: k8s.HealthUnknown}, "all namespaces")...)
+	infra := NodeRef{Kind: k8s.KindInfrastructureFold, Name: "Infrastructure", Display: "Infrastructure", Health: k8s.HealthUnknown}
+	nodes := NodeRef{Kind: k8s.KindClusterFold, Name: "Nodes", Display: "Nodes", Health: k8s.HealthUnknown}
+	return append(out, PaletteEntry{
+		Kind: k8s.KindClusterFold, Name: "Nodes", Type: true, Hint: "cluster",
+		Path: append(clonePath(base), infra, nodes),
+	})
 }

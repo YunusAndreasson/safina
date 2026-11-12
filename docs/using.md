@@ -27,17 +27,18 @@ safina --namespace=default
 - Rollback deployments to previous revision
 - Stream pod logs in follow mode with scrollback; choose the pod/container and inspect previous logs
 - Track scale and restart requests through controller readiness
-- Persistent errors and notification history (`Ctrl+N`); dismiss the banner with `Ctrl+D`
+- The top bar says where you are and how the open resource is doing, and carries confirmations, operations in flight, pending proposals and data age (`paused`, `↻ 12s`) so the page never shifts
+- Persistent errors and notification history (`Ctrl+N`); dismiss the error row with `Ctrl+D`
 - Compact resource search (`:`); `Ctrl+S` explicitly loads the selected namespace’s supported resource kinds
 - Auto-refresh pod/deployment lists every 5 seconds
 - Asks which cluster on every launch, so a muscle-memory keypress never lands on the wrong one
 - Help screen with all keybindings
 
-Search starts with already-loaded resources. Inside a namespace, `Ctrl+S` expands it to workloads, their pods, ConfigMaps, Secrets, Services, Ingresses, and PVCs. Partial failures are labeled. `Tab` in the palette shows resource actions. In logs, `c` switches targets and `p` opens previous-container logs when available.
+Search starts with already-loaded resources. Inside a namespace, `Ctrl+S` expands it to workloads, their pods, ConfigMaps, Secrets, Services, Ingresses, and PVCs. Partial failures are labeled. `Tab` in the palette shows resource actions. In logs, `o` switches targets and `p` opens previous-container logs when available.
 
 Log scrollback keeps up to 10,000 recent lines and 8 MiB of raw text; individual
-records retain up to 256 KiB. Older data is discarded in batches, and the status
-bar reports truncation. Copy uses the retained output. Switching log targets
+records retain up to 256 KiB. Older data is discarded in batches, and the tab
+rule reports truncation. Copy uses the retained output. Switching log targets
 releases the previous buffer.
 
 Chat scrollback keeps up to 200 turns and 4 MiB, with a 1 MiB display limit per
@@ -52,12 +53,13 @@ Press `m` on a workload, pod, or node to inspect CPU and memory trends.
 Charts use the existing theme: cyan CPU, mauve memory, muted requests, and
 yellow limits (allocatable capacity for nodes). Requests are reservations,
 not usage thresholds. Both charts appear when there is enough height;
-`t` switches between them in a shorter pane, and `z` expands the workspace.
+`t` switches between them in a shorter terminal.
 
 Use `[` / `]` for 5-minute, 15-minute, 1-hour, or 6-hour windows;
-`Space` freezes the visible interval while collection continues, and `y`
+`Space` freezes the visible interval while collection continues, and `c`
 copies a text summary with source timestamps, coverage, and peaks.
-`Tab` moves focus between the tree and workspace; `Esc` returns to Inspector.
+Metrics open over the list with `m`; `Esc` (or ←) closes them with the
+cursor where it was.
 
 These are session-local observations from metrics-server while browsing,
 not historical monitoring data. Samples stay in memory for up to six hours,
@@ -68,7 +70,7 @@ keep a replacement pod or workload from inheriting its predecessor's chart.
 
 Metrics starts with usage only. Press `a` to show or hide **Related changes**
 from the Logbook. Use ↑/↓ to select a change and Enter to open its Logbook
-entry; `d` opens the resource YAML throughout the app. Markers show temporal
+entry; `y` opens the resource YAML throughout the app. Markers show temporal
 proximity, not causation; shell commands and external changes are not included.
 Charts still work when recording is disabled or history cannot be read.
 

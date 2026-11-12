@@ -267,3 +267,55 @@ func TruncMiddlePad(s string, w int) string {
 	head := w - tail - 1
 	return ansi.Cut(s, 0, head) + "…" + ansi.Cut(s, textw.Width(s)-tail, textw.Width(s))
 }
+
+// Spread lets a table use a wide screen the way terminal tables do: spare
+// cells go between the columns, evenly, rather than to one column or to the
+// row's end. Each gap grows by up to maxGrow cells; what is left over stays
+// with the caller (a filler column at the row's end).
+type Spread struct {
+	after []bool // after[i]: a spacer column follows column i
+	grow  int
+}
+
+// SpreadColumns widens the gaps between the n columns of widths by sharing
+// out slack cells. It returns the spread, the widths, aligns and labels with
+// the spacer columns in place, and the cells it did not use.
+func SpreadColumns(widths []int, aligns []Align, labels []string, slack, maxGrow int) (Spread, []int, []Align, []string, int) {
+	n := len(widths) - 1
+	if n < 1 || slack < 2*n {
+		return Spread{}, widths, aligns, labels, slack
+	}
+	grow := min(maxGrow, slack/n)
+	sp := Spread{after: make([]bool, len(widths)), grow: grow}
+	var w []int
+	var a []Align
+	var l []string
+	for i := range widths {
+		w = append(w, widths[i])
+		a = append(a, aligns[i])
+		l = append(l, labels[i])
+		if i < n {
+			sp.after[i] = true
+			// A spacer is grow-1 cells plus its own one-cell gap.
+			w = append(w, grow-gapW)
+			a = append(a, AlignLeft)
+			l = append(l, "")
+		}
+	}
+	return sp, w, a, l, slack - n*grow
+}
+
+// Vals puts the empty spacer cells into a row's values.
+func (s Spread) Vals(vals []string) []string {
+	if s.grow == 0 {
+		return vals
+	}
+	out := make([]string, 0, 2*len(vals))
+	for i, v := range vals {
+		out = append(out, v)
+		if i < len(s.after) && s.after[i] {
+			out = append(out, "")
+		}
+	}
+	return out
+}

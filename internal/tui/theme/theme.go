@@ -10,29 +10,6 @@ import (
 	"github.com/YunusAndreasson/safina/internal/tui/textw"
 )
 
-// Phi is the golden ratio. The layout uses it structurally: pane widths,
-// vertical hierarchy within panels, and the spacer ladder all derive from φ
-// (or its Fibonacci approximations) so the eye reads the composition as
-// "rested" without anyone announcing why.
-const Phi = 1.6180339887498949
-
-// PhiSplit returns (small, big) widths summing to total with a 1:φ ratio,
-// minus one cell of gutter. Used by view composition to size adjacent panes
-// without re-deriving the math each call. Floors small at minSmall so a tiny
-// terminal doesn't crush the tree pane to an unusable sliver.
-func PhiSplit(total, gutter, minSmall int) (small, big int) {
-	if total < minSmall+8+gutter {
-		return minSmall, total - gutter - minSmall
-	}
-	usable := total - gutter
-	small = int(float64(usable) / (1 + Phi))
-	if small < minSmall {
-		small = minSmall
-	}
-	big = usable - small
-	return small, big
-}
-
 // Fibonacci spacer ladder. Cells stack visually like a φ progression even
 // when terminal cells force integer widths. Use these instead of magic
 // numbers so the same rhythm runs through every panel.

@@ -6,6 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/YunusAndreasson/safina/internal/k8s"
+	"github.com/YunusAndreasson/safina/internal/tui/components"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
 )
@@ -103,10 +104,10 @@ func TestEndedLogsRemainReadableButNotLabeledFollowing(t *testing.T) {
 	l.SetPaneSize(80, 12)
 	l.Append("existing output")
 	l.EndStream(nil)
-	text := ansi.Strip(l.Body(c))
-	require.Contains(t, text, "existing output")
-	require.Contains(t, text, "stream ended")
-	require.NotContains(t, text, "● follow")
+	require.Contains(t, ansi.Strip(l.Body(c)), "existing output")
+	state := ansi.Strip(components.RenderIndicators(c.Theme, l.Indicators(c)))
+	require.Contains(t, state, "stream ended")
+	require.NotContains(t, state, "● follow")
 }
 
 func TestEventRowsAreCompactAndBounded(t *testing.T) {

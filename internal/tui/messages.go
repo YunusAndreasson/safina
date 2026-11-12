@@ -12,6 +12,7 @@ import (
 type clusterHealthMsg struct {
 	Context string // the active context at the time of the load
 	Health  k8s.ClusterHealth
+	Version string // the API server's version, for the header
 	Err     error
 }
 
@@ -34,3 +35,6 @@ type errorMsg struct{ err error }
 // freshly raised banner isn't wiped early by a previous timer that's still
 // in-flight. (Setting any new banner bumps bannerEpoch.)
 type clearBannerMsg struct{ epoch uint64 }
+
+// clearNoticeMsg clears a "this key does not apply here" notice.
+type clearNoticeMsg struct{ epoch uint64 }

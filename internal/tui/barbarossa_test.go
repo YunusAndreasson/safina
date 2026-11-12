@@ -27,9 +27,10 @@ func TestBarbarossaRedMarksWritesOnly(t *testing.T) {
 	for _, w := range k.Writes() {
 		require.True(t, k.IsWrite(w.Help().Key), w.Help().Key)
 	}
-	for _, glyph := range []string{"s", "l", "e", "d", "G", "?", "enter"} {
+	for _, glyph := range []string{"s", "l", "d", "y", "c", "G", "?", "enter"} {
 		require.False(t, k.IsWrite(glyph), glyph)
 	}
+	require.True(t, k.IsWrite("e"), "e edits, as in k9s, and edits are writes")
 
 	write := components.RenderModalKeysRow(th, []components.KeyDesc{{Key: "S", Desc: "scale", Write: true}})
 	read := components.RenderModalKeysRow(th, []components.KeyDesc{{Key: "l", Desc: "logs"}})

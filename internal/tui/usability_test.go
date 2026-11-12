@@ -51,7 +51,7 @@ func TestHelpKeyDescriptionsHaveSeparation(t *testing.T) {
 		require.NotContains(t, text, "ctrl+fforwards")
 		require.NotContains(t, text, "tab also")
 		if strings.Contains(text, "ctrl+f") {
-			require.Contains(t, text, "ctrl+f  forwards")
+			require.Regexp(t, `ctrl\+f {2,}forwards`, text)
 		}
 	}
 }
@@ -81,13 +81,17 @@ func TestActionConfirmationIdentifiesClusterAndNamespace(t *testing.T) {
 }
 
 func TestWrappedBannerKeepsFooterAndMouseCoordinatesAligned(t *testing.T) {
-	m := NewModel(&k8s.Manager{}, &config.AppConfig{})
+	m := pageModel(t)
+	m.handleKey(keyMsg("enter"))
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m.bannerMsg = strings.Repeat("connection refused ", 12)
 	m.bannerErr = true
 	view := m.View()
 	require.LessOrEqual(t, lipgloss.Height(view.Content), 24)
-	require.Equal(t, 2+lipgloss.Height(m.renderBanner(80)), m.tabStripOriginY)
+	// Topbar, then the one-row error banner, then the page.
+	require.Equal(t, 1, lipgloss.Height(m.renderBanner(80)))
+	require.Contains(t, strings.Split(ansi.Strip(view.Content), "\n")[1], "connection refused")
+	require.Equal(t, 2, m.bodyOriginY, "the mouse knows the page starts below the banner")
 }
 
 func TestCtrlCExitsOverlaysAndWorkspaceViews(t *testing.T) {

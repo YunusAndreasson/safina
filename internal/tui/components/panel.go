@@ -154,10 +154,7 @@ func focusedEdges(t *theme.Theme, title string, w, h int, borderAccent, titleAcc
 	topGrad := t.FocusGradient(borderAccent, w)
 	vGrad := t.FocusGradient(borderAccent, h)
 
-	// Empty title means "draw a clean top border with no inserted gap". The
-	// Inspector tab uses this path because the topbar's breadcrumb leaf
-	// already names the current selection — repeating it on the panel rule
-	// is duplication, not chrome.
+	// Empty title means "draw a clean top border with no inserted gap".
 	trimmed := strings.TrimSpace(title)
 	titleStyle := lipgloss.NewStyle().Foreground(titleAccent).Bold(true)
 	titleSeg := ""

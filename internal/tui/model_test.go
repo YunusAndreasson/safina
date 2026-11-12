@@ -286,12 +286,31 @@ func TestHandleConfirm_Esc_Cancels(t *testing.T) {
 	assert.Equal(t, stateMain, m.state)
 }
 
-func TestHandleConfirm_UpperCaseY_Confirms(t *testing.T) {
+// y shows YAML everywhere else, so in a confirm it does nothing: a habit
+// must not write to the cluster.
+func TestHandleConfirm_YDoesNotConfirm(t *testing.T) {
+	for _, k := range []string{"y", "Y"} {
+		m := setupModel()
+		m.state = stateDeleteConfirm
+		cmd := m.handleConfirm(tea.KeyPressMsg{Text: k, Code: rune(k[0])})
+		assert.Nil(t, cmd)
+		assert.Equal(t, stateDeleteConfirm, m.state, k)
+	}
+}
+
+// Cancel has the focus first: Enter alone cancels, Tab then Enter acts.
+func TestHandleConfirm_EnterChoosesTheFocusedButton(t *testing.T) {
 	m := setupModel()
 	m.state = stateDeleteConfirm
-	cmd := m.handleConfirm(tea.KeyPressMsg{Text: "Y", Code: 'Y'})
-	assert.Nil(t, cmd)
+	assert.Nil(t, m.handleConfirm(tea.KeyPressMsg{Code: tea.KeyEnter}))
+	assert.Equal(t, stateMain, m.state, "Enter on the default focus cancels")
+
+	m.state = stateRestartConfirm
+	m.handleConfirm(tea.KeyPressMsg{Code: tea.KeyTab})
+	assert.True(t, m.confirmOnAction)
+	m.handleConfirm(tea.KeyPressMsg{Code: tea.KeyEnter})
 	assert.Equal(t, stateMain, m.state)
+	assert.False(t, m.confirmOnAction, "the next dialog starts on Cancel again")
 }
 
 // ── Scale input edge cases ───────────────────────────────────────────

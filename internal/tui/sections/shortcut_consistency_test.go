@@ -3,7 +3,6 @@ package sections
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/YunusAndreasson/safina/internal/config"
 	"github.com/YunusAndreasson/safina/internal/k8s"
@@ -22,10 +21,9 @@ func TestShortcutInkIsSharedAcrossSurfaces(t *testing.T) {
 	cluster := NewClusterSwitcher()
 	cluster.Open([]config.ContextInfo{{Name: "demo"}}, "demo")
 	cases := []struct{ name, frame, key string }{
-		{"metrics", metric.Body(th, 100, 30, time.Now()), "a"},
 		{"resource browser", browser.Card(c, 120, 40), "↵"},
 		{"cluster switcher", cluster.Card(c, 120, 40, "demo"), "esc"},
-		{"tab", RenderWorkspaceTabStrip(th, []WorkspaceTab{WSTabInspector, WSTabLogs}, WSTabLogs, 80), "l"},
+		{"tab", RenderTabRule(th, []WorkspaceTab{WSTabDetails, WSTabLogs}, k8s.KindPod, WSTabLogs, "", 80), "2"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

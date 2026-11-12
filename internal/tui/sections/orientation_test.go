@@ -1,7 +1,6 @@
 package sections
 
 import (
-	"strings"
 	"testing"
 	"time"
 
@@ -12,21 +11,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestResourceOrientationFitsAndExcludesRealResources(t *testing.T) {
-	for _, ref := range []NodeRef{{}, {Kind: k8s.KindWorkloadsFold, Name: "Workloads"}, {Kind: k8s.KindResourceBrowser}, {Kind: k8s.KindInfrastructureFold}} {
-		for _, size := range [][2]int{{16, 4}, {28, 12}, {48, 20}, {70, 32}} {
-			frame, ok := ResourceOrientation(theme.Default(), ref, size[0], size[1])
-			require.True(t, ok)
-			require.Equal(t, size[1], lipgloss.Height(frame))
-			for _, line := range strings.Split(frame, "\n") {
-				require.Equal(t, size[0], ansi.StringWidth(line))
-			}
-		}
-	}
-	for _, kind := range []string{k8s.KindApp, k8s.KindPod, k8s.KindNamespaceFolder, k8s.KindNodePool, k8s.KindGenericResource} {
-		_, ok := ResourceOrientation(theme.Default(), NodeRef{Kind: kind, Name: "real-resource"}, 70, 32)
-		require.False(t, ok, "%s retains its facts and events", kind)
-	}
+func TestPlaceRowsExplainThemselvesWhenThereIsRoom(t *testing.T) {
+	th := theme.Default()
+	bg := lipgloss.NewStyle()
+	wide := ansi.Strip(withFoldHint(th, "Infrastructure", "Infrastructure", k8s.KindInfrastructureFold, 60, bg))
+	require.Contains(t, wide, "nodes and system namespaces")
+	require.Equal(t, 60, ansi.StringWidth(wide))
+	narrow := ansi.Strip(withFoldHint(th, "Infrastructure", "Infrastructure", k8s.KindInfrastructureFold, 24, bg))
+	require.NotContains(t, narrow, "nodes", "a hint shows whole or not at all")
+	require.Equal(t, 24, ansi.StringWidth(narrow))
+	require.Empty(t, foldHint(k8s.KindNamespaceFolder), "a namespace's name is its explanation")
 }
 
 func TestNoMetricsTargetUsesSharedEmptyComposition(t *testing.T) {

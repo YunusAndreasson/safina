@@ -89,14 +89,20 @@ type treeRowSnapshot struct {
 	podsReady            bool
 }
 
-// Tree is the breadcrumb-driven drill navigator that replaces the previous
-// Deployments + Pods two-panel layout.
+// Tree is the breadcrumb-driven drill navigator. Its path is the page
+// hierarchy: lists for places, resource pages for things (see page.go).
 type Tree struct {
 	MetricStore     metrics.Store
 	rowSnapshot     *treeRowSnapshot
 	resourceFilters map[string]string
 	Focused         bool
 	Loading         bool
+
+	// PageSubject makes the selection the page's own resource instead of
+	// the highlighted child row. The root model sets it while a resource
+	// page shows anything but its children tab, so verbs, the Inspector and
+	// the reading tabs all act on the thing the page is about.
+	PageSubject bool
 
 	// Refreshing is the "background reload in flight" flag — true while a
 	// refresh (manual R or auto-tick) is fetching new data and we already
@@ -659,7 +665,7 @@ func (t *Tree) YankPayload() string {
 		// don't have the pod's name on the ref alone, so fall back to the
 		// breadcrumb path if it's available.
 		if len(t.path) >= 2 {
-			pod := t.path[len(t.path)-1]
+			pod := t.ContainerPod()
 			if pod.Kind == k8s.KindPod && pod.Namespace != "" {
 				return pod.Namespace + "/" + pod.Name + "/" + ref.Name
 			}
@@ -684,6 +690,9 @@ func (t *Tree) Children() *Children { return t.children }
 // SelectedRef returns the NodeRef of the highlighted child, or zero value
 // when the level is empty.
 func (t *Tree) SelectedRef() NodeRef {
+	if ref, ok := t.subject(); ok {
+		return ref
+	}
 	if t.children != nil && t.cursor >= 0 {
 		switch t.children.Kind {
 		case k8s.KindApp:
@@ -713,6 +722,9 @@ func (t *Tree) SelectedRef() NodeRef {
 // renders apps; otherwise zero value and false. (Convenience for the action
 // dispatcher in the root model.)
 func (t *Tree) SelectedAppInfo() (k8s.AppInfo, bool) {
+	if _, ok := t.subject(); ok {
+		return t.subjectApp()
+	}
 	if t.children == nil || t.children.Kind != k8s.KindApp {
 		return k8s.AppInfo{}, false
 	}
@@ -726,6 +738,9 @@ func (t *Tree) SelectedAppInfo() (k8s.AppInfo, bool) {
 // SelectedPodInfo returns the highlighted PodInfo when the focus renders
 // pods; otherwise zero value and false.
 func (t *Tree) SelectedPodInfo() (k8s.PodInfo, bool) {
+	if _, ok := t.subject(); ok {
+		return t.subjectPod()
+	}
 	if t.children == nil || t.children.Kind != k8s.KindPod {
 		return k8s.PodInfo{}, false
 	}
@@ -741,6 +756,9 @@ func (t *Tree) SelectedPodInfo() (k8s.PodInfo, bool) {
 // the Schedulable bit off this so the C-toggle picks cordon vs uncordon
 // without an extra API round-trip.
 func (t *Tree) SelectedNodeInfo() (k8s.NodeInfo, bool) {
+	if _, ok := t.subject(); ok {
+		return t.subjectNode()
+	}
 	if t.children == nil || t.children.Kind != k8s.KindNode {
 		return k8s.NodeInfo{}, false
 	}
@@ -1039,38 +1057,40 @@ func (t *Tree) updateFiltering(km tea.KeyPressMsg) tea.Cmd {
 // ── Render ───────────────────────────────────────────────────────────
 
 func (t *Tree) View(c *tuictx.Ctx, w, h int) string {
-	t.preparedRows()
 	th := c.Theme
-
-	// Title is a stable "Resource" label. The breadcrumb path lives in the
-	// topbar — that's where users instinctively look for "where am I", so
-	// putting it at the top of the screen frees this panel header from
-	// repeating itself on every drill.
-	innerW := components.PanelContentWidth(w)
+	// The title names what the list holds; the topbar's breadcrumb names
+	// where it is. While a reload is in flight the existing rows stay and a
+	// small spinner joins the title.
 	title := t.PanelTitle()
-	// Background-refresh feedback: while a reload is in flight (manual R
-	// or auto-tick) we keep the existing rows on screen and append a
-	// small spinner to the panel title — the operator sees "data is
-	// updating" without losing context. The PanelWithAccent loader-state
-	// branch (Loading=true && children==nil) still owns the empty-screen
-	// case; this is for the "we have data, refreshing it" case.
 	if t.refreshGate.Visible() && t.children != nil {
 		title = title + " " + c.SpinnerView()
 	}
-
-	// Title goes Dim, not cyan-bold — it's a label, not a headline. The
-	// loudest text on this panel should be the data rows, and the loudest
-	// chrome accent should be the cyan border (focus marker). A cyan title
-	// stacked under the cyan logo in the topbar made both compete; pulling
-	// the title down to Dim reorders the hierarchy so the eye flows
-	// logo → breadcrumb → rows without the title interrupting.
-	render := func(content string) string {
-		if t.filter.Active() {
-			return components.PanelWithAccent(th, title, w, h, content, t.Focused, th.P.Pink, th.P.Dim)
-		}
-		return components.PanelWithAccent(th, title, w, h, content, t.Focused, th.P.Cyan, th.P.Dim)
+	accent := th.P.FGFade
+	if t.filter.Active() {
+		accent = th.P.Pink
 	}
+	content := t.Content(c, components.PanelContentWidth(w), h-1)
+	return components.PageFrame(th, title, w, h, content, accent, t.showWaterline())
+}
 
+// Body renders the list without its title rule, for a page whose location
+// row above already names it.
+func (t *Tree) Body(c *tuictx.Ctx, w, h int) string {
+	content := t.Content(c, components.PanelContentWidth(w), h)
+	return components.PageBody(c.Theme, w, h, strings.Split(content, "\n"), t.showWaterline())
+}
+
+// showWaterline: the waterline marks where real rows end; it never sits
+// under a loading, failed, empty or filtered-to-nothing list.
+func (t *Tree) showWaterline() bool {
+	return !t.Loading && t.LoadErr == nil && t.children != nil && t.visibleCount() > 0
+}
+
+// Content renders the rows (and the filter input while it is open) into
+// innerW × h cells with no frame, for a resource page's children tab where
+// the tab strip already names the list.
+func (t *Tree) Content(c *tuictx.Ctx, innerW, h int) string {
+	t.preparedRows()
 	// Resource-type lists have no table header.
 	reserved := 1
 	if t.appFolderRows() {
@@ -1079,25 +1099,15 @@ func (t *Tree) View(c *tuictx.Ctx, w, h int) string {
 	if t.filter.Active() {
 		reserved++
 	}
-	rowsAvail := h - 2 - reserved
-	if rowsAvail < 1 {
-		rowsAvail = 1
-	}
-
+	rowsAvail := max(1, h-reserved)
 	body := t.renderBody(c, innerW, rowsAvail)
-
-	parts := []string{}
-	if t.filter.Active() {
-		// Pin the filter input to the panel's content width so its trailing
-		// boundary doesn't shift between renders. Without this, the textinput
-		// emits a string sized to its content, and the diff renderer may leave
-		// stale cells (border glyphs) past the input's right edge after the
-		// filter closes.
-		t.filter.SetWidth(innerW)
-		parts = append(parts, t.filter.View())
+	if !t.filter.Active() {
+		return body
 	}
-	parts = append(parts, body)
-	return render(strings.Join(parts, "\n"))
+	// Pin the filter input to the content width so its trailing boundary
+	// doesn't shift between renders.
+	t.filter.SetWidth(innerW)
+	return t.filter.View() + "\n" + body
 }
 
 // BreadcrumbCrumbs returns the current path as a slice of components.Crumb
@@ -1631,10 +1641,10 @@ func (t *Tree) renderAppRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	}
 	const (
 		hW = 5
-		// cpuW / memW hold only the sparkline now — the numeric tail moved
-		// to the Inspector tile, where the right pane has room for the
-		// precise current value plus configured requests/limits. The
-		// per-row spark stays narrow so the list scans fast.
+		// cpuW / memW hold only the sparkline — the precise current value
+		// plus configured requests/limits live on the resource's Details
+		// and Metrics tabs. The per-row spark stays narrow so the list
+		// scans fast.
 		cpuW    = sparkWidth
 		memW    = sparkWidth
 		agW     = 5
@@ -1692,6 +1702,11 @@ func (t *Tree) renderAppRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	if nW < nameMin {
 		nW = nameMin
 	}
+	longest := 0
+	for _, a := range apps {
+		longest = max(longest, textw.Width(a.Name))
+	}
+	nW, filler := snugName(nW, longest, nameMin)
 
 	// Column order: KIND · NAME · NS? · H · CPU? · MEM? · HPA? · AGE.
 	// HPA sits in the same trailing slot Pods use for RST so the
@@ -1728,6 +1743,13 @@ func (t *Tree) renderAppRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	cols = append(cols, agW)
 	aligns = append(aligns, components.AlignRight)
 	headerLabels = append(headerLabels, "AGE")
+	var sp components.Spread
+	sp, cols, aligns, headerLabels, filler = spreadRow(cols, aligns, headerLabels, filler)
+	if filler > 0 {
+		cols = append(cols, filler)
+		aligns = append(aligns, components.AlignLeft)
+		headerLabels = append(headerLabels, "")
+	}
 	header := components.Header(th, headerLabels, cols, aligns)
 
 	start, end := components.VisibleRange(t.cursor, rowCount, rowsAvail-1)
@@ -1755,6 +1777,7 @@ func (t *Tree) renderAppRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 			if showKind {
 				vals = append([]string{""}, vals...)
 			}
+			vals = sp.Vals(vals)
 			for j := len(vals); j < len(cols); j++ {
 				vals = append(vals, "")
 			}
@@ -1810,6 +1833,10 @@ func (t *Tree) renderAppRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 			vals = append(vals, hpaCell)
 		}
 		vals = append(vals, ageCell)
+		vals = sp.Vals(vals)
+		if filler > 0 {
+			vals = append(vals, "")
+		}
 
 		out = append(out, components.Row(th, vals, cols, aligns, selected, i))
 	}
@@ -1817,11 +1844,10 @@ func (t *Tree) renderAppRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 }
 
 // renderMetricCell renders the per-row CPU/MEM sparkline. The absolute
-// value used to sit next to the spark, but the left pane is the φ-small
-// side and a 4-cell spark already encodes the signal a list-scan needs
-// ("which app is hot?"). The Inspector tile carries the precise current
-// value (and requests/limits) for whichever row the cursor's on — that's
-// where you go for "how hot, exactly." The row's bg style threads through
+// value used to sit next to the spark, but a 4-cell spark already encodes
+// the signal a list-scan needs ("which app is hot?"). The resource page's
+// Details tab carries the precise current value (and requests/limits) —
+// that's where you go for "how hot, exactly." The row's bg style threads through
 // so the spark inherits stripe/select painting rather than punching a
 // terminal-default gap into the column.
 //
@@ -2014,6 +2040,37 @@ func (t *Tree) renderPodRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 	if nW < nameMin {
 		nW = nameMin
 	}
+	// A wide list adds what an on-caller reads first in a pod table, the way
+	// terminal Kubernetes tools lay it out: readiness, the state in words,
+	// the pod's address and the node it runs on. Names keep at least 48
+	// cells; the address, then the node, give way first.
+	readyW, statusW, ipW, nodeW := 0, hW, 0, 0
+	if wide := nW - 48; wide > 0 {
+		gapW := components.GapTotal(2)
+		want := []*int{&readyW, &statusW, &ipW, &nodeW}
+		size := []int{5, 18, podIPWidth(pods), podNodeWidth(pods)}
+		for i, w := range size {
+			grow := w - *want[i]
+			if *want[i] == 0 {
+				grow += gapW
+			}
+			if w == 0 || grow > wide {
+				continue
+			}
+			*want[i] = w
+			wide -= grow
+			nW -= grow
+		}
+	}
+	longest := 0
+	for _, p := range pods {
+		longest = max(longest, textw.Width(p.Name))
+	}
+	nW, filler := snugName(nW, longest, nameMin)
+	statusLabel := ""
+	if statusW > hW {
+		statusLabel = "STATUS"
+	}
 
 	// Column order: NAME · NS? · H · CPU? · MEM? · RST? · AGE.
 	cols := []int{nW}
@@ -2024,9 +2081,14 @@ func (t *Tree) renderPodRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 		aligns = append(aligns, components.AlignLeft)
 		headerLabels = append(headerLabels, "NS")
 	}
-	cols = append(cols, hW)
+	if readyW > 0 {
+		cols = append(cols, readyW)
+		aligns = append(aligns, components.AlignRight)
+		headerLabels = append(headerLabels, "READY")
+	}
+	cols = append(cols, statusW)
 	aligns = append(aligns, components.AlignLeft)
-	headerLabels = append(headerLabels, "")
+	headerLabels = append(headerLabels, statusLabel)
 	if showMetrics {
 		cols = append(cols, usedCpuW, usedMemW)
 		aligns = append(aligns, components.AlignRight, components.AlignRight)
@@ -2037,9 +2099,26 @@ func (t *Tree) renderPodRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 		aligns = append(aligns, components.AlignRight)
 		headerLabels = append(headerLabels, "RST")
 	}
+	if ipW > 0 {
+		cols = append(cols, ipW)
+		aligns = append(aligns, components.AlignLeft)
+		headerLabels = append(headerLabels, "IP")
+	}
+	if nodeW > 0 {
+		cols = append(cols, nodeW)
+		aligns = append(aligns, components.AlignLeft)
+		headerLabels = append(headerLabels, "NODE")
+	}
 	cols = append(cols, agW)
 	aligns = append(aligns, components.AlignRight)
 	headerLabels = append(headerLabels, "AGE")
+	var sp components.Spread
+	sp, cols, aligns, headerLabels, filler = spreadRow(cols, aligns, headerLabels, filler)
+	if filler > 0 {
+		cols = append(cols, filler)
+		aligns = append(aligns, components.AlignLeft)
+		headerLabels = append(headerLabels, "")
+	}
 	header := components.Header(th, headerLabels, cols, aligns)
 
 	start, end := components.VisibleRange(t.cursor, len(pods), rowsAvail-1)
@@ -2059,15 +2138,30 @@ func (t *Tree) renderPodRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 			memCell = renderMetricCell(th, memBuf, bg, c.Stale)
 		}
 		key := rowKey(layout, strconv.FormatBool(selected), strconv.Itoa(i%2),
-			p.Name, p.Namespace, p.Status, strconv.Itoa(int(p.Restarts)), p.Age, cpuCell, memCell)
+			p.Name, p.Namespace, p.Status, strconv.Itoa(int(p.Restarts)), p.Age, cpuCell, memCell,
+			strconv.Itoa(p.Ready), strconv.Itoa(p.Containers), p.IP, p.NodeName)
 		out = append(out, t.podRows.get(th, key, func() string {
 			nameCell := th.NameStrongOn(components.TruncMiddlePad(p.Name, nW), bg)
 			// StatusGlyph at maxW=1 collapses to just the colored dot (the
 			// abnormal-state word is dropped). Same shape Apps use for H.
 			statusCell := th.StatusGlyph(p.Status, 1, bg)
+			if statusW > hW {
+				statusCell = podStatusWord(th, p.Status, statusW, bg)
+			}
 			vals := []string{nameCell}
 			if showNS {
 				vals = append(vals, th.MetaOn(components.TruncPad(p.Namespace, nsW), bg))
+			}
+			if readyW > 0 {
+				ready := ""
+				if p.Containers > 0 {
+					ready = fmt.Sprintf("%d/%d", p.Ready, p.Containers)
+				}
+				st := bg.Foreground(th.P.FGFade)
+				if p.Ready < p.Containers {
+					st = bg.Foreground(th.P.Yellow).Bold(true)
+				}
+				vals = append(vals, st.Render(ready))
 			}
 			vals = append(vals, statusCell)
 			if showMetrics {
@@ -2076,11 +2170,91 @@ func (t *Tree) renderPodRows(c *tuictx.Ctx, innerW, rowsAvail int) string {
 			if showRST {
 				vals = append(vals, th.RestartCount(int(p.Restarts), bg))
 			}
+			if ipW > 0 {
+				vals = append(vals, th.MetaOn(components.TruncPad(p.IP, ipW), bg))
+			}
+			if nodeW > 0 {
+				vals = append(vals, th.MetaOn(components.TruncPad(p.NodeName, nodeW), bg))
+			}
 			vals = append(vals, th.Age(p.Age, bg))
+			vals = sp.Vals(vals)
+			if filler > 0 {
+				vals = append(vals, "")
+			}
 			return components.Row(th, vals, cols, aligns, selected, i)
 		}))
 	}
 	return strings.Join(out, "\n")
+}
+
+// snugName sizes a NAME column to its longest name plus a little air,
+// instead of all the spare width, so the columns after it sit beside the
+// names the way terminal tables read. The rest becomes a filler column at
+// the row's end (0 when there is none), which keeps the row full width.
+func snugName(nW, longest, nameMin int) (name, filler int) {
+	want := max(nameMin, longest+4)
+	slack := nW - want - components.GapTotal(2)
+	if slack <= 0 {
+		return nW, 0
+	}
+	return want, slack
+}
+
+// spreadGrowMax caps how far a gap between columns widens, so a few
+// columns on a very wide screen stay a table rather than scattered words.
+const spreadGrowMax = 20
+
+// spreadRow shares the spare width snugName set aside between the columns,
+// k9s-style, and returns what is left for the filler column at the row's
+// end.
+func spreadRow(cols []int, aligns []components.Align, labels []string, filler int) (components.Spread, []int, []components.Align, []string, int) {
+	spare := 0
+	if filler > 0 {
+		spare = filler + components.GapTotal(2) // the filler's own gap
+	}
+	sp, cols, aligns, labels, left := components.SpreadColumns(cols, aligns, labels, spare, spreadGrowMax)
+	switch {
+	case left >= 2:
+		return sp, cols, aligns, labels, left - components.GapTotal(2)
+	case left == 1:
+		cols[len(cols)-1]++
+	}
+	return sp, cols, aligns, labels, 0
+}
+
+// podStatusWord is the STATUS cell of a wide pod list: the coloured dot and
+// the state in words. A healthy Running reads quietly; anything else takes
+// its status colour.
+func podStatusWord(th *theme.Theme, status string, w int, bg lipgloss.Style) string {
+	ink := bg.Foreground(th.StatusColor(status))
+	word := ink.Bold(true)
+	if status == "Running" || status == "Succeeded" {
+		word = bg.Foreground(th.P.FGFade)
+	}
+	return ink.Render("● ") + word.Render(components.TruncPad(status, max(1, w-2)))
+}
+
+// podIPWidth is the IP column's width: the longest address, or 0 when no
+// pod has one yet.
+func podIPWidth(pods []k8s.PodInfo) int {
+	n := 0
+	for _, p := range pods {
+		n = max(n, len(p.IP))
+	}
+	return n
+}
+
+// podNodeWidth is the NODE column's width: the longest node name, capped,
+// or 0 when no pod is scheduled.
+func podNodeWidth(pods []k8s.PodInfo) int {
+	n := 0
+	for _, p := range pods {
+		n = max(n, textw.Width(p.NodeName))
+	}
+	if n == 0 {
+		return 0
+	}
+	return min(24, max(4, n))
 }
 
 func anyPodMetrics(pods []k8s.PodInfo) bool {
@@ -2887,10 +3061,37 @@ func (t *Tree) renderInfrastructureRows(c *tuictx.Ctx, innerW, rowsAvail int) st
 		selected := i == t.cursor && t.Focused
 		bg := th.RowBgFor(i, selected)
 		out = append(out, components.Row(th,
-			[]string{th.NameStrongOn(components.TruncPad(ref.Display, nW), bg)},
+			[]string{withFoldHint(th, th.NameStrongOn(ref.Display, bg), ref.Display, ref.Kind, nW, bg)},
 			cols, aligns, selected, i))
 	}
 	return strings.Join(out, "\n")
+}
+
+// foldHint says what a place holds when its name alone doesn't. With no
+// detail pane beside the list, the row itself carries the explanation.
+func foldHint(kind string) string {
+	switch kind {
+	case k8s.KindAllNamespacesFold:
+		return "every user namespace in one list"
+	case k8s.KindInfrastructureFold:
+		return "nodes and system namespaces"
+	case k8s.KindClusterFold:
+		return "node pools and their nodes"
+	case k8s.KindSystemFold:
+		return "kube-system and other platform namespaces"
+	}
+	return ""
+}
+
+// withFoldHint pads a rendered name to w cells, adding the place's hint in
+// dim ink when it fits whole.
+func withFoldHint(th *theme.Theme, rendered, plain, kind string, w int, bg lipgloss.Style) string {
+	hint := foldHint(kind)
+	const gap = 3
+	if hint == "" || textw.Width(plain)+gap+textw.Width(hint) > w {
+		return components.TruncPad(rendered, w)
+	}
+	return components.TruncPad(rendered+bg.Render(strings.Repeat(" ", gap))+bg.Foreground(th.P.Dim).Render(hint), w)
 }
 
 // renderNamespaceFolderRows renders the cluster-root level: the All
@@ -2946,7 +3147,7 @@ func (t *Tree) renderNamespaceFolderRows(c *tuictx.Ctx, innerW, rowsAvail int) s
 		case k8s.KindAllNamespacesFold:
 			// "All" is the on-caller fast path — keep it bold like the
 			// namespace folders so it competes for the cursor's attention.
-			vals := []string{th.NameStrongOn(components.TruncPad(ref.Display, nW), bg)}
+			vals := []string{withFoldHint(th, th.NameStrongOn(ref.Display, bg), ref.Display, ref.Kind, nW, bg)}
 			for j := 1; j < len(cols); j++ {
 				vals = append(vals, "")
 			}
@@ -2956,7 +3157,7 @@ func (t *Tree) renderNamespaceFolderRows(c *tuictx.Ctx, innerW, rowsAvail int) s
 			// dim so it sits below the namespace list as a category
 			// escape hatch, not a peer of the workload namespaces.
 			dim := bg.Foreground(th.P.Dim)
-			vals := []string{dim.Render(components.TruncPad(ref.Display, nW))}
+			vals := []string{withFoldHint(th, dim.Render(ref.Display), ref.Display, ref.Kind, nW, bg)}
 			for j := 1; j < len(cols); j++ {
 				vals = append(vals, "")
 			}

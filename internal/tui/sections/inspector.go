@@ -37,6 +37,10 @@ import (
 // (kind, namespace, name) so cursor movement up/down a list of pods
 // stays free of repeated round-trips after the first visit.
 type Inspector struct {
+	// HeaderOutside drops the summary from the body because the resource
+	// page shows it in the topbar; the subtitle stays as the first line.
+	HeaderOutside bool
+
 	// ref is the last selection we computed a snapshot for. Compared on
 	// SetSelection to short-circuit when the cursor hasn't moved.
 	ref         NodeRef
@@ -226,36 +230,80 @@ func (i *Inspector) View(c *tuictx.Ctx, w, h int) string {
 	t := c.Theme
 	if i.snap == nil {
 		body := IdlePlaceholder(t, components.PanelContentWidth(w), h-2, "Select a resource to see details.")
-		return components.PanelWithAccent(t, "", w, h, body, false, t.P.Dim, t.P.Dim)
+		return components.PageFrame(t, "", w, h, body, t.P.FGFade, false)
 	}
 	body := i.renderBody(c, components.PanelContentWidth(w), h-2)
-	title := ""
+	// Titled like the sections beside it, so the page's columns start on
+	// the same row and read as sections of one page.
+	title := "Overview"
 	if i.snap.loading {
-		title = c.SpinnerView() + " loading…"
+		title = "Overview  " + c.SpinnerView() + " loading…"
 	}
-	return components.PanelWithAccent(t, title, w, h, body, false, t.P.Cyan, t.P.Dim)
+	return components.PageFrame(t, title, w, h, body, t.P.FGFade, false)
+}
+
+// summaryLine keeps type, health and replicas together.
+func (i *Inspector) summaryLine(t *theme.Theme, innerW int) string {
+	s := i.snap
+	kind, _, _ := strings.Cut(s.title, " · ")
+	summary := lipgloss.NewStyle().Foreground(t.ResourceKindColor(kind)).Bold(true).Render(kind)
+	if s.statusText != "" {
+		summary += t.DimTxt.Render(" · ") + statusLine(t, s.statusText, s.statusKind, max(innerW, textw.Width(s.statusText)))
+	}
+	var replicas strings.Builder
+	for _, section := range s.sections {
+		for _, row := range section.rows {
+			if row.label == "replicas" {
+				replicas.WriteString(t.DimTxt.Render(" · ") + t.NameDim.Render(row.value))
+			}
+		}
+	}
+	return summary + replicas.String()
+}
+
+// Status is the resource page's identity for the topbar, read on from the
+// leaf crumb: what the thing is and how it is doing (kind · state ·
+// replicas), and its narrow form (kind · state). A spinner joins while the
+// snapshot loads.
+func (i *Inspector) Status(c *tuictx.Ctx) (full, short string) {
+	t := c.Theme
+	if i.snap == nil {
+		return t.Idle.Render("…"), t.Idle.Render("…")
+	}
+	s := i.snap
+	// The name before it leads; the kind is a quiet label and only the state
+	// takes colour, and only when it is worth a look.
+	kind, _, _ := strings.Cut(s.title, " · ")
+	short = t.DimTxt.Render(kind)
+	if s.statusText != "" {
+		short += t.DimTxt.Render(" · ") + statusLine(t, s.statusText, s.statusKind, textw.Width(s.statusText))
+	}
+	var b strings.Builder
+	b.WriteString(short)
+	for _, section := range s.sections {
+		for _, row := range section.rows {
+			if row.label == "replicas" {
+				b.WriteString(t.DimTxt.Render(" · ") + t.NameDim.Render(row.value))
+			}
+		}
+	}
+	full = b.String()
+	if s.loading {
+		full += " " + c.SpinnerView()
+		short += " " + c.SpinnerView()
+	}
+	return full, short
 }
 
 func (i *Inspector) renderBody(c *tuictx.Ctx, innerW, innerH int) string {
 	t := c.Theme
 	s := i.snap
 
-	// Keep type and health together; wrap long states instead of hiding them.
-	kind, _, _ := strings.Cut(s.title, " · ")
-	summary := lipgloss.NewStyle().Foreground(t.ResourceKindColor(kind)).Bold(true).Render(kind)
-	if s.statusText != "" {
-		summary += t.DimTxt.Render(" · ") + statusLine(t, s.statusText, s.statusKind, max(innerW, textw.Width(s.statusText)))
+	var parts []string
+	if !i.HeaderOutside {
+		// Keep type and health together; wrap long states instead of hiding them.
+		parts = strings.Split(ansi.Wrap(i.summaryLine(t, innerW), max(1, innerW), ""), "\n")
 	}
-	var replicaSummary strings.Builder
-	for _, section := range s.sections {
-		for _, row := range section.rows {
-			if row.label == "replicas" {
-				replicaSummary.WriteString(t.DimTxt.Render(" · ") + t.NameDim.Render(row.value))
-			}
-		}
-	}
-	summary += replicaSummary.String()
-	parts := strings.Split(ansi.Wrap(summary, max(1, innerW), ""), "\n")
 	if s.subtitle != "" {
 		parts = append(parts, t.DimTxt.Render(truncate(s.subtitle, innerW)))
 	}
@@ -268,8 +316,9 @@ func (i *Inspector) renderBody(c *tuictx.Ctx, innerW, innerH int) string {
 	// self-identifying; an explicit "LIVE USAGE" header just adds noise and
 	// breaks proximity between status and trend.
 	if s.live != nil {
-		parts = append(parts, renderLiveMetric(t, "cpu", s.live, true, innerW))
-		parts = append(parts, renderLiveMetric(t, "mem", s.live, false, innerW))
+		lw := globalInspectorLabelW(s.sections)
+		parts = append(parts, renderLiveMetric(t, "cpu", s.live, true, lw, innerW))
+		parts = append(parts, renderLiveMetric(t, "mem", s.live, false, lw, innerW))
 		if s.live.cpuBuf != nil && s.live.cpuBuf.Series != nil {
 			latest := s.live.cpuBuf.Series.Latest
 			label := latest.Status(time.Now())
@@ -414,10 +463,10 @@ const liveValueCellW = 6
 // The trend window adapts to retained history via SparklineFull's
 // bucket-aggregation: a fresh session shows minutes; one left running
 // shows hours.
-func renderLiveMetric(t *theme.Theme, kind string, live *inspectorLive, isCPU bool, innerW int) string {
-	const labelW = 4 // "cpu " / "mem "
-	const gap = 1
-	label := t.DimTxt.Width(labelW).Render(kind)
+func renderLiveMetric(t *theme.Theme, kind string, live *inspectorLive, isCPU bool, labelW, innerW int) string {
+	const gap = 2
+	labelW = max(4, labelW)
+	label := t.DimTxt.Width(labelW + gap).Render(kind)
 
 	var buf *components.MetricBuffer
 	var cur int64
@@ -444,16 +493,22 @@ func renderLiveMetric(t *theme.Theme, kind string, live *inspectorLive, isCPU bo
 		valPad = 0
 	}
 	valStyled := lipgloss.NewStyle().Foreground(t.P.FG).Render(curStr)
-	valSlot := strings.Repeat(" ", valPad) + valStyled
+	// The reading sits on the value column the rows below share, beside
+	// its label; the trend follows it, as wide as is useful to read.
+	valSlot := valStyled + strings.Repeat(" ", valPad)
 
-	sparkW := innerW - labelW - gap - liveValueCellW - gap
+	sparkW := min(liveSparkMaxW, innerW-labelW-gap-liveValueCellW-gap)
 	if sparkW < 8 {
 		sparkW = 8
 	}
 	spark := components.SparklineFull(t, buf, sparkW, lipgloss.NewStyle())
 
-	return label + spark + strings.Repeat(" ", gap) + valSlot
+	return label + valSlot + strings.Repeat(" ", gap) + spark
 }
+
+// liveSparkMaxW caps the usage trend, so on a wide page it stays a glance
+// beside the reading rather than a line across the screen.
+const liveSparkMaxW = 40
 
 // attachPodLive populates the LIVE USAGE block for a pod selection.
 // Pulls the live sparkline buffer from the tree (shared pointer — keeps
@@ -1052,7 +1107,7 @@ func inspectConfigMapSnap(c k8s.ConfigMapInfo) *inspectorSnapshot {
 	// configmap is *about* without opening the reveal modal.
 	s := &inspectorSnapshot{
 		title:     "ConfigMap · " + c.Name,
-		shortcuts: []components.KeyDesc{{Key: "d", Desc: "view YAML"}},
+		shortcuts: []components.KeyDesc{{Key: "y", Desc: "view YAML"}},
 	}
 	if rows := keyPreviewRows(c.KeyNames); len(rows) > 0 {
 		s.sections = append(s.sections, inspectorSection{rows: rows})

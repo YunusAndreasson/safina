@@ -33,13 +33,10 @@ const (
 	stateMain state = iota
 	stateMetricsView
 	stateIncoming
-	// stateLogView / stateEventsView / stateDescribeView / stateHotView /
-	// stateForwardsList / stateDrainProgress are kept as drivers of *which*
-	// workspace tab is active. In the cosmic-horizon redesign these are no
-	// longer full-screen modals — they render as tabs inside the workspace
-	// pane while the tree stays visible. Update paths still flip state to
-	// drive the tab activation; renderMain consults the state and selects
-	// the matching WorkspaceTab.
+	// stateLogView / stateEventsView / stateDescribeView (and
+	// stateMetricsView) drive a resource page's reading tabs; stateHotView,
+	// stateForwardsList, stateDrainProgress and stateChatView are tool pages
+	// that cover the page they were opened from. See pages.go.
 	stateLogView
 	stateEventsView
 	stateDescribeView
@@ -70,11 +67,11 @@ const (
 	// no auto-default at startup; mid-session switching is opt-in via
 	// this overlay (jumps to the same load path the tree's root drill uses).
 	stateClusters
-	// stateChatView is the workspace's Chat tab being active. The chat
-	// textarea captures keystrokes while we're in this state; pressing Esc
-	// (or `1`) switches back to the Inspector tab — same affordance as
-	// closing any other immersive tab.
+	// stateChatView is the chat page. Its textarea captures keystrokes;
+	// Esc closes it and uncovers the page it was opened from.
 	stateChatView
+	// stateSheetView is the describe view (d) of a list row, in the modal.
+	stateSheetView
 )
 
 // editSession holds the in-flight YAML-edit lifecycle: the original bytes,
@@ -159,10 +156,21 @@ type Model struct {
 	drain                 sections.Drain
 	inspector             sections.Inspector
 	activity              sections.Activity
-	connected             sections.Connected
-	connectedBack         []sections.PaletteEntry
-	hot                   sections.Hot
-	clusters              sections.ClusterSwitcher
+	// sheet is the describe view (d) of a list row, shown in the modal.
+	sheet sections.Sheet
+	// modal is set while a view opened from a list row (describe, yaml,
+	// logs) floats over the list instead of opening the row's page.
+	modal bool
+	// notice says why a key did nothing ("no logs for ConfigMaps"), on the
+	// location row until the next key or noticeTTL.
+	notice      string
+	noticeEpoch uint64
+	// confirmOnAction is set while a confirm dialog's focus is on its
+	// action button rather than Cancel.
+	confirmOnAction bool
+	connected       sections.Connected
+	hot             sections.Hot
+	clusters        sections.ClusterSwitcher
 
 	// allContexts caches the kube-context list for the Ctrl+K switcher.
 	// Seeded by SetContexts at startup.
@@ -182,7 +190,6 @@ type Model struct {
 	// cancelled turns. Only the update loop replaces it.
 	chatStreamCh <-chan claude.Event
 
-	workspaceExpanded     bool
 	helpReturnState       state
 	navigationReturnState state
 	helpViewport          viewport.Model
@@ -289,6 +296,9 @@ type Model struct {
 	// reset to "" on context switch so the pill blanks until the new
 	// cluster's first fetch lands.
 	clusterHealthCtx string
+	// serverVersion is the active cluster's API server version, from the
+	// same load as clusterHealth.
+	serverVersion string
 
 	// title is the terminal-tab title rendered declaratively via tea.View.
 	// Updated whenever the active cluster changes so on-callers running
@@ -323,21 +333,25 @@ type Model struct {
 	tabStripOriginY int
 	tabHitboxes     []sections.TabHitbox
 
-	// peekWorkspace tracks whether Tab has moved focus to the right pane
-	// without activating an immersive tab. The active view doesn't change
-	// (Inspector stays Inspector), but the gradient border migrates to the
-	// workspace and ←/→ start cycling the tab strip. Cleared by another Tab
-	// (focus back to tree) or by activating an immersive tab via hotkey.
-	peekWorkspace bool
+	// bodyOriginX / bodyOriginY are where the open tab's body starts on
+	// screen, stamped each frame for the mouse router (Connected rows).
+	bodyOriginX, bodyOriginY int
+	// frameTopInset is the frame's top edge when it is not the page's own
+	// tab rule: one row the page starts below.
+	frameTopInset int
 
-	// treeFocusInImmersive is the inverse of peekWorkspace for immersive
-	// states (logs/events/yaml/chat/hot/forwards/drain): true means the
-	// operator pressed Tab to redirect keystrokes to the tree while the
-	// immersive section keeps rendering. Read by the dispatch guard in
-	// handleKey to bypass the section's Update; cleared by returnToMain
-	// and by re-entering an immersive state from scratch so each
-	// open of a tab starts with the section owning keys.
-	treeFocusInImmersive bool
+	// pageTab is the tab a resource page shows; entryTab is the one it was
+	// opened on, which Esc returns to before it leaves the page. pageMemo
+	// keeps each page's tabs so coming back restores them. The tab
+	// under a tool page (chat, hot pods, forwards, drain) stays in
+	// pageTab, so closing the tool reopens it.
+	pageTab  sections.WorkspaceTab
+	entryTab sections.WorkspaceTab
+	pageMemo map[string]pageMemo
+
+	// jumps records where search and Connected jumps came from, so Esc
+	// returns there rather than to the destination's hierarchy parent.
+	jumps []jump
 
 	// startupBanner is a one-shot error message raised in Init(), used by
 	// main to surface CLI-flag mistakes (e.g. --context=does-not-exist)
@@ -423,6 +437,7 @@ func NewModel(mgr *k8s.Manager, cfg *config.AppConfig) Model {
 		drain:              sections.NewDrain(c),
 		inspector:          sections.NewInspector(),
 		activity:           sections.NewActivity(),
+		sheet:              sections.NewSheet(),
 		connected:          sections.NewConnected(),
 		hot:                sections.NewHot(),
 		clusters:           sections.NewClusterSwitcher(),
@@ -468,7 +483,14 @@ func (m *Model) syncChatContext() {
 // optional events fetch). Returns a batched Cmd the caller plumbs into
 // the outer Update return; nil when there's nothing to load.
 func (m *Model) syncSelection() tea.Cmd {
+	// Metrics follow the highlighted row, as the modal shows them.
 	metricCmd := m.syncMetrics(false)
+	// A resource page's Inspector, events, Connected and chat context are
+	// about the page's resource, even while its children tab is showing.
+	if m.tree.OnResourcePage() && !m.tree.PageSubject {
+		m.tree.PageSubject = true
+		defer func() { m.tree.PageSubject = false }()
+	}
 	warmCmd := m.scheduleCacheWarm()
 	m.syncChatContext()
 	// Inspector rebuilds its base snapshot synchronously and may
@@ -500,7 +522,7 @@ func activityTarget(ref sections.NodeRef, tr *sections.Tree) (kind, ns, name str
 	case k8s.KindPod:
 		return "Pod", ref.Namespace, ref.Name
 	case k8s.KindContainer:
-		pod := tr.Focus()
+		pod := tr.ContainerPod()
 		return "Pod", pod.Namespace, pod.Name
 	case k8s.KindNode:
 		return "Node", "", ref.Name
@@ -735,7 +757,7 @@ func (m *Model) loadClusterHealth() tea.Cmd {
 	active := m.ctx.ActiveContext
 	return func() tea.Msg {
 		h, err := client.LoadClusterHealth(bg)
-		return clusterHealthMsg{Context: active, Health: h, Err: err}
+		return clusterHealthMsg{Context: active, Health: h, Version: client.ServerVersion(), Err: err}
 	}
 }
 
@@ -818,6 +840,18 @@ func (m *Model) raiseBanner(msg string, isErr bool) tea.Cmd {
 		debug.Log("banner.status", "msg", msg)
 	}
 	return tea.Tick(ttl, func(time.Time) tea.Msg { return clearBannerMsg{epoch: epoch} })
+}
+
+// noticeTTL is how long a notice stays without another key.
+const noticeTTL = 3 * time.Second
+
+// raiseNotice says on the location row why a key did nothing. It is not a
+// notification: it is gone with the next key.
+func (m *Model) raiseNotice(text string) tea.Cmd {
+	m.noticeEpoch++
+	m.notice = text
+	epoch := m.noticeEpoch
+	return tea.Tick(noticeTTL, func(time.Time) tea.Msg { return clearNoticeMsg{epoch: epoch} })
 }
 
 // raiseError is the error-flavoured raiseBanner — same semantics, red render.

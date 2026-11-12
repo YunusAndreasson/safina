@@ -22,7 +22,6 @@ func TestPaletteSearchRequiresExplicitActionMode(t *testing.T) {
 	require.Equal(t, "qa-web-jk", m.palette.Query())
 	m.Update(keyMsg("tab"))
 	require.True(t, m.palette.ActionsActive())
-	require.False(t, m.peekWorkspace)
 	m.Update(keyMsg("tab"))
 	require.False(t, m.palette.ActionsActive())
 }

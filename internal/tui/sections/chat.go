@@ -678,8 +678,8 @@ func (c *Chat) View(ctx *tuictx.Ctx, w, h int) string {
 }
 
 // Body returns the unframed chat content (viewport + chips + input) sized
-// for embedding as a workspace tab. The workspace pane owns the outer
-// border, so we hand back just the inner stack.
+// for the chat page. The page frame owns the title rule, so we hand back
+// just the inner stack.
 func (c *Chat) Body(ctx *tuictx.Ctx, w, h int) string {
 	// SetSize subtracts the panel chrome internally; we lie about size by
 	// padding the requested area so the inner widgets size to (w, h).

@@ -265,30 +265,12 @@ func (m *Metrics) Body(t *theme.Theme, w, h int, now time.Time) string {
 		return m.cache
 	}
 	start, end := m.Range(now)
-	frozen := "live"
-	if !m.Frozen.IsZero() {
-		frozen = "frozen"
-	}
-	header := fmt.Sprintf("%s · %s · %s UTC · %s", m.Context, m.Ref.Namespace, end.UTC().Format("02 Jan 15:04:05"), frozen)
-	lines := []string{t.DimTxt.Render(components.TruncPad(header, w))}
-	window := fmt.Sprintf("%s locally observed · ", MetricWindows[m.Preset]) + components.RenderModalKeysRow(t, []components.KeyDesc{{Key: "[ ]", Desc: "range"}})
-	lines = append(lines, t.Hint.Render(components.TruncPad(window, w)))
-	activityLabel := "show changes"
-	if m.ShowActivity {
-		activityLabel = "hide changes"
-	}
-	shortcuts := []components.KeyDesc{{Key: "a", Desc: activityLabel}, {Key: "space", Desc: "freeze/live"}}
-	if w >= 40 && h >= 12 && h < 24 {
-		shortcuts = append(shortcuts, components.KeyDesc{Key: "t", Desc: "CPU/mem"})
-	}
-	shortcuts = append(shortcuts, components.KeyDesc{Key: "y", Desc: "copy"}, components.KeyDesc{Key: "z", Desc: "expand"}, components.KeyDesc{Key: "esc", Desc: "back"})
-	footer := components.RenderBoundedHints(t, shortcuts, w, components.KeyDesc{Key: "esc", Desc: "back"})
-	if w < 40 || h < 12 || (m.ShowActivity && h < 16) {
+	// The window, clock and live/frozen state sit on the tab rule
+	// (Indicators) and the keys in the footer (Hints): every row here is
+	// the reading itself.
+	lines := []string{}
+	if w < 40 || h < 9 || (m.ShowActivity && h < 13) {
 		lines = append(lines, strings.Split(m.Summary(now), "\n")...)
-		if len(lines) >= h {
-			lines = lines[:max(0, h-1)]
-		}
-		lines = append(lines, footer)
 		return fitMetricBody(lines, w, h)
 	}
 	points := []metrics.Point(nil)
@@ -319,9 +301,9 @@ func (m *Metrics) Body(t *theme.Theme, w, h int, now time.Time) string {
 			activityRows++
 		}
 	}
-	chartH := max(4, h-6-activityRows)
+	chartH := max(4, h-3-activityRows)
 	if both {
-		chartH = max(4, (h-7-activityRows)/2)
+		chartH = max(4, (h-4-activityRows)/2)
 	}
 	for _, mem := range []bool{false, true} {
 		if !both && mem != m.Memory {
@@ -392,11 +374,40 @@ func (m *Metrics) Body(t *theme.Theme, w, h int, now time.Time) string {
 			lines = append(lines, components.RenderBoundedHints(t, []components.KeyDesc{{Key: "↑↓", Desc: "select change"}, {Key: "↵", Desc: "Logbook entry"}}, w, components.KeyDesc{}))
 		}
 	}
-	lines = append(lines, footer)
 	m.cache = fitMetricBody(lines, w, h)
 	m.cacheKey = key
 	m.cacheTheme = t
 	return m.cache
+}
+
+// Indicators is the chart's window and clock for the right end of the tab
+// rule: how far back it reaches, when it ends, and whether it is live.
+func (m *Metrics) Indicators(now time.Time) []components.Indicator {
+	_, end := m.Range(now.Truncate(time.Second))
+	state := "live"
+	if !m.Frozen.IsZero() {
+		state = "frozen"
+	}
+	return []components.Indicator{
+		{Text: fmt.Sprintf("%s locally observed", MetricWindows[m.Preset])},
+		{Text: end.UTC().Format("15:04:05") + " UTC"},
+		{Text: state},
+	}
+}
+
+// Hints lists the chart's keys for the footer.
+func (m *Metrics) Hints() []components.KeyDesc {
+	activity := "show changes"
+	if m.ShowActivity {
+		activity = "hide changes"
+	}
+	return []components.KeyDesc{
+		{Key: "[ ]", Desc: "range"},
+		{Key: "space", Desc: "freeze/live"},
+		{Key: "a", Desc: activity},
+		{Key: "t", Desc: "CPU/mem"},
+		{Key: "c", Desc: "copy"},
+	}
 }
 
 func fitMetricBody(parts []string, w, h int) string {

@@ -24,8 +24,11 @@ func (m *Model) openResourceSearch() (tea.Model, tea.Cmd) {
 	m.navigationReturnState = m.state
 	m.searchRequest++
 	m.searchLoading = false
-	entries := sections.BuildPaletteIndex(m.tree.Cache())
-	entries = append([]sections.PaletteEntry{{Kind: "Incoming", Name: "Incoming proposals", Hint: "Review agent proposals and broker outcomes"}, {Kind: "History", Name: "Logbook", Hint: "What you did and saw, saved across sessions"}}, entries...)
+	// Resource types first, so `:node` lands on Nodes; then the tools; then
+	// every resource loaded so far.
+	entries := m.tree.TypeEntries()
+	entries = append(entries, sections.PaletteEntry{Kind: "Incoming", Name: "Incoming proposals", Hint: "Review agent proposals and broker outcomes"}, sections.PaletteEntry{Kind: "History", Name: "Logbook", Hint: "What you did and saw, saved across sessions"})
+	entries = append(entries, sections.BuildPaletteIndex(m.tree.Cache())...)
 	m.palette.Open(entries)
 	m.recordSelection("search")
 	m.state = statePalette
@@ -34,6 +37,6 @@ func (m *Model) openResourceSearch() (tea.Model, tea.Cmd) {
 
 func (m *Model) leaveNavigationForDestination() {
 	m.state = m.navigationReturnState
-	m.returnToMain()
-	m.connectedBack = nil
+	m.cleanupImmersiveState()
+	m.state = stateMain
 }

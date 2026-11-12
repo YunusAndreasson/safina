@@ -40,7 +40,6 @@ func (m *Model) openCurrentLogs(ref sections.NodeRef) tea.Cmd {
 	m.stopLogStream()
 	m.logTarget = logTarget{}
 	m.state = stateLogView
-	m.treeFocusInImmersive = false
 	m.logs.Reset(ref.Name, ref.Namespace)
 	m.logs.SetSize(m.ctx.Width, m.ctx.Height)
 	return m.loadLogTargets(ref, true)
@@ -113,9 +112,9 @@ func (m *Model) setLogTargets(msg logTargetsMsg) tea.Cmd {
 			m.logs.EndStream(errors.New("no pods to read logs from"))
 			return nil
 		}
-		original, treeFocus := m.state, m.treeFocusInImmersive
+		original := m.state
 		cmd := m.startTargetLogs(msg.targets[0], false)
-		m.state, m.treeFocusInImmersive = original, treeFocus
+		m.state = original
 		return cmd
 	}
 	if m.choices == nil || m.choices.kind != "logs" {
@@ -142,7 +141,6 @@ func (m *Model) startTargetLogs(target logTarget, previous bool) tea.Cmd {
 	request := m.logRequest
 	m.logTarget = target
 	m.state = stateLogView
-	m.treeFocusInImmersive = false
 	m.logs.Reset(target.pod, target.namespace)
 	m.logs.SetTarget(target.container, previous)
 	m.logs.SetSize(m.ctx.Width, m.ctx.Height)

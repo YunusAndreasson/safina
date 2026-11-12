@@ -37,12 +37,13 @@ func TestDroppingLogChannelsDoesNotStartUnboundedDrainers(t *testing.T) {
 	}
 }
 
-func TestRelationshipBackHistoryIsBounded(t *testing.T) {
+func TestJumpHistoryIsBounded(t *testing.T) {
 	m := shiftFooterModel(t)
-	for range maxConnectedHistory * 4 {
-		m.rememberConnected(sections.PaletteEntry{Name: "source", Path: m.tree.Path()})
+	for range maxJumps * 4 {
+		m.beginJump()
+		m.landJump()
 	}
-	require.Len(t, m.connectedBack, maxConnectedHistory)
+	require.Len(t, m.jumps, maxJumps)
 }
 
 func TestCanceledLogStreamClosesAndRecordsOneTerminalOutcome(t *testing.T) {

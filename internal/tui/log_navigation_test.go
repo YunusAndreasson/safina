@@ -5,12 +5,15 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/YunusAndreasson/safina/internal/tui/sections"
 )
 
 func TestLogsTabOpensCurrentLogsWithoutPicker(t *testing.T) {
 	m := shiftFooterModel(t)
-	m.state = stateMetricsView
-	_, cmd := m.cycleWorkspaceTab(true)
+	m.handleKey(keyMsg("m"))
+	require.Equal(t, stateMetricsView, m.state)
+	cmd := m.showTab(sections.WSTabLogs)
 	require.NotNil(t, cmd)
 	require.Equal(t, stateLogView, m.state)
 	require.Nil(t, m.choices)
@@ -21,7 +24,7 @@ func TestLogsTabOpensCurrentLogsWithoutPicker(t *testing.T) {
 	require.Equal(t, "api-1", m.logTarget.pod)
 	require.True(t, m.logTarget.previous)
 	// Target selection remains an explicit action.
-	m.handleKey(keyMsg("c"))
+	m.handleKey(keyMsg("o"))
 	require.NotNil(t, m.choices)
 	require.Equal(t, "logs", m.choices.kind)
 	m.stopLogStream()
@@ -29,9 +32,9 @@ func TestLogsTabOpensCurrentLogsWithoutPicker(t *testing.T) {
 
 func TestAutomaticLogTargetCannotReopenPaneAfterNavigation(t *testing.T) {
 	m := shiftFooterModel(t)
-	m.openCurrentLogs(m.tree.SelectedRef())
+	m.handleKey(keyMsg("l"))
 	msg := logTargetsMsg{request: m.logPickerRequest, automatic: true, streamRequest: m.logRequest, targets: []logTarget{{pod: "old"}}}
-	m.cycleWorkspaceTab(true)
+	m.handleKey(keyMsg("esc"))
 	require.Nil(t, m.setLogTargets(msg))
 	require.NotEqual(t, stateLogView, m.state)
 	require.Nil(t, m.choices)

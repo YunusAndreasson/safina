@@ -45,6 +45,9 @@ type Client struct {
 	// screen. Atomic because tea.Cmd goroutines read it while the lifecycle
 	// swaps it. nil (or per-kind unsynced) means "fall back to direct reads".
 	informers atomic.Pointer[informerSet]
+	// serverVersion is the API server's GitVersion, asked once it is first
+	// needed and again only while asking keeps failing.
+	serverVersion atomic.Pointer[string]
 	// informerCS is the clientset the informer factory consumes: same
 	// transport chain as Clientset but negotiating protobuf (bench-validated
 	// as the biggest List/Watch bytes-on-wire win — see bench/variants.go).
@@ -423,4 +426,22 @@ func newStreamingClient(cfg *rest.Config, hc *http.Client) (kubernetes.Interface
 		return kubernetes.NewForConfigAndClient(streamCfg, hc)
 	}
 	return kubernetes.NewForConfig(streamCfg)
+}
+
+// ServerVersion is the API server's version ("v1.31.0"), asked once and
+// remembered. Empty while the server cannot be asked; the next call tries
+// again.
+func (c *Client) ServerVersion() string {
+	if v := c.serverVersion.Load(); v != nil {
+		return *v
+	}
+	if c.Discovery == nil {
+		return ""
+	}
+	info, err := c.Discovery.ServerVersion()
+	if err != nil || info == nil {
+		return ""
+	}
+	c.serverVersion.Store(&info.GitVersion)
+	return info.GitVersion
 }

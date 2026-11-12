@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"slices"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -26,11 +25,9 @@ func (m *Model) openConnected(ref k8s.ConnectedRef) (tea.Model, tea.Cmd) {
 	if source.Kind == entry.Kind && source.SubKind == entry.SubKind && source.Name == entry.Name && source.Namespace == entry.Namespace {
 		return m, nil
 	}
-	if source.Name != "" {
-		sourcePath := append(append([]sections.NodeRef(nil), m.tree.Path()...), source)
-		m.rememberConnected(sections.PaletteEntry{Kind: source.Kind, SubKind: source.SubKind, Namespace: source.Namespace, Name: source.Name, Path: sourcePath})
-	}
-	m.returnToMain()
+	m.beginJump()
+	m.cleanupImmersiveState()
+	m.state = stateMain
 	return m.drillToPaletteEntry(entry)
 }
 
@@ -115,13 +112,4 @@ func connectedEntry(ref k8s.ConnectedRef, current []sections.NodeRef, cluster st
 	}
 	path = append(path, target)
 	return sections.PaletteEntry{Kind: target.Kind, SubKind: target.SubKind, Namespace: target.Namespace, Name: target.Name, Path: path}, nil
-}
-
-const maxConnectedHistory = 128
-
-func (m *Model) rememberConnected(entry sections.PaletteEntry) {
-	m.connectedBack = append(m.connectedBack, entry)
-	if len(m.connectedBack) > maxConnectedHistory {
-		m.connectedBack = slices.Delete(m.connectedBack, 0, len(m.connectedBack)-maxConnectedHistory)
-	}
 }

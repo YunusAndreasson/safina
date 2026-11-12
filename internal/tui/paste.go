@@ -11,7 +11,7 @@ func (m *Model) handlePaste(msg tea.PasteMsg) tea.Cmd {
 	if m.choices != nil {
 		return nil
 	}
-	if (m.state == stateMain || m.treeFocusInImmersive) && m.tree.FilterActive() {
+	if m.state == stateMain && m.tree.FilterActive() {
 		cmd := m.tree.Update(msg, m.ctx)
 		return tea.Batch(cmd, m.syncSelection())
 	}
@@ -20,9 +20,7 @@ func (m *Model) handlePaste(msg tea.PasteMsg) tea.Cmd {
 	//exhaustive:ignore
 	switch m.state {
 	case stateChatView:
-		if !m.treeFocusInImmersive {
-			cmd, _, _ = m.chat.Update(msg, m.ctx)
-		}
+		cmd, _, _ = m.chat.Update(msg, m.ctx)
 	case stateScaleInput:
 		m.scaleError = ""
 		m.scaleInput, cmd = m.scaleInput.Update(msg)
@@ -38,17 +36,11 @@ func (m *Model) handlePaste(msg tea.PasteMsg) tea.Cmd {
 	case stateClusters:
 		cmd = m.clusters.UpdateQuery(tea.PasteMsg{Content: singleLinePaste(msg.Content)})
 	case stateLogView:
-		if !m.treeFocusInImmersive {
-			cmd, _ = m.logs.Update(msg, m.ctx)
-		}
+		cmd, _ = m.logs.Update(msg, m.ctx)
 	case stateEventsView:
-		if !m.treeFocusInImmersive {
-			cmd, _ = m.events.Update(msg, m.ctx)
-		}
+		cmd, _ = m.events.Update(msg, m.ctx)
 	case stateDescribeView:
-		if !m.treeFocusInImmersive {
-			cmd, _ = m.describe.Update(msg, m.ctx)
-		}
+		cmd, _ = m.describe.Update(msg, m.ctx)
 	case stateShellView:
 		m.shell.Paste(msg.Content)
 	default:

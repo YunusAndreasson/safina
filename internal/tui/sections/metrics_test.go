@@ -9,6 +9,7 @@ import (
 	"github.com/YunusAndreasson/safina/internal/history"
 	"github.com/YunusAndreasson/safina/internal/k8s"
 	"github.com/YunusAndreasson/safina/internal/metrics"
+	"github.com/YunusAndreasson/safina/internal/tui/components"
 	"github.com/YunusAndreasson/safina/internal/tui/theme"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/assert"
@@ -58,7 +59,7 @@ func TestMetricsLayoutsAndFreeze(t *testing.T) {
 			}
 			assert.LessOrEqual(t, lipgloss.Height(frame), size[1])
 			assert.Equal(t, size[0], lipgloss.Width(frame))
-			assert.Contains(t, ansi.Strip(frame), "locally observed")
+			assert.Contains(t, ansi.Strip(components.RenderIndicators(th, m.Indicators(now))), "locally observed")
 			assert.NotContains(t, frame, "NaN")
 			if size[1] >= 24 {
 				assert.Contains(t, frame, "Memory")

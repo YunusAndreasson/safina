@@ -236,9 +236,27 @@ func RenderHintRow(t *theme.Theme, pairs []KeyDesc) string {
 // a safe green go-ahead. The rest stays dim, a quiet affordance under the
 // red verb above it.
 func RenderConfirmHint(t *theme.Theme, verb string) string {
-	yes := t.Danger.Render("y") + t.HelpDesc.Render(" "+verb)
-	no := t.HelpKey.Render("n/esc") + t.HelpDesc.Render(" cancel")
-	return yes + t.HelpDesc.Render("  ·  ") + no
+	return RenderConfirmButtons(t, verb, false)
+}
+
+// RenderConfirmButtons draws a write's two buttons, Cancel and the action,
+// with the focused one filled, and the keys that drive them beneath:
+//
+//	 Cancel    Restart api-2
+//	tab switch · ↵ choose · esc cancel
+//
+// Cancel takes the focus first, so Enter alone never writes.
+func RenderConfirmButtons(t *theme.Theme, action string, onAction bool) string {
+	cancel := lipgloss.NewStyle().Foreground(t.P.FGFade).Padding(0, 1)
+	act := lipgloss.NewStyle().Foreground(t.P.Red).Padding(0, 1)
+	if onAction {
+		act = act.Background(t.P.Red).Foreground(t.P.BG).Bold(true)
+	} else {
+		cancel = cancel.Background(t.P.BG3).Foreground(t.P.FG).Bold(true)
+	}
+	buttons := cancel.Render("Cancel") + "  " + act.Render(action)
+	keys := RenderModalKeysRow(t, []KeyDesc{{Key: "tab", Desc: "switch"}, {Key: "↵", Desc: "choose"}, {Key: "esc", Desc: "cancel"}})
+	return buttons + "\n\n" + keys
 }
 
 // Indicator is a single right-aligned status indicator (match counts, scroll
@@ -287,4 +305,31 @@ func RenderModalStatusBar(t *theme.Theme, modalW int, filter Filter, indicators 
 	// an empty style produces exactly the same characters as the literal
 	// space repeat, but reads as "padding cell" instead of "manual chars."
 	return left + lipgloss.NewStyle().Width(pad).Render("") + right
+}
+
+// RenderIndicators joins a tab's state indicators for the right end of the
+// page's tab rule, each in its own style (dim by default).
+func RenderIndicators(t *theme.Theme, indicators []Indicator) string {
+	parts := make([]string, 0, len(indicators))
+	for _, ind := range indicators {
+		st := t.DimTxt
+		if ind.Style != nil {
+			st = *ind.Style
+		}
+		parts = append(parts, st.Render(ind.Text))
+	}
+	return strings.Join(parts, t.DimTxt.Render(" · "))
+}
+
+// FilterRow is the filter line a reading tab shows above its content, only
+// while the filter is being typed or holds a query: an unused filter costs
+// no row (its key is in the footer).
+func FilterRow(t *theme.Theme, filter Filter) (string, bool) {
+	switch {
+	case filter.Active():
+		return filter.View(), true
+	case filter.Value() != "":
+		return t.FilterPrompt.Render("/") + t.FilterText.Render(filter.Value()), true
+	}
+	return "", false
 }

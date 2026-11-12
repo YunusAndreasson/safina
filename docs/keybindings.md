@@ -12,42 +12,62 @@ resource; release it to restore the normal hints. This only reveals shortcuts:
 it does not arm an action or bypass confirmation. The right-hand footer shows
 whether the hold gesture is available. Press `?` for the complete **Inspect**
 and **Change** groups on every terminal. Shortcut keys use the same hotkey color
-in tabs, help, pickers, and empty states; keys that confirm changes use danger red. Filters, chat, and dialogs keep their
+in help, pickers, and empty states; keys that confirm changes use danger red. Filters, chat, and dialogs keep their
 normal typing behaviour.
 
 ## Navigation
 
+Safina shows one list at a time, as k9s does: the cluster picker, a
+cluster, a namespace, a resource type, or what a resource holds (an app's
+pods, a pod's containers). Opening a row that holds something shows its
+list; opening one that holds nothing (a ConfigMap, a Service) describes it.
+The highlighted row's views open as a modal over the list: `d` describe,
+`y` YAML, `l` logs, `m` metrics. The arrows mean the same thing
+everywhere: ↑↓ move within a list, → opens the highlighted row and ← goes
+back. The footer's first hint, `esc ‹ X`, names the page Esc returns to.
+
 | Key | Action |
 |-----|--------|
 | ↑/k, ↓/j | Move cursor |
-| ↵ | Drill in / confirm |
-| Esc | Back / cancel |
+| ↵ | Open the highlighted row / confirm |
+| Esc | Back to the previous page |
+| ← | Back, as Esc |
+| → | Open the highlighted row, as ↵ |
 | / | Filter rows |
 | g, G | Jump to top / bottom |
 | n | Next failing row |
-| Ctrl+P / : | Search resources and app tools, including Logbook and Incoming proposals; Tab enables resource actions |
+| Ctrl+P / : | Search resource types (`:node`, `:pods`), resources and app tools, including Logbook and Incoming proposals; Tab enables resource actions |
 
 ## Inspect and connect
 
+The reading keys follow k9s. They open a modal over the list for the
+highlighted row; Esc, q or ← close it and the cursor is where it was.
+
 | Key | Action |
 |-----|--------|
-| d | Resource YAML |
-| m | CPU / memory metrics for the selected workload, pod, or node |
+| d | Describe: state, facts, recent events and connections |
+| y | YAML |
 | l | Logs |
-| e | Events |
+| m | CPU / memory metrics for the selected workload, pod, or node |
 | s | Shell into pod (falls back to a netshoot debug container) |
 | v | Reveal Secret (decoded) |
 | f | Port-forward a Pod or Service |
-| y | Yank selection / payload to clipboard (OSC52) |
+| c | Copy selection / payload to clipboard (OSC52) |
+
+Events have no key of their own: they show in describe.
 
 ## Change (mutates cluster state)
+
+Every change asks first. The dialog has two buttons with Cancel focused:
+Tab (or ←/→) moves to the action, Enter chooses, Esc cancels. `y` does not
+confirm, because everywhere else it shows YAML.
 
 | Key | Action |
 |-----|--------|
 | S | Scale deployment / statefulset |
 | U | Roll back deployment |
 | R | Restart app / pod |
-| E | Edit YAML in `$EDITOR` (diff is shown and y/n-gated) |
+| e | Edit YAML in `$EDITOR` (diff is shown and y/n-gated) |
 | C | Cordon / uncordon node |
 | D | Drain node |
 | K | Delete selected resource |
@@ -63,10 +83,7 @@ inspect the remaining pods, then explicitly uncordon when appropriate.
 | Key | Action |
 |-----|--------|
 | r | Refresh |
-| → / ← | In the tree: ← goes up a level, → opens Inspector. In the workspace: arrows switch tabs; ← from Inspector returns to the tree |
-| Tab | Toggle focus between tree and workspace |
-| z | Expand / split the reading pane (logs, events, YAML, hot pods, forwards) |
-| i | Open chat tab |
+| i | Chat about the page (or the highlighted row) |
 | Ctrl+B | All resource types (Enter opens; Space pins/unpins) |
 | Ctrl+K | Switch cluster |
 | Ctrl+F | Active port-forwards list |
@@ -98,14 +115,17 @@ no separate jq executable, environment access, or module loader is needed.
 | Key | Action |
 |-----|--------|
 | ↑/↓ | Scroll |
+| PgUp/PgDn, Ctrl+B/Ctrl+F | Page up / down (as in less; in logs, events and YAML only) |
 | Space | Toggle follow mode |
 | g | Jump to top |
 | G | Jump to bottom |
 | / | Filter |
 | t | Toggle compact UTC times / original full timestamps |
 | w | Toggle line wrapping |
-| y | Copy the filtered logs with original timestamps |
-| Esc | Close logs |
+| c | Copy the filtered logs with original timestamps |
+| o | Choose another pod or container |
+| p | Previous container's logs |
+| Esc, q | Close logs |
 
 ## Chat View
 
@@ -113,7 +133,7 @@ no separate jq executable, environment access, or module loader is needed.
 |-----|--------|
 | ↵ | Send |
 | Shift+↵ | Newline |
-| Tab | Back to tree |
+| Esc, Tab | Close chat (the draft is kept) |
 | Ctrl+L | Clear |
 | Ctrl+N | New conversation |
 | Shift+←/→ | Select text |

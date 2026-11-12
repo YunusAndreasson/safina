@@ -20,9 +20,13 @@ func TestInspectorLayoutUsesSpareRowsForEventMessages(t *testing.T) {
 		activity.items = append(activity.items, k8s.EventInfo{Age: "1m", Type: "Normal", Reason: "Started", Message: "Container started successfully and is now accepting requests: " + tail})
 	}
 	connected := NewConnected()
-	frame := RenderInspectorTab(c, 50, 18, &inspector, &activity, &connected)
+	frame := RenderDetails(c, 50, 18, &inspector, &activity, &connected)
 	plain := ansi.Strip(frame)
-	require.Contains(t, plain, "Deployment · Healthy")
+	// The identity line moves to the topbar; Details keeps the facts.
+	require.NotContains(t, plain, "Deployment · Healthy")
+	full, short := inspector.Status(c)
+	require.Contains(t, ansi.Strip(full), "Deployment · Healthy")
+	require.Equal(t, "Deployment · Healthy", ansi.Strip(short))
 	for _, tail := range []string{"first ending", "second ending", "third ending"} {
 		require.Contains(t, strings.Join(strings.Fields(strings.ReplaceAll(plain, "│", " ")), " "), tail)
 	}
@@ -44,9 +48,9 @@ func TestConnectedShowsBothDirectionsWithoutOrphanHeadings(t *testing.T) {
 	inspector := NewInspector()
 	inspector.snap = &inspectorSnapshot{title: "Pod · api", statusText: "Ready", statusKind: "good"}
 	activity := NewActivity()
-	for _, w := range []int{28, 48, 90} {
+	for _, w := range []int{28, 48, 90, 120, 160} {
 		for h := 6; h <= 40; h++ {
-			frame := RenderInspectorTab(c, w, h, &inspector, &activity, &connected)
+			frame := RenderDetails(c, w, h, &inspector, &activity, &connected)
 			require.Equal(t, h, lipgloss.Height(frame), "height %d width %d", h, w)
 			for _, row := range strings.Split(frame, "\n") {
 				require.LessOrEqual(t, ansi.StringWidth(row), w)

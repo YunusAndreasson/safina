@@ -143,9 +143,9 @@ func (l *Logs) SetSize(termW, termH int) {
 	l.recomputeViewportSize()
 }
 
-// SetPaneSize sizes the section for inline rendering inside the workspace
-// body area of inner dimensions (innerW, innerH). The workspace pane owns
-// the outer border; inside the body the section reserves 2 rows for status
+// SetPaneSize sizes the section for inline rendering inside a resource
+// page's tab body of inner dimensions (innerW, innerH). The page owns the
+// header and tabs; inside the body the section reserves 2 rows for status
 // + keys. modalW/modalH are back-computed so the existing PanelContentWidth
 // and ModalChrome math still resolves to (innerW, innerH-2) for the viewport.
 func (l *Logs) SetPaneSize(innerW, innerH int) {
@@ -160,15 +160,22 @@ func (l *Logs) SetPaneSize(innerW, innerH int) {
 	l.recomputeViewportSize()
 }
 
-// Body returns the section's content (status row + viewport + keys row) as
-// an unframed stack — for embedding inside the workspace pane, which owns
-// the panel border / focus ring.
+// Body returns the section's content for a resource page's tab: the
+// viewport, under the filter row while a filter is in use. Its state goes
+// on the tab rule (Indicators) and its keys in the footer (Hints).
 func (l *Logs) Body(c *tuictx.Ctx) string {
-	return textw.JoinVertical(lipgloss.Left,
-		l.renderStatusRow(c),
-		l.viewportBlock(c),
-		l.renderKeysRow(),
-	)
+	if row, ok := components.FilterRow(c.Theme, l.filter); ok {
+		return textw.JoinVertical(lipgloss.Left, row, l.viewportBlock(c))
+	}
+	return l.viewportBlock(c)
+}
+
+// filterRows is the height of the filter row: one while it is in use.
+func (l *Logs) filterRows() int {
+	if l.filter.Active() || l.filter.Value() != "" {
+		return 1
+	}
+	return 0
 }
 
 // SetTarget records the container and stream generation.
@@ -182,11 +189,17 @@ func (l *Logs) PaneTitle() string { return l.pod }
 func (l *Logs) recomputeViewportSize() {
 	inner := components.PanelContentWidth(l.modalW)
 	l.vp.SetWidth(inner)
-	h := l.modalH - components.ModalChrome
+	h := l.modalH - 2 - l.filterRows()
 	if h < 3 {
 		h = 3
 	}
+	// A following stream stays pinned to its newest line when the view
+	// grows or shrinks (a filter row coming and going, a resize).
+	pinned := l.follow && l.vp.AtBottom()
 	l.vp.SetHeight(h)
+	if pinned {
+		l.vp.GotoBottom()
+	}
 	l.filter.SetWidth(components.ModalFilterWidth(l.modalW))
 }
 
@@ -536,7 +549,8 @@ func (l *Logs) viewportBlock(c *tuictx.Ctx) string {
 // renderStatusRow shows query (or hint), match count, follow state, and
 // scroll percentage on a single line. Width-aware: left chunk and right
 // chunk justify to the panel inner width.
-func (l *Logs) renderStatusRow(c *tuictx.Ctx) string {
+// Indicators is the stream's state for the right end of the tab rule.
+func (l *Logs) Indicators(c *tuictx.Ctx) []components.Indicator {
 	t := c.Theme
 	indicators := make([]components.Indicator, 0, 7)
 	if l.discardedLogBytes > 0 {
@@ -549,7 +563,6 @@ func (l *Logs) renderStatusRow(c *tuictx.Ctx) string {
 	if l.previous {
 		indicators = append(indicators, components.Indicator{Text: "previous"})
 	}
-	indicators = append(indicators, components.Indicator{Text: "c targets · p previous"})
 	if l.filter.Value() != "" {
 		indicators = append(indicators, components.Indicator{
 			Text: fmt.Sprintf("%d/%d matches", len(l.filtered), len(l.lines)),
@@ -571,15 +584,15 @@ func (l *Logs) renderStatusRow(c *tuictx.Ctx) string {
 	if l.compactTimeShown {
 		indicators = append(indicators, components.Indicator{Text: "UTC"})
 	}
-	return components.RenderModalStatusBar(t, l.modalW, l.filter, indicators)
+	return indicators
 }
 
-// renderKeysRow lists the modal's key bindings in the same style/separator
+// Hints lists the stream's keys for the footer, in the same style/separator
 // convention as the global help bar (interpunct-separated, dim). The
 // wrap key carries its current state in the description ("wrap on" /
 // "wrap") so the operator sees the toggle's effect without a separate
 // indicator.
-func (l *Logs) renderKeysRow() string {
+func (l *Logs) Hints() []components.KeyDesc {
 	wrapDesc := "wrap"
 	if l.wrap {
 		wrapDesc = "wrap on"
@@ -592,13 +605,14 @@ func (l *Logs) renderKeysRow() string {
 	if l.fullTimestamps {
 		timeDesc = "short time"
 	}
-	return components.RenderModalKeysRow(l.theme, []components.KeyDesc{
-		{Key: "/", Desc: "text / jq: filter"},
+	return []components.KeyDesc{
+		{Key: "/", Desc: "filter"},
 		{Key: "space", Desc: followDesc},
-		{Key: "t", Desc: timeDesc},
+		{Key: "o", Desc: "targets"},
+		{Key: "p", Desc: "previous"},
 		{Key: "w", Desc: wrapDesc},
-		{Key: "j/k", Desc: "scroll"},
+		{Key: "t", Desc: timeDesc},
 		{Key: "g/G", Desc: "top/bot"},
 		{Key: "ctrl+l", Desc: "clear"},
-	})
+	}
 }

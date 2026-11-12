@@ -10,16 +10,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestNavigationOverlaysEscapeRestoresExactViewAndFocus(t *testing.T) {
+func TestNavigationOverlaysEscapeRestoresExactView(t *testing.T) {
 	for _, st := range []state{stateMain, stateLogView, stateMetricsView, stateEventsView, stateDescribeView, stateHotView, stateForwardsList, stateDrainProgress} {
-		for _, treeFocus := range []bool{false, true} {
+		for _, tab := range []sections.WorkspaceTab{sections.WSTabChildren, sections.WSTabDetails} {
 			for _, opener := range []tea.KeyPressMsg{keyMsg(":"), {Code: 'p', Mod: tea.ModCtrl}, {Code: 'k', Mod: tea.ModCtrl}, {Code: 'b', Mod: tea.ModCtrl}} {
-				m := shiftFooterModel(t)
+				viewer := st == stateLogView || st == stateEventsView || st == stateDescribeView
+				if viewer && opener.Mod == tea.ModCtrl && opener.Code == 'b' {
+					continue // in a viewer ctrl+b pages up, as in less
+				}
+				m := pageModel(t)
+				m.handleKey(keyMsg("enter"))
+				m.showTab(tab)
 				m.state = st
-				m.peekWorkspace = st == stateMain && !treeFocus
-				m.treeFocusInImmersive = st != stateMain && treeFocus
-				m.workspaceExpanded = !treeFocus
-				m.tree.Focused = treeFocus
+				m.settlePage()
+				wantTab := m.pageTab
 				cancelled := false
 				if st == stateLogView {
 					m.logCancel = func() { cancelled = true }
@@ -28,13 +32,11 @@ func TestNavigationOverlaysEscapeRestoresExactViewAndFocus(t *testing.T) {
 				m.handleKey(opener)
 				require.Contains(t, []state{statePalette, stateClusters, stateBrowser}, m.state)
 				require.Equal(t, st, m.baseState())
-				m.View() // rendering the overlay must not switch the underlying tab/focus
+				m.View() // rendering the overlay must not switch the underlying page or tab
 				m.handleKey(keyMsg("esc"))
 				require.Equal(t, st, m.state)
-				require.Equal(t, st == stateMain && !treeFocus, m.peekWorkspace)
-				require.Equal(t, st != stateMain && treeFocus, m.treeFocusInImmersive)
-				require.Equal(t, !treeFocus, m.workspaceExpanded)
-				require.Equal(t, treeFocus, m.tree.Focused)
+				require.Equal(t, wantTab, m.pageTab)
+				require.Equal(t, "api", m.tree.Focus().Name)
 				require.False(t, cancelled, "opening/cancelling search must keep logs running")
 				m.stopLogStream()
 			}
@@ -104,4 +106,22 @@ func TestBrowserPinUsesConfiguredWriter(t *testing.T) {
 	require.Equal(t, stateBrowser, m.state)
 	m.handleKey(keyMsg("esc"))
 	require.Equal(t, stateMain, m.state)
+}
+
+// `:` finds resource types by fuzzy match too: `:node` + Enter opens the
+// cluster's Nodes list.
+func TestSearchFindsResourceTypes(t *testing.T) {
+	m := pageModel(t)
+	m.handleKey(keyMsg(":"))
+	require.Equal(t, statePalette, m.state)
+	for _, r := range "node" {
+		m.handleKey(keyMsg(string(r)))
+	}
+	entry, ok := m.palette.Selected()
+	require.True(t, ok)
+	require.True(t, entry.Type, "the type ranks first: %+v", entry)
+	require.Equal(t, "Nodes", entry.Name)
+	m.handleKey(keyMsg("enter"))
+	require.Equal(t, k8s.KindClusterFold, m.tree.Focus().Kind)
+	require.Equal(t, "Nodes", m.tree.Focus().Name)
 }

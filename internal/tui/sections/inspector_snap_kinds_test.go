@@ -273,7 +273,7 @@ func TestInspectConfigMapSnap_PreviewsKeys(t *testing.T) {
 	t.Run("no keys keeps subtitle only", func(t *testing.T) {
 		snap := inspectConfigMapSnap(k8s.ConfigMapInfo{Name: "cfg"})
 		require.Len(t, snap.shortcuts, 1)
-		assert.Equal(t, "d", snap.shortcuts[0].Key)
+		assert.Equal(t, "y", snap.shortcuts[0].Key)
 		assert.Empty(t, snap.sections)
 	})
 	t.Run("keys render as a single dim row", func(t *testing.T) {

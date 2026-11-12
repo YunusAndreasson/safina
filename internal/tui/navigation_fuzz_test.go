@@ -80,8 +80,8 @@ func navigationTransitionCase(t *testing.T, data []byte) {
 			k := keys[int(b)%28]
 			// Preferences use the fixture's in-memory writer. Keep chat submissions
 			// local as well; all other returned commands remain held.
-			if m.state == stateChatView && !m.treeFocusInImmersive && k.Code == tea.KeyEnter {
-				k = keyMsg("tab")
+			if m.state == stateChatView && k.Code == tea.KeyEnter {
+				k = keyMsg("esc")
 			}
 			m.Update(k)
 		}
@@ -97,6 +97,14 @@ func navigationTransitionCase(t *testing.T, data []byte) {
 			require.LessOrEqual(t, ansi.StringWidth(row), m.ctx.Width, "step %d state %v input %v", step, m.state, data[:step+1])
 		}
 		require.NotEmpty(t, m.tree.Path())
+		// The page model's invariants: a reading view is always some
+		// resource page's tab, and the children tab is never the subject.
+		if _, reading := stateReadingTab(m.state); reading {
+			require.True(t, m.pageTab.IsReading(), "step %d input %v", step, data[:step+1])
+		}
+		if m.tree.OnResourcePage() && m.state == stateMain {
+			require.Equal(t, m.pageTab != sections.WSTabChildren, m.tree.PageSubject, "step %d input %v", step, data[:step+1])
+		}
 	}
 }
 

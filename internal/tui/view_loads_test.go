@@ -62,20 +62,19 @@ func TestRefreshOnlySupersedesResourceLoadOutsideFilter(t *testing.T) {
 	}
 }
 
-func TestShiftTabTogglesPaneFocusWithoutLosingView(t *testing.T) {
-	for _, st := range []state{stateMain, stateDescribeView, stateLogView, stateEventsView, stateChatView} {
-		m := shiftFooterModel(t)
-		m.state = st
-		if st == stateChatView {
-			m.chat.SetFocus(true)
+func TestTabAndShiftTabCycleThePageAndComeBackAround(t *testing.T) {
+	m := pageModel(t)
+	m.handleKey(keyMsg("enter"))
+	loadPods(m)
+	tabs := m.pageTabs()
+	for range 20 {
+		for range tabs {
+			m.Update(keyMsg("tab"))
 		}
-		before := m.workspaceOwnsFocus()
-		for range 200 {
-			m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
-			require.Equal(t, !before, m.workspaceOwnsFocus())
-			m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
-			require.Equal(t, before, m.workspaceOwnsFocus())
-			require.Equal(t, st, m.state)
-		}
+		require.Equal(t, sections.WSTabChildren, m.pageTab, "a full cycle returns to the first tab")
+		m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+		m.Update(keyMsg("tab"))
+		require.Equal(t, sections.WSTabChildren, m.pageTab)
 	}
+	m.stopLogStream()
 }

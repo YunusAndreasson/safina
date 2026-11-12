@@ -37,8 +37,7 @@ func (h *navigationProtocolHarness) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	h.keys++
 	if h.keys%h.cycleLength == 0 {
 		assert.Equal(h.t, stateMain, h.model.state)
-		assert.False(h.t, h.model.workspaceOwnsFocus())
-		assert.True(h.t, h.model.tree.Focused)
+		assert.False(h.t, h.model.tree.OnResourcePage())
 		assert.Len(h.t, h.model.tree.Path(), 2)
 		h.cycles++
 	}
@@ -50,8 +49,12 @@ func TestNavigationTerminalBurst(t *testing.T) {
 		name, prefix, cycle string
 		length              int
 	}{
-		{"legacy", "", "\x1b[C\x1b[C\x1b[A\x1b[B\x1b[D\x1b[D\x09\x1b[Z\x1b[C\x1b[D", 10},
-		{"kitty", "\x1b[?31u", "\x1b[57351u\x1b[57351u\x1b[112;5u\x1b[27u\x1b[57352u\x1b[57353u\x1b[27u\x1b[9u\x1b[9;2u\x1b[57351u\x1b[57350u", 11},
+		// open, next tab, previous tab, up, down, ← out, open, next tab,
+		// ← out to the list from Details.
+		{"legacy", "", "\x1b[C\x09\x1b[Z\x1b[A\x1b[B\x1b[D\x1b[C\x09\x1b[D", 9},
+		// open, next tab, previous tab, search, close it, up, down, Esc out,
+		// open, next tab, ← out to the list from Details.
+		{"kitty", "\x1b[?31u", "\x1b[57351u\x1b[9u\x1b[9;2u\x1b[112;5u\x1b[27u\x1b[57352u\x1b[57353u\x1b[27u\x1b[57351u\x1b[9u\x1b[57350u", 11},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := &navigationProtocolHarness{model: shiftFooterModel(t), t: t, cycleLength: tc.length}

@@ -196,9 +196,7 @@ func (m *Model) exportHistory() tea.Cmd {
 
 func (m *Model) attachHistoryToChat(text string) tea.Cmd {
 	m.chat.AttachHistory("[Attached Safina evidence]\n" + history.BoundedText(text, (16<<10)-64))
-	m.state = stateChatView
-	m.treeFocusInImmersive = false
-	m.tree.Focused = false
+	m.openTool(stateChatView)
 	m.chat.SetFocus(true)
 	return m.raiseStatus("Logbook attached to chat draft; Enter sends")
 }

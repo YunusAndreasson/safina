@@ -29,12 +29,21 @@ type PodInfo struct {
 	// NodeName is the node the pod is scheduled on; "" if unscheduled. Used
 	// in the breadcrumb summary line for the Pod focus.
 	NodeName string
+	// Ready and Containers count the pod's ready containers out of all of
+	// them, for the READY column on a wide list.
+	Ready, Containers int
+	// IP is the pod's IP; "" until one is assigned.
+	IP string
 }
 
 func podToInfo(p corev1.Pod) PodInfo {
 	restarts := int32(0)
+	ready := 0
 	for _, cs := range p.Status.ContainerStatuses {
 		restarts += cs.RestartCount
+		if cs.Ready {
+			ready++
+		}
 	}
 
 	status := string(p.Status.Phase)
@@ -73,13 +82,16 @@ func podToInfo(p corev1.Pod) PodInfo {
 	age := HumanAge(p.CreationTimestamp.Time)
 
 	return PodInfo{
-		UID:       p.UID,
-		Name:      p.Name,
-		Namespace: p.Namespace,
-		Status:    status,
-		Restarts:  restarts,
-		Age:       age,
-		NodeName:  p.Spec.NodeName,
+		UID:        p.UID,
+		Name:       p.Name,
+		Namespace:  p.Namespace,
+		Status:     status,
+		Restarts:   restarts,
+		Age:        age,
+		NodeName:   p.Spec.NodeName,
+		Ready:      ready,
+		Containers: len(p.Spec.Containers),
+		IP:         p.Status.PodIP,
 	}
 }
 

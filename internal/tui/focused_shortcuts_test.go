@@ -3,23 +3,17 @@ package tui
 import (
 	"testing"
 
-	"github.com/YunusAndreasson/safina/internal/k8s"
 	"github.com/stretchr/testify/require"
 )
 
-func TestTreeFilterGetsLiteralYWhileReadingAnotherView(t *testing.T) {
-	for _, st := range []state{stateLogView, stateEventsView, stateDescribeView, stateMetricsView, stateChatView} {
-		m := shiftFooterModel(t)
-		m.logs.Append("existing log payload")
-		m.describe.SetYAML("kind: Pod\nmetadata:\n  name: existing", nil)
-		m.events.SetItems([]k8s.EventInfo{{Message: "existing event"}}, nil)
-		m.state = st
-		m.treeFocusInImmersive = true
-		m.tree.Focused = true
-		m.handleKey(keyMsg("/"))
-		require.True(t, m.tree.FilterActive())
-		m.handleKey(keyMsg("y"))
-		require.Equal(t, "y", m.tree.FilterValue(), "view %v must not steal a tree-filter character", st)
-		require.NotEqual(t, "copied", m.bannerMsg)
+func TestFiltersGetLiteralShortcutLetters(t *testing.T) {
+	m := shiftFooterModel(t)
+	m.handleKey(keyMsg("/"))
+	require.True(t, m.tree.FilterActive())
+	for _, letter := range []string{"y", "l", "e", "1", "i"} {
+		m.handleKey(keyMsg(letter))
 	}
+	require.Equal(t, "yle1i", m.tree.FilterValue(), "a list filter must not lose letters to shortcuts")
+	require.Equal(t, stateMain, m.state)
+	require.NotEqual(t, "copied", m.bannerMsg)
 }

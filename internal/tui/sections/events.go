@@ -114,8 +114,8 @@ func (s *Events) SetSize(termW, termH int) {
 	s.recomputeViewportSize()
 }
 
-// SetPaneSize sizes the section for inline rendering inside the workspace
-// body area (innerW × innerH). The workspace pane owns the outer border;
+// SetPaneSize sizes the section for inline rendering as a resource page's
+// tab body (innerW × innerH). The page owns the header and tabs;
 // modalW/H are back-computed so existing chrome math (ModalChrome = 4)
 // resolves the viewport to (innerW, innerH-2). See logs.SetPaneSize.
 func (s *Events) SetPaneSize(innerW, innerH int) {
@@ -132,11 +132,10 @@ func (s *Events) SetPaneSize(innerW, innerH int) {
 
 // Body returns unframed content for the workspace tab embedding.
 func (s *Events) Body(c *tuictx.Ctx) string {
-	return textw.JoinVertical(lipgloss.Left,
-		s.renderStatusRow(c),
-		s.viewportBlock(c),
-		s.renderKeysRow(),
-	)
+	if row, ok := components.FilterRow(c.Theme, s.filter); ok {
+		return textw.JoinVertical(lipgloss.Left, row, s.viewportBlock(c))
+	}
+	return s.viewportBlock(c)
 }
 
 // PaneTitle returns the workspace tab title.
@@ -145,7 +144,10 @@ func (s *Events) PaneTitle() string { return s.name }
 func (s *Events) recomputeViewportSize() {
 	inner := components.PanelContentWidth(s.modalW)
 	s.vp.SetWidth(inner)
-	h := s.modalH - components.ModalChrome
+	h := s.modalH - 2
+	if s.filter.Active() || s.filter.Value() != "" {
+		h--
+	}
 	if h < 3 {
 		h = 3
 	}
@@ -319,7 +321,8 @@ func (s *Events) viewportBlock(c *tuictx.Ctx) string {
 	return components.CenteredViewportBlock(c.Theme, c.SpinnerView(), s.vp, st)
 }
 
-func (s *Events) renderStatusRow(c *tuictx.Ctx) string {
+// Indicators is the events' count for the right end of the tab rule.
+func (s *Events) Indicators() []components.Indicator {
 	indicators := make([]components.Indicator, 0, 1)
 	if s.filter.Value() != "" {
 		indicators = append(indicators, components.Indicator{
@@ -330,19 +333,19 @@ func (s *Events) renderStatusRow(c *tuictx.Ctx) string {
 			Text: fmt.Sprintf("%d events", len(s.items)),
 		})
 	}
-	return components.RenderModalStatusBar(c.Theme, s.modalW, s.filter, indicators)
+	return indicators
 }
 
-func (s *Events) renderKeysRow() string {
+// Hints lists the events' keys for the footer.
+func (s *Events) Hints() []components.KeyDesc {
 	wrapDesc := "full messages"
 	if s.wrap {
 		wrapDesc = "compact rows"
 	}
-	return components.RenderModalKeysRow(s.theme, []components.KeyDesc{
+	return []components.KeyDesc{
 		{Key: "/", Desc: "filter"},
 		{Key: "r", Desc: "refresh"},
 		{Key: "w", Desc: wrapDesc},
-		{Key: "j/k", Desc: "scroll"},
 		{Key: "ctrl+l", Desc: "clear"},
-	})
+	}
 }

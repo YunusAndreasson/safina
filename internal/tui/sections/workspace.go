@@ -1,9 +1,11 @@
 package sections
 
 import (
+	"fmt"
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/YunusAndreasson/safina/internal/tui/components"
 	"github.com/YunusAndreasson/safina/internal/tui/textw"
@@ -11,16 +13,16 @@ import (
 	"github.com/YunusAndreasson/safina/internal/tui/tuictx"
 )
 
-// WorkspaceTab enumerates the right-pane tabs. Inspector is the default
-// (the selection summary); the rest are activated by their verb keys and
-// stay open until the operator switches away — the tree pane remains
-// usable the entire time, so a tail-logs-while-scrolling-tree flow just
-// works. Chat is also a tab so closing it is the same as closing any
-// other tab: switch to Inspector (Esc, or 1).
+// WorkspaceTab enumerates the views of a resource page. Children (an app's
+// pods, a pod's containers) and Details are the page's own surfaces; Logs,
+// Events, YAML and Metrics are reading views of the same resource. Chat,
+// Hot pods, Forwards and Drain are tool pages: they keep a WorkspaceTab so
+// the model can name them, but they never appear in a page's tab strip.
 type WorkspaceTab int
 
 const (
-	WSTabInspector WorkspaceTab = iota
+	WSTabDetails WorkspaceTab = iota
+	WSTabChildren
 	WSTabMetrics
 	WSTabLogs
 	WSTabEvents
@@ -31,57 +33,57 @@ const (
 	WSTabDrain
 )
 
-// Label uses a separate key and sentence-case name for every tab.
-func (t WorkspaceTab) Label() string {
+// Title is the tab's sentence-case name. The children tab is named by what
+// the resource holds, so it needs the page's kind.
+func (t WorkspaceTab) Title(focusKind string) string {
 	switch t {
+	case WSTabChildren:
+		return ChildrenLabel(focusKind)
+	case WSTabDetails:
+		return "Details"
 	case WSTabMetrics:
-		return "m Metrics"
-	case WSTabInspector:
-		return "1 Inspector"
+		return "Metrics"
 	case WSTabLogs:
-		return "l Logs"
+		return "Logs"
 	case WSTabEvents:
-		return "e Events"
+		return "Events"
 	case WSTabYaml:
-		return "d YAML"
+		return "YAML"
 	case WSTabChat:
-		return "i Chat"
+		return "Chat"
 	case WSTabHot:
-		return "h Hot pods"
+		return "Hot pods"
 	case WSTabForwards:
-		return "⌃f Forwards"
+		return "Forwards"
 	case WSTabDrain:
 		return "Drain"
 	}
 	return ""
 }
 
-// WSTabAvailability describes which tabs the workspace should expose for
-// the current selection / app state. Standard tabs (Inspector / Logs /
-// Events / Yaml / Chat) are mostly always-on (the LLM is part of the
-// operating surface, not a separate mode); pinned tabs (Hot / Forwards /
-// Drain) appear only while their underlying op is live.
+// IsReading reports whether the tab is one of the reading views a state
+// drives (and that must be reopened rather than merely shown).
+func (t WorkspaceTab) IsReading() bool {
+	return t == WSTabMetrics || t == WSTabLogs || t == WSTabEvents || t == WSTabYaml
+}
+
+// WSTabAvailability describes which tabs a resource page offers.
 type WSTabAvailability struct {
+	Children bool
 	Metrics  bool
 	Logs     bool
 	Events   bool
 	Yaml     bool
-	Chat     bool
-	Hot      bool
-	Forwards bool
-	Drain    bool
 }
 
-// AvailableTabs returns the ordered slice of tabs to render given the
-// availability flags. Inspector is always first; Chat sits to the right
-// of the standard data tabs so it reads as "ask about this thing" after
-// the inspect/logs/events/yaml verbs. Pinned tabs (Hot / Forwards /
-// Drain) come last and only appear while their op is active.
+// AvailableTabs returns the page's tabs in strip order: what the resource
+// holds first, then what it is, then how it behaves.
 func AvailableTabs(a WSTabAvailability) []WorkspaceTab {
-	tabs := []WorkspaceTab{WSTabInspector}
-	if a.Metrics {
-		tabs = append(tabs, WSTabMetrics)
+	var tabs []WorkspaceTab
+	if a.Children {
+		tabs = append(tabs, WSTabChildren)
 	}
+	tabs = append(tabs, WSTabDetails)
 	if a.Logs {
 		tabs = append(tabs, WSTabLogs)
 	}
@@ -91,38 +93,51 @@ func AvailableTabs(a WSTabAvailability) []WorkspaceTab {
 	if a.Yaml {
 		tabs = append(tabs, WSTabYaml)
 	}
-	if a.Chat {
-		tabs = append(tabs, WSTabChat)
-	}
-	if a.Hot {
-		tabs = append(tabs, WSTabHot)
-	}
-	if a.Forwards {
-		tabs = append(tabs, WSTabForwards)
-	}
-	if a.Drain {
-		tabs = append(tabs, WSTabDrain)
+	if a.Metrics {
+		tabs = append(tabs, WSTabMetrics)
 	}
 	return tabs
 }
 
-// TabHitbox describes the on-strip x-range one tab occupies after rendering.
-// Used by the mouse-click router to map a column to a tab so left-clicking a
-// label switches to it (the same affordance the (l)/(e)/(y) hotkeys already
-// expose, surfaced for operators who reach for the mouse).
-//
-// X0 is inclusive, X1 is exclusive — half-open interval matches the way
-// MouseClickMsg.X is reported (zero-based column). Tab is the WorkspaceTab
-// value to activate when X0 ≤ click_x < X1.
+// TabLabels numbers the tabs by position: the number is the key that opens
+// it, so the strip teaches its own shortcuts.
+func TabLabels(tabs []WorkspaceTab, focusKind string) []string {
+	out := make([]string, len(tabs))
+	for i, tab := range tabs {
+		out[i] = fmt.Sprintf("%d %s", i+1, tab.Title(focusKind))
+	}
+	return out
+}
+
+// TabHitbox describes the on-strip x-range one tab occupies after rendering,
+// so a click on a label opens that tab. X0 is inclusive, X1 exclusive,
+// matching the zero-based MouseClickMsg.X.
 type TabHitbox struct {
 	Tab WorkspaceTab
 	X0  int
 	X1  int
 }
 
+// The tab rule is one row: the labels sit on the rule itself, in the same
+// family as a list's title rule, and the open tab's own state closes it on
+// the right:
+//
+//	━ 1 Pods ━── 2 Details ── 3 Logs ── 4 Events ─────────── 1 204 lines ─
+//
+// The active label is bold between two heavy cells in the beacon cyan; the
+// mark reads without colour.
+const (
+	// tabGap is the space, two rule cells and space between two labels.
+	tabGap = 4
+	// tabLead is the rule cell and space before the first label.
+	tabLead = 2
+	// tabTail is the rule kept after the last label or the state text.
+	tabTail = 2
+)
+
 // workspaceTabLayout is shared by rendering and hit testing. When space is
 // limited, keep a contiguous window containing the active tab visible.
-func workspaceTabLayout(tabs []WorkspaceTab, active WorkspaceTab, w int) (hits []TabHitbox, left, right bool) {
+func workspaceTabLayout(tabs []WorkspaceTab, labels []string, active WorkspaceTab, w int) (hits []TabHitbox, left, right bool) {
 	if len(tabs) == 0 || w <= 0 {
 		return nil, false, false
 	}
@@ -143,9 +158,9 @@ func workspaceTabLayout(tabs []WorkspaceTab, active WorkspaceTab, w int) (hits [
 			n += 2
 		}
 		for i := start; i < end; i++ {
-			n += textw.Width(tabs[i].Label())
+			n += textw.Width(labels[i])
 			if i > start {
-				n += 3
+				n += tabGap
 			}
 		}
 		return n
@@ -164,81 +179,131 @@ func workspaceTabLayout(tabs []WorkspaceTab, active WorkspaceTab, w int) (hits [
 	if start > 0 {
 		pos = 2
 	}
-	for _, tab := range tabs[start:end] {
-		next := pos + textw.Width(tab.Label())
-		hits = append(hits, TabHitbox{Tab: tab, X0: pos, X1: next})
-		pos = next + 3
+	for i := start; i < end; i++ {
+		next := pos + textw.Width(labels[i])
+		hits = append(hits, TabHitbox{Tab: tabs[i], X0: pos, X1: next})
+		pos = next + tabGap
 	}
 	return hits, start > 0, end < len(tabs)
 }
 
-// WorkspaceTabHitboxes returns precisely the labels visible in the strip.
-func WorkspaceTabHitboxes(tabs []WorkspaceTab, active WorkspaceTab, w int) []TabHitbox {
-	hits, _, _ := workspaceTabLayout(tabs, active, w)
+// tabRuleLayout places the labels on a w-cell rule, leaving room for the
+// state text when every tab still fits beside it; otherwise the tabs win
+// and the state is dropped. Hitboxes are in rule coordinates.
+func tabRuleLayout(tabs []WorkspaceTab, labels []string, active WorkspaceTab, stateW, w int) (hits []TabHitbox, left, right, showState bool) {
+	avail := func(state bool) int {
+		n := w - tabLead - tabTail
+		if state {
+			n -= stateW + 3
+		}
+		return max(0, n)
+	}
+	if avail(false) < 1 {
+		// No room for the rule itself: the active label takes the row.
+		for _, tab := range tabs {
+			if tab == active {
+				return []TabHitbox{{Tab: tab, X0: 0, X1: w}}, false, false, false
+			}
+		}
+		return nil, false, false, false
+	}
+	showState = stateW > 0
+	hits, left, right = workspaceTabLayout(tabs, labels, active, avail(showState))
+	if showState && (left || right || len(hits) < len(tabs)) {
+		showState = false
+		hits, left, right = workspaceTabLayout(tabs, labels, active, avail(false))
+	}
+	for i := range hits {
+		hits[i].X0 += tabLead
+		hits[i].X1 += tabLead
+	}
+	return hits, left, right, showState
+}
+
+// WorkspaceTabHitboxes returns precisely the labels visible on the rule.
+func WorkspaceTabHitboxes(tabs []WorkspaceTab, focusKind string, active WorkspaceTab, state string, w int) []TabHitbox {
+	hits, _, _, _ := tabRuleLayout(tabs, TabLabels(tabs, focusKind), active, textw.Width(state), w)
 	return hits
 }
 
-// RenderWorkspaceTabStrip keeps the active view visible even in narrow panes.
-func RenderWorkspaceTabStrip(t *theme.Theme, tabs []WorkspaceTab, active WorkspaceTab, w int) string {
-	hits, left, right := workspaceTabLayout(tabs, active, w)
+// RenderTabRule draws the tabs on their rule, with the open tab's state
+// (pre-styled) at the right end when there is room for it.
+func RenderTabRule(t *theme.Theme, tabs []WorkspaceTab, focusKind string, active WorkspaceTab, state string, w int) string {
+	if w <= 0 {
+		return ""
+	}
+	labels := TabLabels(tabs, focusKind)
+	hits, left, right, showState := tabRuleLayout(tabs, labels, active, textw.Width(state), w)
+	rule := lipgloss.NewStyle().Foreground(t.P.Dim)
+	heavy := lipgloss.NewStyle().Foreground(t.P.Cyan)
+	key := t.HelpKey
 	activeStyle := lipgloss.NewStyle().Foreground(t.P.FG).Bold(true)
 	idleStyle := lipgloss.NewStyle().Foreground(t.P.FGFade)
-	sepStyle := lipgloss.NewStyle().Foreground(t.P.Dim)
-	parts := make([]string, 0, len(hits))
+
+	end := w
+	if showState {
+		end = w - tabTail - textw.Width(state) - 1
+	}
+	// One style per cell, so the overlays (labels, marks, ellipses) stay
+	// simple; runs of one style render together below.
+	type cell struct {
+		r  string
+		st *lipgloss.Style
+	}
+	cells := make([]cell, max(0, end))
+	for i := range cells {
+		cells[i] = cell{"─", &rule}
+	}
+	put := func(x int, r string, st *lipgloss.Style) {
+		if x >= 0 && x < len(cells) {
+			cells[x] = cell{r, st}
+		}
+	}
+	byTab := make(map[WorkspaceTab]string, len(tabs))
+	for i, tab := range tabs {
+		byTab[tab] = labels[i]
+	}
+	space := lipgloss.NewStyle()
 	for _, hit := range hits {
-		style := idleStyle
+		put(hit.X0-1, " ", &space)
+		put(hit.X1, " ", &space)
+		style := &idleStyle
 		if hit.Tab == active {
-			style = activeStyle
+			style = &activeStyle
+			put(hit.X0-2, "━", &heavy)
+			put(hit.X1+1, "━", &heavy)
 		}
-		label := hit.Tab.Label()
-		if shortcut, title, ok := strings.Cut(label, " "); ok {
-			label = t.HelpKey.Render(shortcut) + " " + style.Render(title)
-		} else {
-			label = style.Render(label)
+		shortcut, _, _ := strings.Cut(byTab[hit.Tab], " ")
+		label := []rune(ansi.Truncate(byTab[hit.Tab], hit.X1-hit.X0, "…"))
+		for i, r := range label {
+			st := style
+			if i < len(shortcut) {
+				st = &key
+			}
+			put(hit.X0+i, string(r), st)
 		}
-		parts = append(parts, components.TruncPad(label, hit.X1-hit.X0))
 	}
-	strip := strings.Join(parts, sepStyle.Render("   "))
 	if left {
-		strip = sepStyle.Render("… ") + strip
+		put(0, "…", &rule)
 	}
-	if right {
-		strip += sepStyle.Render(" …")
+	if right && len(hits) > 0 {
+		put(hits[len(hits)-1].X1+2, "…", &rule)
 	}
-	return strip
-}
-
-// RenderWorkspaceBodyHeader returns a thin underline row separating the
-// tab strip from the body content. Same visual register as a Notion-style
-// tabbed editor — the strip floats over a hairline.
-func RenderWorkspaceBodyHeader(t *theme.Theme, w int) string {
-	return lipgloss.NewStyle().Foreground(t.P.Dim).Render(strings.Repeat("─", w))
-}
-
-// RenderWorkspacePane wraps the tab strip + body content in the workspace's
-// single outer panel. The border title identifies the resource; the tab
-// strip identifies the view, without repeating it in the border.
-func RenderWorkspacePane(t *theme.Theme, w, h int, title, tabStrip, body string, focused bool) string {
-	inner := components.PanelContentWidth(w)
-	header := RenderWorkspaceBodyHeader(t, inner)
-	content := textw.JoinVertical(lipgloss.Left, tabStrip, header, body)
-	return components.PanelWithAccent(t, title, w, h, content, focused, t.P.Cyan, t.P.Cyan)
-}
-
-// WorkspaceBodyHeight returns the inner height available for tab body
-// content given a workspace pane of outer height h. Reserves the panel
-// borders (2) + tab strip (1) + hairline (1).
-func WorkspaceBodyHeight(h int) int {
-	bh := h - 4
-	if bh < 1 {
-		bh = 1
+	var out strings.Builder
+	for i := 0; i < len(cells); {
+		j := i
+		var run strings.Builder
+		for j < len(cells) && cells[j].st == cells[i].st {
+			run.WriteString(cells[j].r)
+			j++
+		}
+		out.WriteString(cells[i].st.Render(run.String()))
+		i = j
 	}
-	return bh
-}
-
-// WorkspaceBodyWidth returns the inner width for tab body content.
-func WorkspaceBodyWidth(w int) int {
-	return components.PanelContentWidth(w)
+	if showState {
+		out.WriteString(" " + state + " " + rule.Render(strings.Repeat("─", tabTail-1)))
+	}
+	return out.String()
 }
 
 // IdlePlaceholder is the body fallback when a tab has no content yet
@@ -248,9 +313,38 @@ func IdlePlaceholder(t *theme.Theme, w, h int, message string) string {
 	return components.IllustratedEmpty(t, w, h, components.BeaconArt, message, "")
 }
 
-// RenderInspectorTab gives facts and relationships only the rows they need;
-// Activity receives the remaining height for readable event messages.
-func RenderInspectorTab(c *tuictx.Ctx, w, h int, inspector *Inspector, activity *Activity, connected *Connected) string {
+// detailsSplitWidth is where Details has room for two columns: what the
+// resource is on the left, what happened to it and what it touches on the
+// right.
+const detailsSplitWidth = 120
+
+// RenderDetails lays out a resource page's Details tab in w × h cells. Facts
+// and relationships get only the rows they need; recent events receive the
+// rest, for readable messages. Connected records where it landed so clicks
+// can find its rows.
+func RenderDetails(c *tuictx.Ctx, w, h int, inspector *Inspector, activity *Activity, connected *Connected) string {
+	inspector.HeaderOutside = true
+	if w >= detailsSplitWidth && h >= 8 {
+		leftW := w * 11 / 20
+		rightW := w - leftW
+		connH := 3
+		if connected.snap != nil {
+			body := connected.renderBody(c, components.PanelContentWidth(rightW), h/2)
+			connH = min(h/2, max(3, lipgloss.Height(body)+2))
+		}
+		// Events take the height they need and Connected follows them, so
+		// the column reads as one list of sections rather than one pinned
+		// to the top and one to the bottom.
+		actH := h - connH
+		if lines := lipgloss.Height(activity.renderBody(c, components.PanelContentWidth(rightW), actH)); lines+2 < actH {
+			actH = lines + 2 // the title, the events, a row of air
+			connH = h - actH
+		}
+		connected.PanelTop, connected.PanelLeft = actH, leftW
+		right := textw.JoinVertical(lipgloss.Left, activity.View(c, rightW, actH), connected.View(c, rightW, connH))
+		return textw.JoinHorizontal(lipgloss.Top, inspector.View(c, leftW, h), right)
+	}
+	connected.PanelLeft = 0
 	if h < 6 {
 		return inspector.View(c, w, h)
 	}

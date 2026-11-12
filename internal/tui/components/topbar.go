@@ -31,156 +31,176 @@ type ClusterHealth struct {
 	PressureCount int
 }
 
+// TopbarInput is everything the one-row title bar can show. The bar has two
+// zones: on the left, where the operator is and how the thing on screen is
+// doing; on the right, how the world is (what just happened, what waits,
+// how fresh the data is, how the cluster is).
+type TopbarInput struct {
+	Crumbs []Crumb
+	// Status follows the leaf crumb on a resource page: kind · state ·
+	// replicas, pre-styled. StatusShort is its narrow form (kind · state).
+	Status, StatusShort string
+	// Notice is transient feedback, pre-styled: a ✓ confirmation or the
+	// operations in flight. It never drops; it truncates.
+	Notice    string
+	Forwards  int
+	Proposals int
+	// Freshness is "paused", "↻ 12s" or "cached"; empty while data is live.
+	Freshness string
+	Health    ClusterHealth
+	// Brandless drops the wordmark, for the location row under the full
+	// header, which carries the mark itself.
+	Brandless bool
+}
+
+// topbarKey is the comparable part of TopbarInput, for the memo.
+type topbarKey struct {
+	t                           *theme.Theme
+	w                           int
+	status, statusShort, notice string
+	forwards, proposals         int
+	freshness                   string
+	health                      ClusterHealth
+	brandless                   bool
+}
+
 // Topbar renders the one-row title bar that frames the whole app.
 //
-//	safina │ prod-east-1 ▸ my-app    Nodes 5/5 Pods 142/150  2 fwd
+//	▌safina   prod ▸ shop ▸ Workloads ▸ api  Deployment · Healthy · 2/2   ✓ restarted  2 fwd  Nodes 5/5 Pods 142/150
 //
-// Left: app name. Middle: the breadcrumb of
-// the user's current location in the tree, rendered with a brightness ramp
-// so the eye is led to the leaf. Right: optional cluster-health pills,
-// and optional forwards pill.
-//
-// The breadcrumb gets whatever horizontal budget is left after the fixed
-// elements are placed; BreadcrumbRamped handles truncation when the path
-// overflows.
-// forwardCount == 0 hides the forwards pill entirely.
-func Topbar(t *theme.Theme, w int, crumbs []Crumb, forwardCount int, health ClusterHealth, cached bool) string {
-	in := topbarInput{t, w, forwardCount, health, cached}
+// The breadcrumb runs a brightness ramp so the eye is led to the leaf, and
+// the page's status reads on from the leaf it describes. When width runs
+// short, the right zone gives way first (cluster health, then freshness),
+// then the status shrinks, then the ancestor crumbs truncate. The brand, the
+// leaf and the notice stay.
+func Topbar(t *theme.Theme, w int, in TopbarInput) string {
+	key := topbarKey{t, w, in.Status, in.StatusShort, in.Notice, in.Forwards, in.Proposals, in.Freshness, in.Health, in.Brandless}
 	lastTopbar.Lock()
 	defer lastTopbar.Unlock()
-	if lastTopbar.ok && lastTopbar.in == in && slices.Equal(lastTopbar.crumbs, crumbs) {
+	if lastTopbar.ok && lastTopbar.key == key && slices.Equal(lastTopbar.crumbs, in.Crumbs) {
 		return lastTopbar.out
 	}
-	out := topbar(t, w, crumbs, forwardCount, health, cached)
-	lastTopbar.in, lastTopbar.crumbs, lastTopbar.out, lastTopbar.ok = in, slices.Clone(crumbs), out, true
+	out := topbar(t, w, in)
+	lastTopbar.key, lastTopbar.crumbs, lastTopbar.out, lastTopbar.ok = key, slices.Clone(in.Crumbs), out, true
 	return out
 }
 
-type topbarInput struct {
-	t            *theme.Theme
-	w            int
-	forwardCount int
-	health       ClusterHealth
-	cached       bool
-}
-
-// lastTopbar is the bar drawn last: it changes on navigation, not on the
-// cursor moves and ticks that redraw every frame.
+// lastTopbar is the bar drawn last: it changes on navigation and status,
+// not on the cursor moves and ticks that redraw every frame.
 var lastTopbar struct {
 	sync.Mutex
-	in     topbarInput
+	key    topbarKey
 	crumbs []Crumb
 	out    string
 	ok     bool
 }
 
-func topbar(t *theme.Theme, w int, crumbs []Crumb, forwardCount int, health ClusterHealth, cached bool) string {
-	bar := lipgloss.NewStyle().
-		Background(t.P.BG).
-		Foreground(t.P.FG).
-		Width(w).
-		Padding(0, 1)
+func topbar(t *theme.Theme, w int, in TopbarInput) string {
+	bg := lipgloss.NewStyle().Background(t.P.BG)
+	bar := bg.Foreground(t.P.FG).Width(w).Padding(0, 1)
 
-	// The wordmark is a quiet landmark; focus color belongs to the active pane.
-	logo := lipgloss.NewStyle().Foreground(t.P.FGFade).Bold(true).
-		Background(t.P.BG).
-		Render("safina")
-
-	// Vertical rule between the brand and the operator's location — a
-	// different visual register from the breadcrumb's own ▸ separator.
-	logoSep := lipgloss.NewStyle().Foreground(t.P.Dim).Background(t.P.BG).
-		Render("  │  ")
-
-	// Active port-forwards pill. Hidden when zero; pink/bold when present
-	// so the operator's eye picks it up immediately (the same pink used
-	// for the modal-cursor accent).
-	forwardCell := ""
-	if forwardCount > 0 {
-		forwardCell = lipgloss.NewStyle().
-			Foreground(t.P.Pink).Bold(true).
-			Background(t.P.BG).
-			Render(fmt.Sprintf("%d fwd", forwardCount))
+	// The wordmark is a quiet landmark behind the site's mark: a half block
+	// in the beacon cyan, the one cell of colour the brand spends.
+	logo := bg.Foreground(t.P.Cyan).Render("▌") +
+		bg.Foreground(t.P.FGFade).Bold(true).Render("safina") + bg.Render("   ")
+	if in.Brandless {
+		// Under the full header the location is the page frame's title;
+		// the frame anchors it, and the header carries the mark.
+		logo = ""
 	}
 
-	// Cluster health pill — the at-a-glance answer to "is anything on
-	// fire right now". Rendered between the breadcrumb and the right-side
-	// chrome so the operator's eye lands on it without scanning the rest
-	// of the bar. Suppressed entirely when there is no cluster selected
-	// or the first snapshot hasn't landed yet.
-	healthCell := ""
-	if health.Show {
-		healthCell = renderClusterHealth(t, health)
-	}
-
-	cachedCell := ""
-	if cached {
-		cachedCell = lipgloss.NewStyle().Foreground(t.P.Yellow).Background(t.P.BG).Render("cached")
-	}
-
-	// Width math: bar.Padding(0,1) eats two cells. Compute the breadcrumb's
-	// budget as whatever's left after the logo, separator, the two
-	// optional pills, and a minimum gap so things never touch.
-	innerW := w - 2
-	if innerW < 1 {
-		innerW = 1
-	}
+	innerW := max(1, w-2)
 	const minGap = 2
-	spacer := lipgloss.NewStyle().Background(t.P.BG).Render("   ")
-	renderRight := func() string {
+	spacer := bg.Render("   ")
+
+	notice := in.Notice
+	pill := func(n int, unit string) string {
+		if n <= 0 {
+			return ""
+		}
+		return bg.Foreground(t.P.Pink).Bold(true).Render(fmt.Sprintf("%d %s", n, unit))
+	}
+	proposals := pill(in.Proposals, "proposals")
+	if in.Proposals == 1 {
+		proposals = pill(1, "proposal")
+	}
+	forwards := pill(in.Forwards, "fwd")
+	freshness := ""
+	if in.Freshness != "" {
+		freshness = bg.Foreground(t.P.Yellow).Render(in.Freshness)
+	}
+	health := ""
+	if in.Health.Show {
+		health = renderClusterHealth(t, in.Health)
+	}
+	status := in.Status
+
+	right := func() string {
 		cells := []string{}
-		for _, cell := range []string{healthCell, forwardCell, cachedCell} {
+		for _, cell := range []string{notice, proposals, forwards, freshness, health} {
 			if cell != "" {
 				cells = append(cells, cell)
 			}
 		}
 		return strings.Join(cells, spacer)
 	}
-	right := renderRight()
-	locationMin := min(32, innerW-textw.Width(logo+logoSep)-minGap)
-	budget := func() int { return innerW - textw.Width(logo+logoSep+right) - minGap }
-	if budget() < locationMin {
-		healthCell = ""
-		right = renderRight()
-	}
-	crumbBudget := max(1, budget())
-
-	// Breadcrumb runs a four-tier brightness ramp from oldest crumb to leaf
-	// (Dim → FGFade → FG → Bold). The eye is led along the gradient to the
-	// most recent segment — the answer to "where am I right now". Separators
-	// stay muted so they read as glue, not content.
-	crumbCell := ""
-	if len(crumbs) > 0 {
-		ramp := []lipgloss.Style{
-			lipgloss.NewStyle().Foreground(t.P.Dim).Background(t.P.BG),
-			lipgloss.NewStyle().Foreground(t.P.FGFade).Background(t.P.BG),
-			lipgloss.NewStyle().Foreground(t.P.FG).Background(t.P.BG),
-			lipgloss.NewStyle().Foreground(t.P.FG).Background(t.P.BG).Bold(true),
+	statusW := func() int {
+		if status == "" {
+			return 0
 		}
-		sepStyle := lipgloss.NewStyle().Foreground(t.P.Dim).Background(t.P.BG)
-		crumbCell = BreadcrumbRamped(crumbs, crumbBudget, ramp, sepStyle)
-		for i, crumb := range crumbs {
+		return textw.Width(status) + 2
+	}
+	locationMin := min(24, innerW-textw.Width(logo)-minGap)
+	crumbBudget := func() int { return innerW - textw.Width(logo+right()) - statusW() - minGap }
+	// Give way in order: the cluster's health, the data's age, then the long
+	// status, then the status altogether. The crumbs never go below their
+	// minimum while something on the right can still yield.
+	for _, yield := range []func(){
+		func() { health = "" },
+		func() { freshness = "" },
+		func() { status = in.StatusShort },
+		func() { status = "" },
+	} {
+		if crumbBudget() >= locationMin {
+			break
+		}
+		yield()
+	}
+	if crumbBudget() < locationMin && notice != "" {
+		notice = ansi.Truncate(notice, max(8, textw.Width(notice)-(locationMin-crumbBudget())), "…")
+	}
+	budget := max(1, crumbBudget())
+
+	crumbCell := ""
+	if len(in.Crumbs) > 0 {
+		ramp := []lipgloss.Style{
+			bg.Foreground(t.P.Dim),
+			bg.Foreground(t.P.FGFade),
+			bg.Foreground(t.P.FG),
+			bg.Foreground(t.P.FG).Bold(true),
+		}
+		sepStyle := bg.Foreground(t.P.Dim)
+		crumbCell = BreadcrumbRamped(in.Crumbs, budget, ramp, sepStyle)
+		for i, crumb := range in.Crumbs {
 			if !crumb.Pinned {
 				continue
 			}
-			cluster := ansi.Truncate(crumb.Label, crumbBudget, "…")
+			cluster := ansi.Truncate(crumb.Label, budget, "…")
 			crumbCell = ramp[len(ramp)-1].Render(cluster)
-			remaining := crumbBudget - textw.Width(cluster) - 3
-			if i+1 < len(crumbs) && remaining > 3 {
-				crumbCell += sepStyle.Render(" ▸ ") + BreadcrumbRamped(crumbs[i+1:], remaining, ramp, sepStyle)
+			remaining := budget - textw.Width(cluster) - 3
+			if i+1 < len(in.Crumbs) && remaining > 3 {
+				crumbCell += sepStyle.Render(" ▸ ") + BreadcrumbRamped(in.Crumbs[i+1:], remaining, ramp, sepStyle)
 			}
 			break
 		}
 	}
-
-	consumed := textw.Width(logo) + textw.Width(logoSep) +
-		textw.Width(crumbCell) + textw.Width(right)
-	pad := innerW - consumed
-	if pad < 1 {
-		pad = 1
+	if status != "" {
+		crumbCell += bg.Render("  ") + status
 	}
-	gap := lipgloss.NewStyle().Background(t.P.BG).Width(pad).Render("")
 
-	return bar.Render(logo + logoSep + crumbCell + gap + right)
+	r := right()
+	pad := max(1, innerW-textw.Width(logo)-textw.Width(crumbCell)-textw.Width(r))
+	return bar.Render(logo + crumbCell + bg.Width(pad).Render("") + r)
 }
 
 // renderClusterHealth composes the topbar's at-a-glance cluster summary:

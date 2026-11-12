@@ -183,7 +183,7 @@ func (a *Activity) View(c *tuictx.Ctx, w, h int) string {
 
 	body := a.renderBody(c, innerW, innerH)
 	title := "Recent events"
-	return components.PanelWithAccent(t, title, w, h, body, false, t.P.Cyan, t.P.Dim)
+	return components.PageFrame(t, title, w, h, body, t.P.FGFade, false)
 }
 
 func (a *Activity) renderBody(c *tuictx.Ctx, innerW, innerH int) string {

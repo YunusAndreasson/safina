@@ -4,12 +4,10 @@ import (
 	"fmt"
 	"strings"
 
-	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/YunusAndreasson/safina/internal/k8s"
 	"github.com/YunusAndreasson/safina/internal/tui/components"
-	"github.com/YunusAndreasson/safina/internal/tui/textw"
 	"github.com/YunusAndreasson/safina/internal/tui/theme"
 	"github.com/YunusAndreasson/safina/internal/tui/tuictx"
 )
@@ -97,31 +95,19 @@ func (s *Hot) Selected() (k8s.PodInfo, bool) {
 	return s.items[s.cursor], true
 }
 
-// Body returns the inline unframed content for the workspace tab.
-// The workspace pane already owns the surrounding border + title.
+// Body returns the inline unframed content for the tool page; the page's
+// title rule names it and the footer carries its keys.
 func (s *Hot) Body(c *tuictx.Ctx, w, h int) string {
 	th := c.Theme
-	hint := components.RenderHintRow(th, []components.KeyDesc{
-		{Key: c.Keys.Refresh.Help().Key, Desc: "refresh"},
-	})
-	hintRow := lipgloss.NewStyle().Width(w).Align(lipgloss.Right).Render(hint)
-	if s.gate.Visible() {
-		return textw.JoinVertical(lipgloss.Left,
-			hintRow,
-			th.Idle.Render(c.SpinnerView()+" loading hot pods…"))
+	switch {
+	case s.gate.Visible():
+		return th.Idle.Render(c.SpinnerView() + " loading hot pods…")
+	case s.err != nil:
+		return th.ErrLine.Render("✗ " + s.err.Error())
+	case len(s.items) == 0:
+		return th.Idle.Render("no pod metrics available — is metrics-server running?")
 	}
-	if s.err != nil {
-		return textw.JoinVertical(lipgloss.Left,
-			hintRow,
-			th.ErrLine.Render("✗ "+s.err.Error()))
-	}
-	if len(s.items) == 0 {
-		return textw.JoinVertical(lipgloss.Left,
-			hintRow,
-			th.Idle.Render("no pod metrics available — is metrics-server running?"))
-	}
-	body := s.renderTable(th, w, h-1)
-	return textw.JoinVertical(lipgloss.Left, hintRow, body)
+	return s.renderTable(th, w, h)
 }
 
 // PaneTitle returns the workspace tab title.

@@ -11,28 +11,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestWelcomeSailFitsPaneAndMonochrome(t *testing.T) {
-	for _, size := range [][2]int{{1, 1}, {8, 3}, {18, 8}, {28, 16}, {34, 22}, {48, 28}, {70, 32}, {100, 44}} {
+func TestHarbourFitsAndKeepsTheClusterList(t *testing.T) {
+	list := "Pick a cluster\nNAME\nproduction\nstaging"
+	for _, size := range [][2]int{{1, 1}, {18, 8}, {34, 12}, {50, 12}, {80, 22}, {120, 34}, {160, 46}} {
 		t.Run(fmt.Sprintf("%dx%d", size[0], size[1]), func(t *testing.T) {
-			frame := WelcomeSail(theme.Default(), size[0], size[1])
+			frame := Harbour(theme.Default(), size[0], size[1], list)
 			require.Equal(t, size[1], lipgloss.Height(frame))
 			for _, row := range strings.Split(frame, "\n") {
 				require.Equal(t, size[0], ansi.StringWidth(row))
 			}
 			plain := ansi.Strip(frame)
-			if size[0] >= 10 {
+			if size[1] >= 6 && size[0] >= 10 {
+				require.Contains(t, plain, "staging", "the list always fits; the brand gives way")
+			}
+			if size[1] >= 12 && size[0] >= 22 {
 				require.Contains(t, plain, "s a f i n a")
 			}
-			if size[1] >= 16 {
-				require.Contains(t, plain, "#", "the sail remains visible without color")
-			}
-			if size[1] >= 22 {
+			if size[1] >= 22 && size[0] >= 48 {
+				require.Contains(t, plain, "#", "the sail shows when there is room, without colour")
 				require.Contains(t, strings.Join(strings.Fields(plain), " "), "The Kubernetes TUI for teams that ship fast.")
 			}
 		})
 	}
-	require.Empty(t, WelcomeSail(theme.Default(), 0, 10))
-	require.Empty(t, WelcomeSail(theme.Default(), 10, 0))
+	require.Empty(t, Harbour(theme.Default(), 0, 10, list))
 }
 
 func TestWelcomeSailUsesPortableASCII(t *testing.T) {

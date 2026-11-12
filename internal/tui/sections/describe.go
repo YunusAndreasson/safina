@@ -164,11 +164,10 @@ func (s *Describe) Body(c *tuictx.Ctx) string {
 			Render("⚠ decoded — values are plaintext")
 		body = textw.JoinVertical(lipgloss.Left, banner, body)
 	}
-	return textw.JoinVertical(lipgloss.Left,
-		s.renderStatusRow(c),
-		body,
-		s.renderKeysRow(),
-	)
+	if row, ok := components.FilterRow(c.Theme, s.filter); ok {
+		body = textw.JoinVertical(lipgloss.Left, row, body)
+	}
+	return body
 }
 
 // PaneTitle returns the workspace tab title.
@@ -177,7 +176,10 @@ func (s *Describe) PaneTitle() string { return s.name }
 func (s *Describe) recomputeViewportSize() {
 	inner := components.PanelContentWidth(s.modalW)
 	s.vp.SetWidth(inner)
-	chrome := components.ModalChrome
+	chrome := 2
+	if s.filter.Active() || s.filter.Value() != "" {
+		chrome++
+	}
 	if s.revealed {
 		// One extra row for the "decoded" banner above the body.
 		chrome++
@@ -318,7 +320,8 @@ func (s *Describe) viewportBlock(c *tuictx.Ctx) string {
 	return components.CenteredViewportBlock(c.Theme, c.SpinnerView(), s.vp, st)
 }
 
-func (s *Describe) renderStatusRow(c *tuictx.Ctx) string {
+// Indicators is the YAML's state for the right end of the tab rule.
+func (s *Describe) Indicators() []components.Indicator {
 	indicators := make([]components.Indicator, 0, 2)
 	if s.filter.Value() != "" {
 		indicators = append(indicators, components.Indicator{
@@ -330,22 +333,22 @@ func (s *Describe) renderStatusRow(c *tuictx.Ctx) string {
 		})
 	}
 	indicators = append(indicators, components.Indicator{
-		Text: fmt.Sprintf("%3.f%%", s.vp.ScrollPercent()*100),
+		Text: fmt.Sprintf("%.f%%", s.vp.ScrollPercent()*100),
 	})
-	return components.RenderModalStatusBar(c.Theme, s.modalW, s.filter, indicators)
+	return indicators
 }
 
-func (s *Describe) renderKeysRow() string {
+// Hints lists the YAML's keys for the footer.
+func (s *Describe) Hints() []components.KeyDesc {
 	wrapDesc := "wrap"
 	if s.wrap {
 		wrapDesc = "wrap on"
 	}
-	return components.RenderModalKeysRow(s.theme, []components.KeyDesc{
+	return []components.KeyDesc{
 		{Key: "/", Desc: "filter"},
 		{Key: "r", Desc: "refresh"},
 		{Key: "w", Desc: wrapDesc},
-		{Key: "j/k", Desc: "scroll"},
 		{Key: "g/G", Desc: "top/bot"},
 		{Key: "ctrl+l", Desc: "clear"},
-	})
+	}
 }

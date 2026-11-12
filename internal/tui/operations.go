@@ -144,6 +144,8 @@ func (m *Model) operationSummary() string {
 	return strings.Join(parts, " | ")
 }
 
-func (m *Model) hasFeedback() bool {
-	return m.bannerMsg != "" || m.operationSummary() != "" || m.ctx.Manager.History.Health() != ""
+// hasBanner reports whether an error holds the row above the page. Other
+// feedback (confirmations, operations in flight) shows in the topbar.
+func (m *Model) hasBanner() bool {
+	return (m.bannerMsg != "" && m.bannerErr) || m.ctx.Manager.History.Health() != ""
 }

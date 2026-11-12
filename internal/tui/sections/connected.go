@@ -25,16 +25,16 @@ import (
 // (kind, ns, name) so cursor movement up a list of pods stays free of
 // repeated round-trips after the first visit.
 type Connected struct {
-	Focused                           bool
-	PanelTop, PanelHeight, PanelWidth int
-	cursor                            int
-	rowOffset                         int
-	renderedRefs                      []k8s.ConnectedRef
-	ref                               NodeRef
-	cancelFetch                       context.CancelFunc
-	snap                              *connectedSnapshot
-	cache                             map[string]*k8s.Connections
-	cacheRecency                      cacheRecency
+	Focused                                      bool
+	PanelTop, PanelLeft, PanelHeight, PanelWidth int
+	cursor                                       int
+	rowOffset                                    int
+	renderedRefs                                 []k8s.ConnectedRef
+	ref                                          NodeRef
+	cancelFetch                                  context.CancelFunc
+	snap                                         *connectedSnapshot
+	cache                                        map[string]*k8s.Connections
+	cacheRecency                                 cacheRecency
 }
 
 // connectedSnapshot is the kind-erased payload the render path consumes.
@@ -153,7 +153,7 @@ func (c *Connected) View(ctx *tuictx.Ctx, w, h int) string {
 	t := ctx.Theme
 	if c.snap == nil {
 		body := t.Idle.Render("Select a resource to see connections.")
-		return components.PanelWithAccent(t, "Connected", w, h, body, false, t.P.Dim, t.P.Dim)
+		return components.PageFrame(t, "Connected", w, h, body, t.P.FGFade, false)
 	}
 	body := c.renderBody(ctx, components.PanelContentWidth(w), h-2)
 	c.PanelHeight, c.PanelWidth = h, w
@@ -161,7 +161,11 @@ func (c *Connected) View(ctx *tuictx.Ctx, w, h int) string {
 	if c.snap.loading {
 		title = "Connected · " + ctx.SpinnerView() + " loading…"
 	}
-	return components.PanelWithAccent(t, title, w, h, body, false, t.P.Pink, t.P.Pink)
+	accent := t.P.FGFade
+	if c.Focused {
+		accent = t.P.Cyan
+	}
+	return components.PageFrame(t, title, w, h, body, accent, false)
 }
 
 func (c *Connected) renderBody(ctx *tuictx.Ctx, innerW, innerH int) string {

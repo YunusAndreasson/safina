@@ -12,7 +12,7 @@ import (
 // Shift only reveals hints. It never arms commands or changes their bindings.
 func (m *Model) canRevealChanges() bool {
 	return m.focused && m.choices == nil && !m.tree.FilterActive() && !m.sectionHasFilterFocus() &&
-		((m.state == stateMain && !m.peekWorkspace) || (m.treeFocusInImmersive && m.isImmersiveState()))
+		(m.state == stateMain || m.isImmersiveState())
 }
 
 func (m *Model) resetShift() {
@@ -72,17 +72,11 @@ func (m *Model) renderTreeFooter() string {
 	t := m.ctx.Theme
 	width := max(0, m.ctx.Width-2)
 	reads, changes := []components.KeyDesc{}, []components.KeyDesc{}
-	if m.ctx.Width < minSplitWidth || m.treeFocusInImmersive {
-		reads = append(reads, components.KeyDesc{Key: "→/tab", Desc: "pane"})
-	}
 	for _, binding := range m.contextualShortHelp() {
 		h := binding.Help()
 		if h.Key == m.ctx.Keys.Help.Help().Key || h.Key == m.ctx.Keys.Search.Help().Key {
 			continue
 		} // fixed right-hand escape hatch
-		if m.treeFocusInImmersive && h.Key == m.ctx.Keys.Quit.Help().Key {
-			h.Desc = "close view"
-		}
 		hint := components.KeyDesc{Key: h.Key, Desc: h.Desc, Write: m.ctx.Keys.IsWrite(h.Key)}
 		if hint.Write {
 			changes = append(changes, hint)
@@ -91,23 +85,29 @@ func (m *Model) renderTreeFooter() string {
 		}
 	}
 	showChanges := m.shiftHeld && m.canRevealChanges() && len(changes) > 0
-	rightHints := []components.KeyDesc{{Key: "?", Desc: "commands"}}
+	rightHints := []components.KeyDesc{{Key: "?", Desc: "help"}}
 	if !showChanges {
-		rightHints = append([]components.KeyDesc{{Key: "⌃p", Desc: "search"}}, rightHints...)
+		rightHints = append([]components.KeyDesc{{Key: "ctrl+p", Desc: "search"}}, rightHints...)
 	}
 	if m.shiftHintsSupported && len(changes) > 0 && m.canRevealChanges() {
 		desc := "changes"
 		if showChanges {
 			desc = "release"
 		}
-		rightHints = append([]components.KeyDesc{{Key: "⇧", Desc: desc}}, rightHints...)
+		rightHints = append([]components.KeyDesc{{Key: "shift", Desc: desc}}, rightHints...)
 	}
 	right := components.RenderModalKeysRow(t, rightHints)
 	if m.shiftHintsSupported && len(changes) > 0 && !showChanges && m.canRevealChanges() {
 		right = t.HelpDesc.Render("hold ") + right
 	}
 	// Keep the discoverability hint visible even when commands overflow.
-	leftWidth := max(0, width-textw.Width(right)-2)
+	// While Shift reveals changes, the footer is about the selected row's
+	// changes alone; the back hint returns with the normal hints.
+	back := ""
+	if !showChanges {
+		back = m.backHint()
+	}
+	leftWidth := max(0, width-textw.Width(right)-2-textw.Width(back))
 	var left string
 	if showChanges {
 		prefix := t.Danger.Render("CHANGE")
@@ -123,9 +123,10 @@ func (m *Model) renderTreeFooter() string {
 		budget := max(0, leftWidth-textw.Width(prefix)-2)
 		commands := components.RenderBoundedHints(t, changes, budget, components.KeyDesc{})
 		left = prefix + "  " + commands
-	} else {
+	} else if !m.fullHeader() {
+		// The full header lists the reads; without it the footer does.
 		left = components.RenderBoundedHints(t, reads, leftWidth, components.KeyDesc{})
 	}
-	left = ansi.Truncate(left, leftWidth, "")
+	left = back + ansi.Truncate(left, leftWidth, "")
 	return left + strings.Repeat(" ", max(0, width-textw.Width(left)-textw.Width(right))) + right
 }

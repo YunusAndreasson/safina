@@ -132,7 +132,7 @@ The local proposal core is available to Go clients through
 `internal/broker/api.InvestigationClient`. It starts the broker on demand and
 can create investigations, submit typed alternatives, and retrieve pending work
 while the TUI is closed. In Safina, open `:` and choose **Incoming proposals**.
-The pending count appears above the workspace. Select a proposal with Enter,
+The pending count appears above the page. Select a proposal with Enter,
 read the summary, previous attempts and warnings, and use `d` for the complete executable diff
 (`Tab` cycles summary, diff and captured evidence). `e` edits replicas,
 `container=image`, or the pinned rollback revision as a new immutable revision;

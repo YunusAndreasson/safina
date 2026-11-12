@@ -22,56 +22,48 @@ func emptyResourceModel(t *testing.T) *Model {
 	return m
 }
 
-func TestEmptyInspectorUsesOneIllustrationAndNoVacantTiles(t *testing.T) {
+func TestEmptyListSaysSoInPlainWords(t *testing.T) {
 	m := emptyResourceModel(t)
-	body := ansi.Strip(m.renderTabBody(sections.WSTabInspector, 64, 30))
-	require.Contains(t, body, "No resources to inspect")
-	require.Contains(t, body, "#")
-	require.NotContains(t, body, "nothing selected")
-	require.NotContains(t, body, "Recent events")
-	require.NotContains(t, body, "Connected")
-	require.NotContains(t, ansi.Strip(m.tree.View(m.ctx, 40, 30)), "#", "only the detail pane gets artwork")
+	page := ansi.Strip(m.renderPage(80, 30))
+	require.Contains(t, page, "── Pods")
+	require.Contains(t, page, "no pods")
+	require.NotContains(t, page, "~", "no waterline under an empty-state message that has rows above it")
 }
 
-func TestNoSelectionArtworkDoesNotMaskLoadingErrorsOrFilters(t *testing.T) {
+func TestListStatesAreNotMaskedByDecoration(t *testing.T) {
 	for _, state := range []string{"loading", "error", "filter"} {
 		t.Run(state, func(t *testing.T) {
 			m := emptyResourceModel(t)
-			want := ""
 			switch state {
 			case "loading":
+				m.tree.SetChildren(m.tree.Path(), nil)
 				m.tree.Loading = true
-				want = "Loading resources"
 			case "error":
+				m.tree.SetChildren(m.tree.Path(), nil)
 				m.tree.LoadErr = errors.New("permission denied")
-				want = "Resource details unavailable"
 			case "filter":
+				m.tree.SetChildren(m.tree.Path(), &sections.Children{Kind: k8s.KindPod, Pods: []k8s.PodInfo{{Name: "api", Namespace: "shop"}}})
 				m.tree.Focused = true
 				m.tree.Update(keyMsg("/"), m.ctx)
 				m.tree.Update(tea.PasteMsg{Content: "missing"}, m.ctx)
 				m.tree.Update(keyMsg("enter"), m.ctx)
-				want = "No matching resources"
 			}
-			body := ansi.Strip(m.renderTabBody(sections.WSTabInspector, 64, 30))
-			require.Contains(t, body, want)
-			require.NotContains(t, body, "#")
+			page := ansi.Strip(m.renderPage(80, 30))
+			require.NotContains(t, page, "~", "the waterline never sits under a loading, error or filtered list")
 		})
 	}
 }
 
-func TestNavigationFolderGetsOrientationWithoutHidingResourceDetails(t *testing.T) {
+func TestFolderOpensItsListAndAResourceOpensItsPage(t *testing.T) {
 	m := resourceBrowserModel(t)
 	m.tree.SetEnabledResources(config.DefaultEnabledResources())
 	m.tree.SetCursorByRef(k8s.KindWorkloadsFold, "", "Workloads")
-	body := ansi.Strip(m.renderTabBody(sections.WSTabInspector, 64, 30))
-	require.Contains(t, body, "Press Enter to list resources.")
-	require.Contains(t, body, "#")
-	require.Zero(t, m.connected.PanelHeight)
-	m.tree.Push(m.tree.SelectedRef())
+	m.handleKey(keyMsg("enter"))
+	require.Equal(t, k8s.KindWorkloadsFold, m.tree.Focus().Kind)
 	m.tree.SetChildren(m.tree.Path(), &sections.Children{Kind: k8s.KindApp, Apps: []k8s.AppInfo{{Name: "api", Namespace: "shop", Kind: "Deployment", Health: k8s.HealthHealthy}}})
-	m.syncSelection()
-	body = ansi.Strip(m.renderTabBody(sections.WSTabInspector, 64, 30))
-	require.Contains(t, body, "Deployment")
-	require.Contains(t, body, "Recent events")
-	require.NotContains(t, body, "Press Enter to list resources.")
+	require.Contains(t, ansi.Strip(m.renderPage(100, 30)), "── Workloads")
+	m.handleKey(keyMsg("enter"))
+	require.Equal(t, "api", m.tree.Focus().Name, "a resource that holds something opens its list")
+	require.Contains(t, ansi.Strip(m.View().Content), "Deployment", "the topbar says what the page is")
+	require.NotContains(t, ansi.Strip(m.View().Content), "2 Details", "pages have no tabs")
 }
