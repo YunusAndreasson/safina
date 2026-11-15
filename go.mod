@@ -5,7 +5,7 @@ go 1.27.3
 require (
 	charm.land/bubbles/v2 v2.2.1
 	charm.land/bubbletea/v2 v2.1.1
-	charm.land/lipgloss/v2 v2.0.6
+	charm.land/lipgloss/v2 v2.1.0
 	github.com/NimbleMarkets/ntcharts/v2 v2.9.0
 	github.com/alecthomas/chroma/v2 v2.27.0
 	github.com/charmbracelet/glamour v1.0.0
