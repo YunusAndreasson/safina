@@ -10,7 +10,7 @@ require (
 	github.com/alecthomas/chroma/v2 v2.27.0
 	github.com/charmbracelet/glamour v1.0.0
 	github.com/charmbracelet/x/ansi v0.11.9
-	github.com/dlclark/regexp2/v2 v2.12.0
+	github.com/dlclark/regexp2/v2 v2.13.0
 	github.com/google/gnostic-models v0.7.1
 	github.com/hexops/gotextdiff v1.0.3
 	github.com/itchyny/gojq v0.12.20
@@ -20,7 +20,7 @@ require (
 	github.com/stretchr/testify v1.12.1
 	go.mitchellh.com/libghostty v0.0.0-20261107144202-b13f277ddcb2
 	go.uber.org/goleak v1.3.0
-	golang.org/x/sys v0.49.0
+	golang.org/x/sys v0.50.0
 	k8s.io/api v0.37.2
 	k8s.io/apimachinery v0.37.2
 	k8s.io/client-go v0.37.2
