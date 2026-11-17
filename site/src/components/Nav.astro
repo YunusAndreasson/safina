@@ -4,7 +4,11 @@
 // shows the same word for each: the Deep dive label under the tour, Features
 // for the named features from Chat to Also on board (which sits after Speed
 // and marks itself with data-nav), and the eyebrows over Speed's and FAQ's
-// titles. The button lights up at Get safina.
+// titles. The button lights up at Get safina. Beside it, the repo, as on
+// every open-source tool's bar: a quiet word, never a star count (the
+// user's call, Nov 2026), so Get safina stays the one filled button.
+import { release } from "../data/release";
+
 const links = [
   { href: "#tour", label: "Deep dive" },
   { href: "#features", label: "Features" },
@@ -19,7 +23,10 @@ const links = [
     <ul class="nav__links" role="list">
       {links.map((l) => <li><a href={l.href}>{l.label}</a></li>)}
     </ul>
-    <a class="btn btn--beacon nav__cta" href="#install">Get safina</a>
+    <div class="nav__end">
+      <a class="nav__repo" href={release.repo}>GitHub</a>
+      <a class="btn btn--beacon nav__cta" href="#install">Get safina</a>
+    </div>
   </nav>
 </header>
 
@@ -49,7 +56,8 @@ const links = [
      same as the wordmark beside them, in the quiet ink. Pointed at, they
      brighten; the part you're in takes the names' cyan, the colour that
      marks where you are. */
-  .nav__links a {
+  .nav__links a,
+  .nav__repo {
     color: var(--spray);
     font-weight: 400;
     font-stretch: 125%;
@@ -58,7 +66,8 @@ const links = [
     padding-block: 12px;
     transition: color 200ms var(--ease-out);
   }
-  .nav__links a:hover {
+  .nav__links a:hover,
+  .nav__repo:hover {
     color: var(--foam);
   }
   .nav__links a[aria-current] {
@@ -75,9 +84,18 @@ const links = [
       0 -1px 0 0 rgb(from var(--beacon-ink) r g b / 18%) inset,
       0 10px 28px -14px rgb(from var(--beacon) r g b / 70%);
   }
+  /* The repo and the button share the column's end. */
+  .nav__end {
+    display: flex;
+    align-items: center;
+    gap: clamp(14px, 2.4vw, 32px);
+    margin-left: auto;
+  }
+  .nav__repo {
+    font-size: var(--t-ui);
+  }
   .nav__cta {
     min-height: 40px;
-    margin-left: auto;
     padding-inline: 1.1em;
     font-size: var(--t-ui);
   }
@@ -102,15 +120,24 @@ const links = [
       justify-self: start;
       gap: clamp(18px, 4vw - 26px, 32px);
     }
-    .nav__cta {
+    .nav__end {
       grid-area: 1 / 2;
       justify-self: end;
       margin-left: 0;
     }
+    /* The repo goes with the button, not the names: it stays only where
+       it's at least two of their gaps clear of FAQ (from 1260px, measured
+       Nov 2026); just past 1100px it would read as a fifth name. */
+    @media (width < 1260px) {
+      .nav__repo {
+        display: none;
+      }
+    }
   }
 
   @media (width <= 720px) {
-    .nav__links {
+    .nav__links,
+    .nav__repo {
       display: none;
     }
   }

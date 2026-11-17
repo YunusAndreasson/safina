@@ -89,7 +89,9 @@ by the workflow, the script and `src/data/release.ts`; change them together.
 
 `src/data/release.ts` drives the install section: `available` (true since
 v0.1.0) leads with the one-line install and the archives, the visitor's
-platform first; bump `version` with each release. Tag first, then deploy the
+platform first; bump `version` with each release. Under the downloads, the
+next step says what the script prints at its end (`Run: safina`, or the
+line that puts `~/.local/bin` on `PATH`); change the two together. Tag first, then deploy the
 site, so the page never offers a release that doesn't exist yet.
 
 ## Screenshots and recordings
@@ -283,8 +285,12 @@ that says what it does for you (`<Feature name heading>`).
 The nav follows Jakob's law: the words every product site uses, in page
 order, so it makes sense before the page does. Deep dive (the tour, named
 for the deep under the ship), Features (Chat to Also on board), Speed and
-FAQ, then the Get safina button, which stays put from the first frame. Each
-lights up in cyan while you're in its part (`aria-current`,
+FAQ, then the Get safina button, which stays put from the first frame. Beside
+it, a plain GitHub link to the repo, as on every open-source tool's bar: a
+word in the names' quiet ink, never a star count (the user's call, Nov
+2026). It shows only where it stands two of the names' gaps clear of FAQ
+(721 to 1100px, and from 1260px); phones keep just the button. Each
+name lights up in cyan while you're in its part (`aria-current`,
 `src/scripts/nav.ts`), and each part shows the same word: the Deep dive
 label under the tour window, the feature names, and the eyebrows over
 Speed's and FAQ's titles. Also on board sits after Speed but belongs to
@@ -351,6 +357,10 @@ smaller"). Every answer there is a claim about the code: retention days,
 what reaches the model, where files live. Recheck them when that code changes.
 The nav calls it FAQ, the eyebrow over its title; each question is an h3
 in the title voice, so a scan down the list reads the questions alone.
+Each question links to itself (its id is the question, hyphenated), so an
+answer can be passed on, say to a security team. A light `#` marks the link:
+hung in the margin on hover, after the question on touch, and cyan on the
+answer a link opened.
 
 Speed (`Compare.astro`, `#compare`) pays off the hero's "about 20 ms": safina
 timed against k9s by `cmd/safina-versus` (`make versus`), first in act III,

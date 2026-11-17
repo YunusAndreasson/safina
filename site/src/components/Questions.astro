@@ -31,24 +31,24 @@ const lines = config.split("\n").map((line) => {
     </hgroup>
     <div class="questions__list split">
       <div class="questions__col">
-      <div class="question">
-        <h3>Why not k9s?</h3>
+      <div class="question" id="why-not-k9s">
+        <h3><a class="question__link" href="#why-not-k9s">Why not k9s?</a></h3>
         <div class="answer">
           They read the same kubeconfig, so you can run both side by side. k9s shows every resource type by default,
           where safina shows six groups and you add the rest. k9s also has a read-only mode, plugins and skins, Windows
           builds and package-manager installs, none of which safina has&nbsp;yet.
         </div>
       </div>
-      <div class="question">
-        <h3>What does the model see?</h3>
+      <div class="question" id="what-does-the-model-see">
+        <h3><a class="question__link" href="#what-does-the-model-see">What does the model see?</a></h3>
         <div class="answer">
           Chat sends names, status and numbers for what you’ve selected and your recent Logbook entries for it,
           plus logs when you attach them. Through safina’s MCP server, an agent reads logs on its own, up to 200 lines at a time.
           Neither ever sees a Secret’s data. Apart from the model, safina talks only to your&nbsp;clusters.
         </div>
       </div>
-      <div class="question">
-        <h3>Can the model change my cluster?</h3>
+      <div class="question" id="can-the-model-change-my-cluster">
+        <h3><a class="question__link" href="#can-the-model-change-my-cluster">Can the model change my cluster?</a></h3>
         <div class="answer">
           Not through safina. Chat gives it text to read, not keys, and over MCP it can only propose a change,
           which waits until you approve it. If you’ve already let your agent run kubectl without asking, safina
@@ -57,8 +57,8 @@ const lines = config.split("\n").map((line) => {
       </div>
       </div>
       <div class="questions__col">
-      <div class="question">
-        <h3>What does it leave on my machine?</h3>
+      <div class="question" id="what-does-it-leave-on-my-machine">
+        <h3><a class="question__link" href="#what-does-it-leave-on-my-machine">What does it leave on my machine?</a></h3>
         <div class="answer">
           Everything it keeps is under <code>~/.safina</code>, and the Logbook keeps it as long as its config says:
           <pre class="config"><code>{lines.map((l, i) => <>{l.code}{l.note && <span class="config__note">{l.note}</span>}{i < lines.length - 1 && "\n"}</>)}</code></pre>
@@ -66,14 +66,14 @@ const lines = config.split("\n").map((line) => {
           under <code>~/.claude</code>, like its other&nbsp;sessions.
         </div>
       </div>
-      <div class="question">
-        <h3>What does it cost?</h3>
+      <div class="question" id="what-does-it-cost">
+        <h3><a class="question__link" href="#what-does-it-cost">What does it cost?</a></h3>
         <div class="answer">
           Nothing. It’s MIT-licensed. Chat runs on your own&nbsp;subscription.
         </div>
       </div>
-      <div class="question">
-        <h3>What does onboarding the team take?</h3>
+      <div class="question" id="what-does-onboarding-the-team-take">
+        <h3><a class="question__link" href="#what-does-onboarding-the-team-take">What does onboarding the team take?</a></h3>
         <div class="answer">
           A binary on each laptop. Nobody needs an account, and everyone works through their own kubeconfig.
           Logbooks stay personal; export one for the team’s&nbsp;postmortem.
@@ -112,6 +112,47 @@ const lines = config.split("\n").map((line) => {
     min-width: 0;
     padding-top: var(--s1);
     border-top: 1px solid var(--hairline);
+  }
+  /* Each question links to itself, so an answer can be passed on (say,
+     what the model sees, to a security team). A light # marks it: hung in
+     the margin where a pointer can find it, after the question where
+     there's no hover, and in cyan when it's the answer you were sent to,
+     the colour that marks where you are. */
+  /* Padding on an inline link moves no line, so it only grows the target
+     to 44px on a phone. */
+  .question__link {
+    padding-block: 0.5em;
+    color: inherit;
+    text-decoration: none;
+  }
+  @media (hover: hover) {
+    .question__link {
+      position: relative;
+    }
+    .question__link::before {
+      content: "#" / "";
+      position: absolute;
+      right: 100%;
+      padding-right: 0.32em;
+      color: var(--fog);
+      opacity: 0;
+      transition: opacity 160ms var(--ease-out);
+    }
+    .question:hover .question__link::before,
+    .question__link:focus-visible::before,
+    .question:target .question__link::before {
+      opacity: 1;
+    }
+  }
+  @media (hover: none) {
+    .question__link::after {
+      content: "\a0#" / "";
+      color: var(--fog);
+    }
+  }
+  .question:target .question__link::before,
+  .question:target .question__link::after {
+    color: var(--beacon);
   }
   /* Each question is a heading in the title voice, an item's rank
      (--t-h3), so a scan down the list reads the questions alone; the

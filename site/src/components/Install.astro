@@ -63,6 +63,7 @@ const [avif, fallback] = await Promise.all([
           <p class="quiet">You’ll need Go 1.27 or newer and Python&nbsp;3.</p>
         )
       }
+      <p class="next">If <code>~/.local/bin</code> isn’t on your <code>PATH</code> yet, the script prints the line that adds it. Then run <code>safina</code> and pick a&nbsp;cluster.</p>
     </div>
     <ul class="facts" role="list">
       <li><strong>Runs on your machine.</strong> It reads the kubeconfig you already have, auth plugins included, and never writes&nbsp;to&nbsp;it.</li>
@@ -156,6 +157,11 @@ const [avif, fallback] = await Promise.all([
     font-size: var(--t-small);
     color: var(--fog);
     text-wrap: balance;
+  }
+
+  /* What happens next, whichever way it arrived. */
+  .next {
+    margin-top: var(--s2);
   }
 
   .install__main > :global(.command) {
