@@ -70,8 +70,12 @@ changes `wrangler.jsonc`, `site` and `DOMAIN` in `ship.mjs` in one commit.
 variables, Actions: `CLOUDFLARE_ACCOUNT_ID`, and `CLOUDFLARE_API_TOKEN`, a
 token from the dashboard (My Profile, API Tokens) made from the "Edit
 Cloudflare Workers" template, limited to this account and the safina.run
-zone. Locally,
-`pnpm ship` uses `wrangler login` instead; CI is the normal way to deploy.
+zone. `pnpm ship:token` (`scripts/deploy-token.sh`) walks through it: it
+opens the dashboard page, takes the token at a hidden prompt, checks that it
+reaches `safina-site` and sees its domain, sets both secrets with `gh`, and
+offers one run of the workflow to prove it. Run it again when the token is
+rolled or expires. Locally, `pnpm ship` uses `wrangler login` instead; CI is
+the normal way to deploy.
 Without both secrets, as in a fork, the deploy job is skipped with a
 notice rather than failed.
 
