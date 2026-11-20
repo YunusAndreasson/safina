@@ -1,0 +1,32 @@
+name: zizmor
+
+# Static analysis of the workflows themselves (template injection, credentials
+# left on disk, over-broad permissions, unpinned actions). Findings land under
+# Security → Code scanning; this never blocks a merge. Runs when a workflow
+# changes, and weekly for new rules.
+
+on:
+  push:
+    paths: ['.github/workflows/**', '.github/actions/**']
+  pull_request:
+    paths: ['.github/workflows/**', '.github/actions/**']
+  schedule:
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  zizmor:
+    # Dependabot's and forks' tokens can't upload code-scanning results.
+    if: github.event_name != 'pull_request' || (github.actor != 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: zizmorcore/zizmor-action@45d7276c9ca790aabd705e31ca99c6185c3e76dd # v0.8.1
