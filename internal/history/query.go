@@ -353,7 +353,12 @@ func ReadEvidence(dir, id string) ([]byte, error) {
 	if len(id) != 32 || strings.Trim(id, "0123456789abcdef") != "" {
 		return nil, errors.New("invalid evidence ID")
 	}
-	f, err := os.Open(filepath.Join(dir, "evidence", id+".jsonl")) // #nosec G304 -- Evidence ID is validated as exactly 32 hex digits above.
+	// The ID is already exactly 32 hex digits; this keeps the path inside evidence/ regardless.
+	name := id + ".jsonl"
+	if !filepath.IsLocal(name) || strings.ContainsAny(name, `/\`) {
+		return nil, errors.New("invalid evidence ID")
+	}
+	f, err := os.Open(filepath.Join(dir, "evidence", name)) // #nosec G304 -- Evidence ID is validated as exactly 32 hex digits above.
 	if err != nil {
 		return nil, err
 	}
