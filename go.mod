@@ -4,12 +4,12 @@ go 1.27.3
 
 require (
 	charm.land/bubbles/v2 v2.2.1
-	charm.land/bubbletea/v2 v2.1.1
+	charm.land/bubbletea/v2 v2.1.2
 	charm.land/lipgloss/v2 v2.1.1
 	github.com/NimbleMarkets/ntcharts/v2 v2.9.0
 	github.com/alecthomas/chroma/v2 v2.27.0
 	github.com/charmbracelet/glamour v1.0.0
-	github.com/charmbracelet/x/ansi v0.11.9
+	github.com/charmbracelet/x/ansi v0.11.10
 	github.com/dlclark/regexp2/v2 v2.13.0
 	github.com/google/gnostic-models v0.7.1
 	github.com/hexops/gotextdiff v1.0.3
