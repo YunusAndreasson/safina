@@ -10,7 +10,7 @@ require (
 	github.com/alecthomas/chroma/v2 v2.27.0
 	github.com/charmbracelet/glamour v1.0.0
 	github.com/charmbracelet/x/ansi v0.11.9
-	github.com/dlclark/regexp2/v2 v2.13.0
+	github.com/dlclark/regexp2/v2 v2.13.1
 	github.com/google/gnostic-models v0.7.1
 	github.com/hexops/gotextdiff v1.0.3
 	github.com/itchyny/gojq v0.12.20
